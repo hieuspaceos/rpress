@@ -1,0 +1,35 @@
+{% extends "base_fr.html" if lang != 'es' else "base_es.html" %}
+{% block content %}<div class="tourmaster-page-wrapper tourmaster-tour-style-2 tourmaster-with-sidebar" id="tourmaster-page-wrapper" ><script data-cfasync="false" src="/cdn-cgi/scripts/5c5dd728/cloudflare-static/email-decode.min.js"></script><script type="application/ld+json">{{ jsonld | safe }}</script><div class="tourmaster-single-header" style="background-image: url({{ featured_img }});"  ><div class="tourmaster-single-header-background-overlay"  ></div><div class="tourmaster-single-header-overlay" ></div><div class="tourmaster-single-header-container tourmaster-container" ><div class="tourmaster-single-header-container-inner" ><div class="tourmaster-single-header-title-wrap tourmaster-item-pdlr"  ><h1 class="tourmaster-single-header-title" >{{ title }}</h1></div></div></div></div><div class="tourmaster-template-wrapper" ><div class="tourmaster-tour-booking-bar-container tourmaster-container" ><div class="tourmaster-tour-booking-bar-container-inner" ><div class="tourmaster-tour-booking-bar-anchor tourmaster-item-mglr" ></div><div class="tourmaster-tour-booking-bar-wrap tourmaster-item-mglr" id="tourmaster-tour-booking-bar-wrap" ><div class="tourmaster-tour-booking-bar-outer" ><div class="tourmaster-header-price tourmaster-item-mglr" ><div class="tourmaster-header-enquiry-ribbon" ></div><div class="tourmaster-header-price-wrap" ><span class="tourmaster-header-enquiry" >Send Us An Enquiry</span></div></div><div class="tourmaster-tour-booking-bar-inner" ><div class="tourmaster-tour-booking-enquiry-wrap" ><form class="tourmaster-enquiry-form tourmaster-form-field tourmaster-with-border clearfix"  id="tourmaster-enquiry-form"  data-ajax-url="{{ site_url }}/wp-admin/admin-ajax.php"  data-action="tourmaster_send_enquiry_form"  data-validate-error="Please fill all required fields."  ><div class="tourmaster-enquiry-field tourmaster-enquiry-field-full-name tourmaster-type-text clearfix" ><div class="tourmaster-head" >Nom et prénom<span class="tourmaster-req" >*</span></div><div class="tourmaster-tail clearfix" ><input type="text" name="full-name" value=""  data-required  /></div></div><div class="tourmaster-enquiry-field tourmaster-enquiry-field-tel tourmaster-type-text clearfix" ><div class="tourmaster-head" >Téléphone<span class="tourmaster-req" >*</span></div><div class="tourmaster-tail clearfix" ><input type="text" name="tel" value=""  data-required  /></div></div><div class="tourmaster-enquiry-field tourmaster-enquiry-field-email-address tourmaster-type-email clearfix" ><div class="tourmaster-head" >Email<span class="tourmaster-req" >*</span></div><div class="tourmaster-tail clearfix" ><input type="email" name="email-address" value=""  data-required  /></div></div><div class="tourmaster-enquiry-field tourmaster-enquiry-field-your-enquiry tourmaster-type-textarea clearfix" ><div class="tourmaster-head" >Votre demande<span class="tourmaster-req" >*</span></div><div class="tourmaster-tail clearfix" ><textarea name="your-enquiry"  data-required  ></textarea></div></div><div class="tourmaster-enquiry-term" ><input type="checkbox" name="tourmaster-require-acceptance" />* I agree with <a href="#" target="_blank">Terms of Service</a> and <a href="#" target="_blank">Privacy Statement</a>.<div class="tourmaster-enquiry-term-message tourmaster-enquiry-form-message tourmaster-failed" >Please agree to all the terms and conditions before proceeding to the next step</div></div><div class="tourmaster-enquiry-form-message" ></div><input type="hidden" name="tour-id" value="{{ id }}" /><input type="submit" class="tourmaster-button" value="Submit Enquiry" /></form></div><div class="tourmaster-booking-bottom clearfix" ><div class="tourmaster-save-wish-list" data-tmlb="wish-list-login" ><span class="tourmaster-save-wish-list-icon-wrap" ><i class="tourmaster-icon-active fa fa-heart" ></i><i class="tourmaster-icon-inactive fa fa-heart-o" ></i></span>Save To Wish List</div><div class="tourmaster-lightbox-content-wrap tourmaster-style-1" data-tmlb-id="wish-list-login" ><div class="tourmaster-lightbox-head" ><h3 class="tourmaster-lightbox-title" >Adding item to wishlist requires an account</h3><i class="tourmaster-lightbox-close icon_close" ></i></div><div class="tourmaster-lightbox-content" ><div class="tourmaster-login-form2-wrap clearfix" >
+<form class="tourmaster-login-form2 tourmaster-form-field tourmaster-with-border" method="post" action="{{ site_url }}/wp-login.php">
+	<h3 class="tourmaster-login-title">Already A Member?</h3>
+					<div class="tourmaster-login-form-fields clearfix" >
+					<p class="tourmaster-login-user">
+						<label>Username or E-mail</label>
+						<input type="text" name="log" />
+					</p>
+					<p class="tourmaster-login-pass">
+						 <label>Password</label>
+						 <input type="password" name="pwd" />
+					</p>
+				</div>
+				<p class="tourmaster-login-submit" >
+					<input type="submit" name="wp-submit" class="tourmaster-button" value="Sign In!" />
+				</p>
+				<p class="tourmaster-login-lost-password" >
+					<a href="{{ site_url }}/wp-login.php?action=lostpassword&source=tm&lang={{ lang }}" >Forget Password?</a>
+				</p>
+
+				<input type="hidden" name="rememberme"  value="forever" />
+				<input type="hidden" name="redirect_to" value="{{ tour_path }}" />
+				<input type="hidden" name="source"  value="tm" />
+			</form>
+
+<div class="tourmaster-login2-right" >
+	<h3 class="tourmaster-login2-right-title" >Don&#039;t have an account? Create one.</h3>
+	<div class="tourmaster-login2-right-content" >
+		<div class="tourmaster-login2-right-description" >When you book with an account, you will be able to track your payment status, track the confirmation and you can also rate the tour after you finished the tour.</div>
+		<a class="tourmaster-button tourmaster-register-button" href="{{ site_url }}/?redirect={{ id }}" >Sign Up</a>
+	</div>
+	</div>
+</div>
+</div></div><div class="tourmaster-view-count" ><i class="fa fa-eye" ></i><span class="tourmaster-view-count-text" >{{ view_count }}</span></div></div></div></div>{{ sidebar_tour|safe }}</div></div></div><div class="tourmaster-single-tour-content-wrap" ><div class="gdlr-core-page-builder-body clearfix">{{ body | safe }}</div><div class="tourmaster-single-tour-read-more-gradient" ></div><div class="tourmaster-single-tour-read-more-wrap" ><div class="tourmaster-container" ><a class="tourmaster-button tourmaster-item-mglr" href="#" >Read More</a></div></div></div></div>{% endblock %}

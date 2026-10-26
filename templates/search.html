@@ -1,0 +1,28 @@
+{% extends "base_fr.html" if lang != 'es' else "base_es.html" %}
+{% block content %}
+<div class="traveltour-page-title-wrap  traveltour-style-large traveltour-center-align"><div class="traveltour-header-transparent-substitute" ></div><div class="traveltour-page-title-overlay" ></div><div class="traveltour-page-title-container traveltour-container" ><div class="traveltour-page-title-content traveltour-item-pdlr" ><h1 class="traveltour-page-title" >{% if lang == 'es' %}Buscar{% else %}Recherche{% endif %}</h1></div></div></div>
+{# data-pagefind-ignore: the search UI itself must never enter its own index #}
+<div class="traveltour-page-wrapper" id="traveltour-page-wrapper" data-pagefind-ignore="all"><div class="gdlr-core-page-builder-body"><div class="gdlr-core-pbf-wrapper " style="padding: 60px 20px 60px 20px;"><div class="gdlr-core-pbf-background-wrap" ></div><div class="gdlr-core-pbf-wrapper-content gdlr-core-js "><div class="gdlr-core-pbf-wrapper-container clearfix gdlr-core-container" ><div class="gdlr-core-pbf-element" ><div class="gdlr-core-title-item gdlr-core-item-pdb clearfix  gdlr-core-center-align gdlr-core-title-item-caption-bottom gdlr-core-item-pdlr" ><div class="gdlr-core-title-item-title-wrap" >
+{% if pagefind %}
+<link href="/pagefind/pagefind-ui.css" rel="stylesheet">
+<div id="search"></div>
+<script src="/pagefind/pagefind-ui.js"></script>
+<script>
+(function(){
+  var ui = new PagefindUI({ element: "#search", showSubResults: true, showImages: false, resetStyles: false, language: "{{ lang }}" });
+  // WP-style ?s= links (theme search box, old bookmarks) drive pagefind.
+  var q = new URLSearchParams(location.search).get('s');
+  if (q) ui.triggerSearch(q);
+})();
+</script>
+<noscript>
+<form role="search" method="get" class="search-form" action="{% if lang == 'es' %}{{ site_url }}/es/recherche/{% else %}{{ site_url }}/recherche/{% endif %}"><label><input type="search" class="search-field" placeholder="{% if lang == 'es' %}Buscar &hellip;{% else %}Rechercher &hellip;{% endif %}" value="" name="s" /></label><input type="submit" class="search-submit" value="{% if lang == 'es' %}Buscar{% else %}Rechercher{% endif %}" /></form>
+<p>{% if lang == 'es' %}La búsqueda necesita JavaScript.{% else %}La recherche nécessite JavaScript.{% endif %}</p>
+</noscript>
+{% else %}
+{# pagefind binary absent at generate time → honest degraded page, no dead shell #}
+<form role="search" method="get" class="search-form" action="{% if lang == 'es' %}{{ site_url }}/es/recherche/{% else %}{{ site_url }}/recherche/{% endif %}"><label><input type="search" class="search-field" placeholder="{% if lang == 'es' %}Buscar &hellip;{% else %}Rechercher &hellip;{% endif %}" value="" name="s" /></label><input type="submit" class="search-submit" value="{% if lang == 'es' %}Buscar{% else %}Rechercher{% endif %}" /></form>
+<p><em>{% if lang == 'es' %}La búsqueda no está disponible temporalmente.{% else %}La recherche est temporairement indisponible.{% endif %}</em></p>
+{% endif %}
+</div></div></div></div></div></div></div></div>
+{% endblock %}

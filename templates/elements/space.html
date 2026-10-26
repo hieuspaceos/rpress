@@ -1,0 +1,1 @@
+{% set pb = opts['padding-bottom']|default('', true) %}<div class="gdlr-core-space-item gdlr-core-item-pdlr{% if opts.class %} {{ opts.class }}{% endif %}" {% if pb %}{% set pbn = pb|replace('px','')|int %}{{ style('margin-top', pb) if pbn < 0 else style('padding-top', pb) }}{% endif %}{% if opts.id %} id="{{ opts.id|e }}"{% endif %}></div>

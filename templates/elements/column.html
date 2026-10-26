@@ -1,0 +1,167 @@
+{# gdlr_core_pb_wrapper_column::get_content (pb-wrapper-column.php) #}
+{%- set v = opts -%}
+{# ---- custom inline style (PHP $custom_style via add_inline_style) ---- #}
+{%- set cs = '' -%}
+{%- if v['hover-border-color'] -%}
+{%- set cs = cs ~ '#custom_style_id:hover .gdlr-core-pbf-column-content-margin, #custom_style_id:hover .gdlr-core-pbf-column-content-margin .gdlr-core-pbf-background-wrap, #custom_style_id:hover .gdlr-core-pbf-column-content-margin .gdlr-core-pbf-background-frame{ border-color: ' ~ v['hover-border-color'] ~ ' !important; }' -%}
+{%- endif -%}
+{%- if v['hover-border-width'] -%}
+{%- set cs = cs ~ '#custom_style_id:hover .gdlr-core-pbf-column-content-margin .gdlr-core-pbf-background-wrap{ ' ~ gdlr_css_imp('border-width', v['hover-border-width']) ~ ' }' -%}
+{%- endif -%}
+{%- if v['enable-move-up-shadow-effect'] == 'enable' -%}
+{%- set mus_size = v['frame-hover-shadow-size']|default('', true) -%}
+{%- set mus_col = gdlr_rgba(v['frame-hover-shadow-color']|default('#000000', true), v['frame-hover-shadow-opacity']|default('1', true)) -%}
+{%- set mus = gdlr_css('box-shadow', (mus_size if mus_size else '0px 0px 0px') ~ ' ' ~ mus_col, 'z-index', 1) -%}
+{%- if v['move-up-effect-length'] -%}{%- set mus = mus ~ 'transform: translate3d(0, -' ~ v['move-up-effect-length'] ~ ', 0); ' -%}{%- endif -%}
+{%- set cs = cs ~ '#custom_style_id:hover .gdlr-core-move-up-with-shadow{ ' ~ mus ~ ' }' -%}
+{%- endif -%}
+{%- if v['tablet-order'] and v['tablet-order'] != '0' -%}
+{%- set cs = cs ~ '@media only screen and (max-width: 999px){#custom_style_id{ order: ' ~ v['tablet-order'] ~ '; }}' -%}
+{%- endif -%}
+{%- if v['tablet-padding'] and not (v['tablet-padding'] is mapping and v['tablet-padding'].settings == 'link' and not (v['tablet-padding'].top or v['tablet-padding'].right or v['tablet-padding'].bottom or v['tablet-padding'].left)) -%}
+{%- set cs = cs ~ '@media only screen and (max-width: 999px){#custom_style_id .gdlr-core-pbf-column-content-margin{' ~ gdlr_css_imp('padding', v['tablet-padding']) ~ '}}' -%}
+{%- endif -%}
+{%- if v['tablet-margin'] and not (v['tablet-margin'] is mapping and v['tablet-margin'].settings == 'link' and not (v['tablet-margin'].top or v['tablet-margin'].right or v['tablet-margin'].bottom or v['tablet-margin'].left)) -%}
+{%- set cs = cs ~ '@media only screen and (max-width: 999px){#custom_style_id .gdlr-core-pbf-column-content-margin{' ~ gdlr_css_imp('margin', v['tablet-margin']) ~ '}}' -%}
+{%- endif -%}
+{%- if v['mobile-order'] and v['mobile-order'] != '0' -%}
+{%- set cs = cs ~ '@media only screen and (max-width: 767px){#custom_style_id{ order: ' ~ v['mobile-order'] ~ '; }}' -%}
+{%- endif -%}
+{%- if v['mobile-padding'] and not (v['mobile-padding'] is mapping and v['mobile-padding'].settings == 'link' and not (v['mobile-padding'].top or v['mobile-padding'].right or v['mobile-padding'].bottom or v['mobile-padding'].left)) -%}
+{%- set cs = cs ~ '@media only screen and (max-width: 767px){#custom_style_id .gdlr-core-pbf-column-content-margin{' ~ gdlr_css_imp('padding', v['mobile-padding']) ~ '}}' -%}
+{%- endif -%}
+{%- if v['mobile-margin'] and not (v['mobile-margin'] is mapping and v['mobile-margin'].settings == 'link' and not (v['mobile-margin'].top or v['mobile-margin'].right or v['mobile-margin'].bottom or v['mobile-margin'].left)) -%}
+{%- set cs = cs ~ '@media only screen and (max-width: 767px){#custom_style_id .gdlr-core-pbf-column-content-margin{' ~ gdlr_css_imp('margin', v['mobile-margin']) ~ '}}' -%}
+{%- endif -%}
+{%- set col_id = v.id|default('', true) -%}
+{%- if cs -%}
+{%- if not col_id -%}{%- set col_id = uid('gdlr-core-column-') -%}{%- endif -%}
+{{ custom_style(cs|replace('custom_style_id', col_id)) }}
+{%- endif -%}
+{# ---- wrapper style atts ---- #}
+{%- set margin_v = '' if (v.margin is mapping and v.margin.settings == 'link' and v.margin.top in ['0px','0',''] and v.margin.right in ['0px','0',''] and v.margin.bottom in ['0px','0',''] and v.margin.left in ['0px','0','']) else v.margin|default('') -%}
+{%- set padding_v = '' if (v.padding is mapping and v.padding.settings == 'link' and v.padding.top in ['0px','0',''] and v.padding.right in ['0px','0',''] and v.padding.bottom in ['0px','0',''] and v.padding.left in ['0px','0','']) else v.padding|default('') -%}
+{%- set sh_col = gdlr_rgba(v['background-shadow-color']|default('#000000', true), v['background-shadow-opacity']|default('1', true)) -%}
+{%- set shadow_v = ((v['background-shadow-size'] ~ ' ' ~ sh_col)|trim) if v['background-shadow-size'] else '' -%}
+{%- set wcss = gdlr_css('min-height', v['min-height'], 'margin', margin_v, 'padding', padding_v, 'box-shadow', shadow_v, 'border-radius', v['border-radius'], 'overflow', v['overflow']) -%}
+{# ---- background wrap ---- #}
+{%- set bgwrap = '' -%}
+{%- set outer_border = v['border-type'] == 'outer-border' -%}
+{%- set brad = gdlr_css('border-radius', v['border-radius']) -%}
+{%- set bop = v['background-opacity']|default('') -%}
+{%- set op_v = bop if (bop and bop != '1' and bop != 1) else '' -%}
+{%- set bgi_fixed = v['parallax-speed'] == 1 or v['parallax-speed'] == '1' -%}
+{%- if v['background-type'] == 'color' -%}
+{%- set bc = gdlr_css('background-color', v['background-color'], 'opacity', op_v, 'border-radius', v['border-radius']) -%}
+{%- if v['background-color-style'] in ['gradient', 'gradient-v'] and v['background-gradient-color'] -%}
+{%- set bc = bc ~ gdlr_css(v['background-color-style'], [[v['background-color'], v['background-color-opacity']|default(0, true)], [v['background-gradient-color'], v['background-gradient-color-opacity']|default(0, true)]]) -%}
+{%- endif -%}
+{%- if outer_border -%}
+{%- set bc = bc ~ gdlr_css('border-width', v['border-width'], 'border-color', v['border-color'], 'border-style', v['border-style']) -%}
+{%- endif -%}
+{%- set bgwrap = '<div class="gdlr-core-pbf-background-wrap" ' ~ (' style="' ~ bc ~ '"' if bc else '') ~ ' ></div>' -%}
+{%- elif v['background-type'] == 'image' -%}
+{%- set bgi = gdlr_css('background-image', css_url(v['background-image'])|replace('"', ''), 'opacity', op_v) -%}
+{%- if v['background-image-style'] == 'cover' -%}
+{%- set bgi = bgi ~ gdlr_css('background-size', 'cover') -%}
+{%- elif v['background-image-style'] -%}
+{%- set bgi = bgi ~ gdlr_css('background-repeat', v['background-image-style']) -%}
+{%- endif -%}
+{%- if v['background-image-style'] and v['background-image-position'] -%}
+{%- set bgi = bgi ~ gdlr_css('background-position', v['background-image-position']|replace('-', ' ')) -%}
+{%- endif -%}
+{%- if bgi_fixed -%}
+{%- set bgi = bgi ~ gdlr_css('background-attachment', 'fixed') -%}
+{%- endif -%}
+{%- if v['background-filter'] == 'blur' and v['background-blur-size'] -%}
+{%- set bgi = bgi ~ gdlr_css('filter', 'blur(' ~ v['background-blur-size'] ~ ')', '-webkit-filter', 'blur(' ~ v['background-blur-size'] ~ ')') -%}
+{%- endif -%}
+{%- set bgc_v = v['background-color']|default('') -%}
+{%- set bco = v['background-color-opacity']|default('') -%}
+{%- if bco and bco != '1' and bco != 1 and bgc_v -%}
+{%- set bgc_v = [bgc_v, bco] -%}
+{%- endif -%}
+{%- set bc = gdlr_css('background-color', bgc_v, 'border-radius', v['border-radius']) -%}
+{%- if v['background-color-style'] in ['gradient', 'gradient-v'] and v['background-gradient-color'] -%}
+{%- set bc = bc ~ gdlr_css(v['background-color-style'], [[v['background-color'], v['background-color-opacity']|default(0, true)], [v['background-gradient-color'], v['background-gradient-color-opacity']|default(0, true)]]) -%}
+{%- endif -%}
+{%- if outer_border -%}
+{%- set bc = bc ~ gdlr_css('border-width', v['border-width'], 'border-color', v['border-color'], 'border-style', v['border-style']) -%}
+{%- endif -%}
+{%- set bgwrap = '<div class="gdlr-core-pbf-background-wrap" ' ~ (' style="' ~ bc ~ '"' if bc else '') ~ ' >' -%}
+{%- if bgi_fixed -%}
+{%- set bgwrap = bgwrap ~ '<div class="gdlr-core-pbf-background gdlr-core-parallax gdlr-core-js" ' ~ (' style="' ~ bgi ~ '"' if bgi else '') ~ ' ></div>' -%}
+{%- else -%}
+{%- set bgwrap = bgwrap ~ '<div class="gdlr-core-pbf-background gdlr-core-parallax gdlr-core-js" ' ~ (' style="' ~ bgi ~ '"' if bgi else '') ~ ' data-parallax-speed="' ~ (v['parallax-speed']|default('0', true)) ~ '" ></div>' -%}
+{%- endif -%}
+{%- set bgwrap = bgwrap ~ '</div>' -%}
+{%- elif v['background-type'] == 'pattern' -%}
+{%- set bgi = gdlr_css('background-image', 'url(' ~ site_url ~ '/wp-content/plugins/gdlr-core/include/images/pattern/' ~ (v['background-pattern']|default('pattern-1', true)) ~ '.png)', 'background-repeat', 'repeat', 'background-position', 'center', 'opacity', op_v) -%}
+{%- if bgi_fixed -%}
+{%- set bgi = bgi ~ gdlr_css('background-attachment', 'fixed') -%}
+{%- endif -%}
+{%- set bgwrap = '<div class="gdlr-core-pbf-background-wrap" ' ~ (' style="' ~ brad ~ '"' if brad else '') ~ ' >' -%}
+{%- if bgi_fixed -%}
+{%- set bgwrap = bgwrap ~ '<div class="gdlr-core-pbf-background" ' ~ (' style="' ~ bgi ~ '"' if bgi else '') ~ ' ></div>' -%}
+{%- else -%}
+{%- set bgwrap = bgwrap ~ '<div class="gdlr-core-pbf-background gdlr-core-parallax gdlr-core-js" ' ~ (' style="' ~ bgi ~ '"' if bgi else '') ~ ' data-parallax-speed="' ~ (v['parallax-speed']|default('0', true)) ~ '" ></div>' -%}
+{%- endif -%}
+{%- set bgwrap = bgwrap ~ '</div>' -%}
+{%- elif v['background-type'] -%}
+{%- set bc = brad -%}
+{%- if outer_border -%}
+{%- set bc = bc ~ gdlr_css('border-width', v['border-width'], 'border-color', v['border-color'], 'border-style', v['border-style']) -%}
+{%- endif -%}
+{%- set vicss = gdlr_css('background-position', 'center', 'background-size', 'cover') -%}
+{%- set bgwrap = '<div class="gdlr-core-pbf-background-wrap" ' ~ (' style="' ~ bc ~ '"' if bc else '') ~ ' >' -%}
+{%- set bgwrap = bgwrap ~ '<div class="gdlr-core-pbf-background gdlr-core-parallax gdlr-core-js" ' ~ (' style="' ~ vicss ~ '"' if vicss else '') ~ ' data-parallax-speed="' ~ (v['parallax-speed']|default('0', true)) ~ '" data-video-fallback="' ~ media_url(v['background-video-image']|default('')) ~ '" >' -%}
+{%- set bgwrap = bgwrap ~ '<div class="gdlr-core-pbf-background-video" data-background-type="video" >' -%}
+{%- if v['background-type'] == 'video' and v['background-video-url'] -%}
+{%- set vid = v['background-video-url'] -%}
+{%- if 'watch?v=' in vid -%}{%- set vid = 'https://www.youtube.com/embed/' ~ vid|replace('https://www.youtube.com/watch?v=', '')|replace('https://youtu.be/', '') -%}
+{%- elif 'youtu.be/' in vid -%}{%- set vid = 'https://www.youtube.com/embed/' ~ vid|replace('https://youtu.be/', '') -%}
+{%- elif 'vimeo.com/' in vid -%}{%- set vid = 'https://player.vimeo.com/video/' ~ vid|replace('https://vimeo.com/', '')|replace('http://vimeo.com/', '') -%}
+{%- endif -%}
+{%- set bgwrap = bgwrap ~ '<iframe src="' ~ vid ~ '" width="100%" height="100%" frameborder="0" allowfullscreen></iframe>' -%}
+{%- elif v['background-type'] == 'html5-video' -%}
+{%- set bgwrap = bgwrap ~ '<video autoplay loop muted >' -%}
+{%- if v['background-video-url-mp4'] -%}{%- set bgwrap = bgwrap ~ '<source src="' ~ v['background-video-url-mp4'] ~ '" type="video/mp4">' -%}{%- endif -%}
+{%- if v['background-video-url-webm'] -%}{%- set bgwrap = bgwrap ~ '<source src="' ~ v['background-video-url-webm'] ~ '" type="video/webm">' -%}{%- endif -%}
+{%- if v['background-video-url-ogg'] -%}{%- set bgwrap = bgwrap ~ '<source src="' ~ v['background-video-url-ogg'] ~ '" type="video/ogg">' -%}{%- endif -%}
+{%- set bgwrap = bgwrap ~ '</video>' -%}
+{%- endif -%}
+{%- set bgwrap = bgwrap ~ '</div></div></div>' -%}
+{%- endif -%}
+{%- if v['border-type'] == 'inner-border' -%}
+{%- set bps = v['border-pre-spaces'] if (v['border-pre-spaces'] is mapping or v['border-pre-spaces']) else '0px' -%}
+{%- set fcss = gdlr_css('margin', bps, 'border-width', v['border-width'], 'border-style', v['border-style'], 'border-color', v['border-color']) -%}
+{%- set bgwrap = bgwrap ~ '<div class="gdlr-core-pbf-background-frame" ' ~ (' style="' ~ fcss ~ '"' if fcss else '') ~ ' ></div>' -%}
+{%- endif -%}
+{# ---- classes ---- #}
+{%- set cclass = 'gdlr-core-pbf-column' -%}
+{%- if column and column != '0' -%}{%- set cclass = cclass ~ ' gdlr-core-column-' ~ column -%}{%- endif -%}
+{%- if v['first-column'] -%}{%- set cclass = cclass ~ ' gdlr-core-column-first' -%}{%- endif -%}
+{%- if v['hide-this-wrapper-in'] and v['hide-this-wrapper-in'] != 'none' -%}{%- set cclass = cclass ~ ' gdlr-core-hide-in-' ~ v['hide-this-wrapper-in'] -%}{%- endif -%}
+{%- if v['tablet-size'] -%}{%- set cclass = cclass ~ ' gdlr-core-tablet-column-' ~ v['tablet-size'] -%}{%- endif -%}
+{%- set iclass = '' -%}
+{%- if v['background-extending'] and v['background-extending'] != 'none' -%}{%- set iclass = iclass ~ ' gdlr-core-column-extend-' ~ v['background-extending'] -%}{%- endif -%}
+{%- if v['effect'] -%}{%- set iclass = iclass ~ ' gdlr-core-effect-' ~ v['effect'] -%}{%- endif -%}
+{%- set ccls = '' -%}
+{%- set sync = v['sync-height']|default('', true) -%}
+{%- if v['full-height'] == 'enable' -%}
+{%- set iclass = iclass ~ ' gdlr-core-column-full-height' -%}
+{%- if v['centering-sync-height-content'] == 'enable' -%}
+{%- set iclass = iclass ~ ' gdlr-core-full-height-center' -%}
+{%- set ccls = ccls ~ ' gdlr-core-full-height-content' -%}
+{%- endif -%}
+{%- set sync = '' -%}
+{%- endif -%}
+{%- if v['class'] -%}{%- set iclass = iclass ~ ' ' ~ v['class'] -%}{%- endif -%}
+{%- if v['enable-move-up-shadow-effect'] == 'enable' -%}{%- set iclass = iclass ~ ' gdlr-core-move-up-with-shadow' -%}{%- endif -%}
+{%- if v['enable-left-right-spaces'] == 'enable' -%}{%- set iclass = iclass ~ ' gdlr-core-item-mglr gdlr-core-item-mgb' -%}{%- endif -%}
+{%- if sync -%}{%- set ccls = ccls ~ ' gdlr-core-sync-height-content' -%}{%- endif -%}
+{# ---- content style atts ---- #}
+{%- set tz = 'translateZ(' ~ v['3d-content-z-pos'] ~ ')' if (v['effect'] == '3d' and v['3d-content-z-pos']) else '' -%}
+{%- set ccss = gdlr_css('max-width', v['max-width'], 'transform', tz) -%}
+{%- set zcss = gdlr_css('z-index', v['z-index']) -%}
+<div class="{{ cclass|e }}" {% if v.skin %} data-skin="{{ v.skin|e }}" {% endif %}{% if col_id %} id="{{ col_id|e }}" {% endif %}{% if zcss %} style="{{ zcss }}" {% endif %}><div class="gdlr-core-pbf-column-content-margin gdlr-core-js {{ iclass|e }}" {% if wcss %} style="{{ wcss }}" {% endif %}{% if v['decrease-height'] and v['decrease-height'] != '0px' %} data-decrease-height="{{ v['decrease-height']|e }}"{% endif %}{% if sync %} data-sync-height="{{ sync|e }}" {% if v['centering-sync-height-content'] == 'enable' %} data-sync-height-center{% endif %}{% endif %}{% if v['effect'] == '3d' and v['3d-rotate-degree'] %} data-max-deg="{{ v['3d-rotate-degree']|e }}"{% endif %} >{{ bgwrap|safe }}{% if v['border-type'] == 'right-divider' %}<div class="gdlr-core-page-builder-column-right-divider" style="height: {{ v['divider-height']|default(0, true) }};margin-top: -{{ (v['divider-height']|default(0, true)|replace('px', '')|int) / 2 }}px;{{ gdlr_css('border-color', v['border-color'], 'border-style', v['border-style']) }}"></div>{% endif %}<div class="gdlr-core-pbf-column-content clearfix gdlr-core-js {{ ccls|e }}" {% if ccss %} style="{{ ccss }}" {% endif %}{% if v.animation and v.animation != 'none' %} data-animation="{{ v.animation|e }}"{% if v['animation-location'] %} data-animation-location="{{ v['animation-location']|e }}"{% endif %}{% endif %} >{{ children|safe }}</div>{% if v['column-link'] %}<a class="gdlr-core-pbf-column-link" href="{{ v['column-link']|e }}" target="{{ v['column-link-target']|default('_self', true)|e }}" ></a>{% endif %}</div></div>

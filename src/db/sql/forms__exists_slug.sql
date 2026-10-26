@@ -1,0 +1,1 @@
+SELECT 1 FROM forms WHERE slug=?1 LIMIT 1

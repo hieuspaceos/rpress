@@ -1,0 +1,156 @@
+{%- set layout = opts.layout|default('fitrows', true) -%}
+{%- set tstyle = opts['tour-style']|default('grid', true) -%}
+{%- set grid_style = opts['grid-style']|default('style-1', true) -%}
+{%- set modern_style = opts['modern-style']|default('style-1', true) -%}
+{%- set colsize = opts['column-size']|default('20', true)|int -%}
+{%- set ncols = (60 / colsize)|round|int -%}
+{%- set numfetch = opts['num-fetch']|default(9, true)|int -%}
+{%- set price_pos = opts['price-position']|default('bottom-title', true) -%}
+{%- set show_price = opts['display-price']|default('enable', true) != 'disable' -%}
+{%- set zoom = opts['enable-thumbnail-zoom-on-hover']|default('disable', true) == 'enable' -%}
+{%- set show_rating = opts['tour-rating']|default('enable', true) == 'enable' -%}
+{%- set rel = opts.relation|default('and', true) -%}
+{%- set tinfos = opts['tour-info'] if (opts['tour-info'] is sequence and opts['tour-info'] is not string) else ([opts['tour-info']] if opts['tour-info'] else []) -%}
+{# — taxonomy filter groups; option key -> site taxonomy (PHP tax_query on tour taxonomies) — #}
+{%- set taxgroups = [
+    ['style', 'style'], ['estilo', 'estilo'],
+    ['region', 'region'], ['region-es', 'region-es'],
+    ['duree', 'duree'], ['duracion', 'duracion'],
+    ['profil', 'profil'], ['perfil', 'perfil']
+] -%}
+{%- macro tour_duration_icon() -%}
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" viewBox="0 0 465 465" xml:space="preserve"  >
+			<path d="M279.591,423.714c-3.836,0.956-7.747,1.805-11.629,2.52c-10.148,1.887-16.857,11.647-14.98,21.804
+				c0.927,4.997,3.765,9.159,7.618,11.876c3.971,2.795,9.025,4.057,14.175,3.099c4.623-0.858,9.282-1.867,13.854-3.008
+				c10.021-2.494,16.126-12.646,13.626-22.662C299.761,427.318,289.618,421.218,279.591,423.714z"/>
+			<path d="M417.887,173.047c1.31,3.948,3.811,7.171,6.97,9.398c4.684,3.299,10.813,4.409,16.662,2.475
+				c9.806-3.256,15.119-13.83,11.875-23.631c-1.478-4.468-3.118-8.95-4.865-13.314c-3.836-9.59-14.714-14.259-24.309-10.423
+				c-9.585,3.834-14.256,14.715-10.417,24.308C415.271,165.528,416.646,169.293,417.887,173.047z"/>
+			<path d="M340.36,397.013c-3.299,2.178-6.704,4.286-10.134,6.261c-8.949,5.162-12.014,16.601-6.854,25.546
+				c1.401,2.433,3.267,4.422,5.416,5.942c5.769,4.059,13.604,4.667,20.127,0.909c4.078-2.352,8.133-4.854,12.062-7.452
+				c8.614-5.691,10.985-17.294,5.291-25.912C360.575,393.686,348.977,391.318,340.36,397.013z"/>
+			<path d="M465.022,225.279c-0.407-10.322-9.101-18.356-19.426-17.953c-10.312,0.407-18.352,9.104-17.947,19.422
+				c0.155,3.945,0.195,7.949,0.104,11.89c-0.145,6.473,3.021,12.243,7.941,15.711c2.931,2.064,6.488,3.313,10.345,3.401
+				c10.322,0.229,18.876-7.958,19.105-18.285C465.247,234.756,465.208,229.985,465.022,225.279z"/>
+			<path d="M414.835,347.816c-8.277-6.21-19.987-4.524-26.186,3.738c-2.374,3.164-4.874,6.289-7.434,9.298
+				c-6.69,7.86-5.745,19.666,2.115,26.361c0.448,0.38,0.901,0.729,1.371,1.057c7.814,5.509,18.674,4.243,24.992-3.171
+				c3.057-3.59,6.037-7.323,8.874-11.102C424.767,365.735,423.089,354.017,414.835,347.816z"/>
+			<path d="M442.325,280.213c-9.855-3.09-20.35,2.396-23.438,12.251c-1.182,3.765-2.492,7.548-3.906,11.253
+				c-3.105,8.156-0.13,17.13,6.69,21.939c1.251,0.879,2.629,1.624,4.126,2.19c9.649,3.682,20.454-1.159,24.132-10.812
+				c1.679-4.405,3.237-8.906,4.646-13.382C457.66,293.795,452.178,283.303,442.325,280.213z"/>
+			<path d="M197.999,426.402c-16.72-3.002-32.759-8.114-47.968-15.244c-0.18-0.094-0.341-0.201-0.53-0.287
+				c-3.584-1.687-7.162-3.494-10.63-5.382c-0.012-0.014-0.034-0.023-0.053-0.031c-6.363-3.504-12.573-7.381-18.606-11.628
+				C32.24,331.86,11.088,209.872,73.062,121.901c13.476-19.122,29.784-35.075,47.965-47.719c0.224-0.156,0.448-0.311,0.67-0.468
+				c64.067-44.144,151.06-47.119,219.089-1.757l-14.611,21.111c-4.062,5.876-1.563,10.158,5.548,9.518l63.467-5.682
+				c7.12-0.64,11.378-6.799,9.463-13.675L387.61,21.823c-1.908-6.884-6.793-7.708-10.859-1.833l-14.645,21.161
+				C312.182,7.638,252.303-5.141,192.87,5.165c-5.986,1.036-11.888,2.304-17.709,3.78c-0.045,0.008-0.081,0.013-0.117,0.021
+				c-0.225,0.055-0.453,0.128-0.672,0.189C123.122,22.316,78.407,52.207,46.5,94.855c-0.269,0.319-0.546,0.631-0.8,0.978
+				c-1.061,1.429-2.114,2.891-3.145,4.353c-1.686,2.396-3.348,4.852-4.938,7.308c-0.199,0.296-0.351,0.597-0.525,0.896
+				C10.762,149.191-1.938,196.361,0.24,244.383c0.005,0.158-0.004,0.317,0,0.479c0.211,4.691,0.583,9.447,1.088,14.129
+				c0.027,0.302,0.094,0.588,0.145,0.89c0.522,4.708,1.177,9.427,1.998,14.145c8.344,48.138,31.052,91.455,65.079,125.16
+				c0.079,0.079,0.161,0.165,0.241,0.247c0.028,0.031,0.059,0.047,0.086,0.076c9.142,9.017,19.086,17.357,29.793,24.898
+				c28.02,19.744,59.221,32.795,92.729,38.808c10.167,1.827,19.879-4.941,21.703-15.103
+				C214.925,437.943,208.163,428.223,197.999,426.402z"/>
+			<path d="M221.124,83.198c-8.363,0-15.137,6.78-15.137,15.131v150.747l137.87,71.271c2.219,1.149,4.595,1.69,6.933,1.69
+				c5.476,0,10.765-2.982,13.454-8.185c3.835-7.426,0.933-16.549-6.493-20.384l-121.507-62.818V98.329
+				C236.243,89.978,229.477,83.198,221.124,83.198z"/>
+</svg>
+{%- endmacro -%}
+{%- macro title_icon(t) -%}
+{%- if t.promo_bg -%}<svg version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" viewBox="0 0 512 512" xml:space="preserve"  style="fill: {{ t.promo_bg }}"  >
+	<path d="M397.413,199.303c-2.944-4.576-8-7.296-13.408-7.296h-112v-176c0-7.552-5.28-14.08-12.672-15.648
+			c-7.52-1.6-14.88,2.272-17.952,9.152l-128,288c-2.208,4.928-1.728,10.688,1.216,15.2c2.944,4.544,8,7.296,13.408,7.296h112v176
+			c0,7.552,5.28,14.08,12.672,15.648c1.12,0.224,2.24,0.352,3.328,0.352c6.208,0,12-3.616,14.624-9.504l128-288
+			C400.805,209.543,400.389,203.847,397.413,199.303z"/>
+</svg>{%- endif -%}
+{%- endmacro -%}
+{%- macro ribbon(t) -%}
+{%- if t.promo_text -%}
+<div class="tourmaster-thumbnail-ribbon gdlr-core-outer-frame-element" {{ style('color', t.promo_color, 'background-color', t.promo_bg) }} ><div class="tourmaster-thumbnail-ribbon-cornor" {{ style('border-right-color', t.promo_bg_alpha) }} ></div>{{ t.promo_text|e }}</div>
+{%- endif -%}
+{%- endmacro -%}
+{%- macro price_wrap(t) -%}
+{%- if show_price and (t.price_display or t.price) -%}
+<div class="tourmaster-tour-price-wrap " ><span class="tourmaster-tour-price" ><span class="tourmaster-head">{{ opts['price-prefix-text']|default('From', true) }}</span><span class="tourmaster-tail">{{ t.price_display if t.price_display else t.price }}{{ opts['price-suffix-text'] }}</span></span></div>
+{%- endif -%}
+{%- endmacro -%}
+{%- macro rating_stars(t) -%}
+{%- if show_rating and t.rating and t.rating|float > 0 -%}
+<div class="tourmaster-tour-rating"  >{% set r2 = t.rating|float * 2 %}{% for i in range(2,11,2) %}<i class="fa {% if r2 - i >= -0.5 %}fa-star{% elif r2 - i <= -1.5 %}fa-star-o{% else %}fa-star-half-o{% endif %}" ></i>{% endfor %}{% if t.review_count %}<span class="tourmaster-tour-rating-text" >({{ t.review_count }} {% if t.review_count == 1 %}Review{% else %}Reviews{% endif %})</span>{% endif %}</div>
+{%- endif -%}
+{%- endmacro -%}
+{%- macro info_wrap(t) -%}
+{%- if tinfos -%}
+<div class="tourmaster-tour-info-wrap clearfix" >
+  {%- for it in tinfos -%}
+    {%- if it == 'duration-text' and t.duration_text %}<div class="tourmaster-tour-info tourmaster-tour-info-duration-text " >{{ tour_duration_icon() }}{{ t.duration_text|e }} </div>
+    {%- elif it == 'departure-location' and t.departure %}<div class="tourmaster-tour-info tourmaster-tour-info-departure-location " ><i class="flaticon-takeoff-the-plane" ></i>{{ t.departure|e }} </div>
+    {%- elif it == 'duration' and t.duration_days %}<div class="tourmaster-tour-info tourmaster-tour-info-duration " ><i class="fa fa-clock-o" ></i>{{ t.duration_days }} {% if lang == 'es' %}Días{% else %}Jours{% endif %} </div>
+    {%- elif it == 'max-people' and t.max_people %}<div class="tourmaster-tour-info tourmaster-tour-info-max-people " ><i class="fa fa-users" ></i>{{ t.max_people }} </div>
+    {%- elif it == 'custom-excerpt' and t.excerpt %}<div class="tourmaster-tour-info tourmaster-tour-info-custom-excerpt " ><p>{{ t.excerpt|e }}</p></div>
+    {%- endif -%}
+  {%- endfor -%}
+</div>
+{%- endif -%}
+{%- endmacro -%}
+{%- macro title_h(t, widget) -%}
+<h3 class="tourmaster-tour-title gdlr-core-skin-title" {{ style('font-size', opts['tour-title-font-size'], 'font-weight', opts['tour-title-font-weight'], 'letter-spacing', opts['tour-title-letter-spacing'], 'text-transform', opts['tour-title-text-transform'], 'margin-bottom', opts['tour-title-bottom-margin']) }} ><a href="{{ t.url }}" >{% if not widget %}{{ title_icon(t) }}<span>{{ t.title|e }}</span>{% else %}{{ t.title|e }}{% endif %}</a></h3>
+{%- endmacro -%}
+{# — thumbnail shared by grid/list/modern; frame opts add the outer-frame treatment — #}
+{%- macro thumb(t) -%}
+<div class="tourmaster-tour-thumbnail tourmaster-media-image {% if zoom %} tourmaster-zoom-on-hover{% endif %}{% if pad4(opts['frame-border-size']) or opts['frame-shadow-size'] %} gdlr-core-outer-frame-element{% endif %}" {{ style('border-width', pad4(opts['frame-border-size']), 'border-color', opts['frame-border-color'], 'border-radius', opts['tour-border-radius'], 'box-shadow', (opts['frame-shadow-size'] ~ ' ' ~ opts['frame-shadow-color']) if opts['frame-shadow-size'] else '') }} ><a href="{{ t.url }}" >{% if t.image %}<img src="{{ t.image }}" alt="{{ t.alt|default('', true)|e }}" />{% endif %}</a></div>
+{%- endmacro -%}
+{# — one tour card in the element's selected tour-style — #}
+{%- macro card(t) -%}
+  {%- if tstyle == 'widget' -%}
+    <div class="tourmaster-tour-widget-inner clearfix" >{{ thumb(t) }}<div class="tourmaster-tour-content-wrap" >{{ title_h(t, true) }}<div class="tourmaster-tour-content-info clearfix{% if t.promo_text %} tourmaster-with-ribbon{% endif %}" >{{ ribbon(t) }}{{ price_wrap(t) }}{{ rating_stars(t) }}{{ info_wrap(t) }}</div></div></div>
+  {%- elif tstyle == 'modern' -%}
+    <div class="tourmaster-tour-modern tourmaster-tour-modern-{{ modern_style }}" ><div class="tourmaster-tour-modern-inner" >{{ thumb(t) }}<div class="tourmaster-tour-content-wrap " >{{ ribbon(t) }}{{ title_h(t, false) }}{% if price_pos != 'bottom-bar' %}{{ price_wrap(t) }}{% endif %}{{ info_wrap(t) }}{{ rating_stars(t) }}{% if price_pos == 'bottom-bar' %}{{ price_wrap(t) }}{% endif %}</div></div></div>
+  {%- elif tstyle == 'list' -%}
+    <div class="tourmaster-tour-list" >{{ thumb(t) }}<div class="tourmaster-tour-content-wrap " >{{ title_h(t, false) }}{{ info_wrap(t) }}{{ price_wrap(t) }}{% if opts['read-more-text'] %}<a class="tourmaster-tour-read-more" href="{{ t.url }}"{% if opts['read-more-target'] %} target="{{ opts['read-more-target'] }}"{% endif %} {{ style('font-size', opts['read-more-size'], 'color', opts['read-more-color']) }} >{{ opts['read-more-text'] }}</a>{% endif %}{{ rating_stars(t) }}</div></div>
+  {%- else -%}
+    <div class="tourmaster-tour-grid  tourmaster-tour-grid-{{ grid_style }}{% if show_price %} tourmaster-price-{{ price_pos }}{% endif %}" ><div class="tourmaster-tour-grid-inner"  >{{ thumb(t) }}<div class="tourmaster-tour-content-wrap " >{{ ribbon(t) }}{{ title_h(t, false) }}{% if price_pos != 'bottom-bar' %}{{ price_wrap(t) }}{% endif %}{{ info_wrap(t) }}{{ rating_stars(t) }}{% if opts.excerpt == 'specify-number' and t.excerpt %}<div class="tourmaster-tour-info-excerpt " ><p>{{ t.excerpt[:opts['excerpt-number']|default('55', true)|int]|e }}{% if t.excerpt|length > opts['excerpt-number']|default('55', true)|int %}&hellip;{% endif %}</p></div>{% elif opts.excerpt == 'full' and t.excerpt %}<div class="tourmaster-tour-info-excerpt " ><p>{{ t.excerpt|e }}</p></div>{% endif %}{% if price_pos == 'bottom-bar' %}{{ price_wrap(t) }}{% endif %}</div></div></div>
+  {%- endif -%}
+{%- endmacro -%}
+{# — ordered + filtered tour list — #}
+{%- set oby = opts.orderby|default('date', true) -%}
+{%- set odir = opts.order|default('desc', true) -%}
+{%- if oby == 'title' -%}
+  {%- set items = site.tours|default([], true)|sort(attribute='title', reverse=(odir == 'desc')) -%}
+{%- else -%}
+  {%- set items = site.tours|default([], true)|sort(attribute='date', reverse=(odir == 'desc')) -%}
+{%- endif -%}
+{%- set kns = namespace(list=[], groups=0) -%}
+{%- for g in taxgroups -%}
+  {%- set v = opts[g[0]] -%}
+  {%- if (v is sequence and v is not string and v|length > 0) or (v is string and v) -%}{% set kns.groups = kns.groups + 1 %}{%- endif -%}
+{%- endfor -%}
+{%- for t in items -%}
+  {%- if not (opts['exclude-self'] == 'enable' and post and t.id == post.id) -%}
+    {%- set mns = namespace(ok=(kns.groups == 0 or rel != 'or')) -%}
+    {%- for g in taxgroups -%}
+      {%- set v = opts[g[0]] -%}
+      {%- set slugs = v if (v is sequence and v is not string) else ([v] if v else []) -%}
+      {%- if slugs|length > 0 -%}
+        {%- set hns = namespace(hit=false) -%}
+        {%- for trm in t.terms|default([], true) -%}
+          {%- if trm.taxonomy == g[1] and trm.slug in slugs -%}{% set hns.hit = true %}{%- endif -%}
+        {%- endfor -%}
+        {%- if rel == 'or' -%}
+          {%- if hns.hit -%}{% set mns.ok = true %}{%- endif -%}
+        {%- else -%}
+          {%- if not hns.hit -%}{% set mns.ok = false %}{%- endif -%}
+        {%- endif -%}
+      {%- endif -%}
+    {%- endfor -%}
+    {%- if mns.ok and kns.list|length < numfetch -%}{% set kns.list = kns.list + [t] %}{%- endif -%}
+  {%- endif -%}
+{%- endfor -%}
+{# — element wrapper + layout — #}
+<div class="tourmaster-tour-item clearfix  tourmaster-tour-item-style-{{ tstyle }}{% if layout == 'carousel' and tstyle == 'grid' %} tourmaster-item-pdlr{% endif %}{% if tstyle == 'grid' %} tourmaster-tour-item-column-{{ ncols }}{% endif %}{% if opts.class %} {{ opts.class }}{% endif %}" {% if opts['padding-bottom'] and opts['padding-bottom'] != '0px' and opts['padding-bottom'] != pdb %}style="padding-bottom: {{ opts['padding-bottom'] }};" {% endif %}{% if opts.id %}id="{{ opts.id|e }}" {% endif %} >{% if opts.title %}<div class="gdlr-core-block-item-title-wrap gdlr-core-{{ opts['title-align']|default('center', true) }}-align" {{ style('margin-bottom', opts['title-wrap-bottom-margin']) }} ><h3 class="gdlr-core-block-item-title" {{ style('font-size', opts['title-size'] if opts['title-size'] and opts['title-size'] != '41px' else '', 'font-weight', opts['title-font-weight'], 'text-transform', opts['title-text-transform'], 'letter-spacing', opts['title-letter-spacing'], 'color', opts['title-color']) }} >{{ opts.title }}</h3></div>{% endif %}
+{%- if layout == 'carousel' -%}
+<div class="gdlr-core-flexslider flexslider gdlr-core-js-2 " data-type="carousel" data-column="{{ ncols }}" {% if opts['carousel-scrolling-item-amount'] %}data-move="{{ opts['carousel-scrolling-item-amount'] }}" {% endif %}data-nav="{{ opts['carousel-navigation']|default('navigation', true) }}" {% if tstyle == 'grid' %}data-nav-parent="tourmaster-tour-item" {% endif %}{% if opts['carousel-autoslide'] and opts['carousel-autoslide'] != 'enable' %}data-disable-autoslide="1" {% endif %} ><ul class="slides" >{% for t in kns.list %}<li  class="gdlr-core-item-mglr"  >{{ card(t) }}</li>{% endfor %}</ul></div>
+{%- else -%}
+<div class="tourmaster-tour-item-holder gdlr-core-js-2 clearfix" data-layout="fitrows" >{% set ns = namespace(cnt=0) %}{% for t in kns.list %}{% if tstyle == 'widget' %}<div class="tourmaster-item-list tourmaster-tour-widget tourmaster-item-pdlr" >{{ card(t) }}</div>{% else %}<div class="gdlr-core-item-list  tourmaster-item-pdlr tourmaster-column-{{ colsize }}{% if ns.cnt % 60 == 0 %} tourmaster-column-first{% endif %}" >{{ card(t) }}</div>{% set ns.cnt = ns.cnt + colsize %}{% endif %}{% endfor %}</div>
+{%- endif -%}
+{{ children | safe }}</div>

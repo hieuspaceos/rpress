@@ -1,0 +1,11 @@
+{%- set ta = opts['text-align'] | default('left') -%}
+{%- set cp = opts['caption-position'] | default('top') -%}
+{%- set tag = opts['heading-tag'] | default('h3') -%}
+{%- set caption = opts.caption | default('') -%}
+{%- set has_img = opts['left-image'] and opts['left-image'] != '' -%}
+{%- set has_icon = not has_img and opts['left-media-type'] != 'image' and opts['left-icon'] -%}
+<div class="gdlr-core-title-item gdlr-core-item-pdb clearfix  gdlr-core-{{ ta }}-align gdlr-core-title-item-caption-{{ cp }} gdlr-core-item-pdlr{% if opts.class %} {{ opts.class }}{% endif %}"{% if opts.id %} id="{{ opts.id }}"{% endif %}{% if opts['padding-bottom'] and opts['padding-bottom'] != '30px' %} style="padding-bottom: {{ opts['padding-bottom'] }} ;"{% endif %} >
+{%- if has_img -%}
+<div class="gdlr-core-title-item-left-icon-wrap gdlr-core-media-image" ><img src="{{ media_url(opts['left-image']) }}" alt="{{ media_alt(opts['left-image']) }}" /></div>
+{%- endif -%}
+<div class="gdlr-core-title-item-title-wrap" >{% if cp == 'top' and caption %}<span class="gdlr-core-title-item-caption gdlr-core-info-font gdlr-core-skin-caption"  >{{ caption | safe }}</span>{% endif %}<{{ tag }} class="gdlr-core-title-item-title gdlr-core-skin-title" style="font-size: {{ opts['title-font-size'] | default('31px') }} ;font-weight: {{ opts['title-font-weight'] | default('400') }} ;letter-spacing: {{ opts['title-font-letter-spacing'] | default('0px') }} ;text-transform: {% if opts['title-font-uppercase'] == 'enable' %}uppercase{% else %}none{% endif %} ;{% if opts['title-color'] %}color: {{ opts['title-color'] }} ;{% endif %}"  >{% if has_icon %}<span class="gdlr-core-title-item-left-icon" style="font-size: {{ opts['icon-font-size'] | default('30px') }} ;"  ><i class="{{ opts['left-icon'] }}"{% if opts['left-icon-color'] %} style="color: {{ opts['left-icon-color'] }} ;"{% endif %}  ></i></span>{% endif %}{{ opts.title | safe }}<span class="gdlr-core-title-item-title-divider gdlr-core-skin-divider" ></span></{{ tag }}></div>{% if cp == 'bottom' and caption %}<span class="gdlr-core-title-item-caption gdlr-core-info-font gdlr-core-skin-caption"  >{{ caption | safe }}</span>{% endif %}</div>

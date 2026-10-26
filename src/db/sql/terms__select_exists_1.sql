@@ -1,0 +1,1 @@
+SELECT EXISTS(SELECT 1 FROM terms WHERE taxonomy=?1) OR EXISTS(SELECT 1 FROM post_terms WHERE taxonomy=?1)

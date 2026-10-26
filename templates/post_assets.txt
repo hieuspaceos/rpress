@@ -1,0 +1,27 @@
+===HEAD_EZ===
+<style id="eztoc-css">
+/* Minimal static replacement for easy-table-of-contents screen.min.css
+   (the plugin asset is not shipped on the static host — phase 4.2). */
+#ez-toc-container{background:#f9f9f9;border:1px solid #aaa;border-radius:4px;padding:10px 20px;margin:16px 0;display:block;width:fit-content;max-width:100%}
+#ez-toc-container .ez-toc-title-container{display:flex;justify-content:space-between;align-items:center}
+#ez-toc-container ul{list-style:none;margin:0;padding:0}
+#ez-toc-container li{padding:2px 0}
+#ez-toc-container ul ul{padding-left:20px}
+#ez-toc-container a{color:inherit;text-decoration:none}
+#ez-toc-container a:hover{text-decoration:underline}
+#ez-toc-container .ez-toc-toggle{display:none}
+</style>
+<style id="eztoc-inline-css">
+div#ez-toc-container .ez-toc-title, .ez-toc-split-section .ez-toc-title {font-size: 120%;}div#ez-toc-container .ez-toc-title, .ez-toc-split-section .ez-toc-title {font-weight: 500;}div#ez-toc-container ul li , div#ez-toc-container ul li a, .ez-toc-split-section ul li , .ez-toc-split-section ul li a {font-size: 95%;}div#ez-toc-container ul li , div#ez-toc-container ul li a, .ez-toc-split-section ul li , .ez-toc-split-section ul li a {font-weight: 500;}div#ez-toc-container nav ul ul li, .ez-toc-split-section nav ul ul li {font-size: 90%;}.ez-toc-box-title {font-weight: bold; margin-bottom: 10px; text-align: center; text-transform: uppercase; letter-spacing: 1px; color: #666; padding-bottom: 5px;position:absolute;top:-4%;left:5%;background-color: inherit;transition: top 0.3s ease;}.ez-toc-box-title.toc-closed {top:-25%;}
+.ez-toc-container-direction {direction: ltr;}.ez-toc-counter ul{counter-reset: item ;}.ez-toc-counter nav ul li a::before {content: counters(item, '.', decimal) '. ';display: inline-block;counter-increment: item;flex-grow: 0;flex-shrink: 0;margin-right: .2em; float: left; }.ez-toc-widget-direction {direction: ltr;}.ez-toc-widget-container ul{counter-reset: item ;}.ez-toc-widget-container nav ul li a::before {content: counters(item, '.', decimal) '. ';display: inline-block;counter-increment: item;flex-grow: 0;flex-shrink: 0;margin-right: .2em; float: left; }
+/*# sourceURL=eztoc-inline-css */
+</style>
+===HEAD_WPD===
+<style id="wpdiscuz-frontend-css-inline-css">
+ #wpdcom .wpd-blog-administrator .wpd-comment-label{color:#ffffff;background-color:#ff451f;border:none}#wpdcom .wpd-blog-administrator .wpd-comment-author, #wpdcom .wpd-blog-administrator .wpd-comment-author a{color:#ff451f}#wpdcom.wpd-layout-1 .wpd-comment .wpd-blog-administrator .wpd-avatar img{border-color:#ff451f}#wpdcom.wpd-layout-2 .wpd-comment.wpd-reply .wpd-comment-wrap.wpd-blog-administrator{border-left:3px solid #ff451f}#wpdcom.wpd-layout-2 .wpd-comment .wpd-blog-administrator .wpd-avatar img{border-bottom-color:#ff451f}#wpdcom.wpd-layout-3 .wpd-blog-administrator .wpd-comment-subheader{border-top:1px dashed #ff451f}#wpdcom.wpd-layout-3 .wpd-reply .wpd-blog-administrator .wpd-comment-right{border-left:1px solid #ff451f}#wpdcom .wpd-blog-contributor .wpd-comment-label{color:#ffffff;background-color:#00b5ad;border:none}#wpdcom .wpd-blog-contributor .wpd-comment-author, #wpdcom .wpd-blog-contributor .wpd-comment-author a{color:#00b5ad}#wpdcom.wpd-layout-1 .wpd-comment .wpd-blog-contributor .wpd-avatar img{border-color:#00b5ad}
+/*# sourceURL=wpdiscuz-frontend-css-inline-css */
+</style>
+===FOOT_EZ===
+===FOOT_REPLY===
+===FOOT_WPD===
+===TAIL===

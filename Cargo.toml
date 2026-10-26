@@ -1,0 +1,28 @@
+[package]
+name = "pressrs"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+clap = { version = "4", features = ["derive"] }
+minijinja = "2"
+axum = { version = "0.8", features = ["multipart", "form"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal"] }
+argon2 = "0.5"
+rand = "0.8"
+parking_lot = "0.12"
+serde_urlencoded = "0.7"
+sha2 = "0.10"
+regex = "1"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
+similar = "2"
+
+[workspace]
+
+[lib]
+name = "pressrs"
+path = "src/lib.rs"

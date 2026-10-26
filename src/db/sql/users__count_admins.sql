@@ -1,0 +1,1 @@
+SELECT count(*) FROM users WHERE role='admin'

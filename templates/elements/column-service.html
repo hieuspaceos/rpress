@@ -1,0 +1,48 @@
+{%- set icon_size = opts['icon-size'] if opts['icon-size'] and opts['icon-size'] != '30px' else '' -%}
+{%- set title_size = opts['title-size'] if opts['title-size'] and opts['title-size'] != '14px' else '' -%}
+{%- set caption_size = opts['caption-size'] if opts['caption-size'] and opts['caption-size'] != '14px' else '' -%}
+{%- set content_size = opts['content-size'] if opts['content-size'] and opts['content-size'] != '15px' else '' -%}
+{%- set read_more_size = opts['read-more-size'] if opts['read-more-size'] and opts['read-more-size'] != '14px' else '' -%}
+{%- set cs_parts = opts.style|default('', true)|split('_') -%}
+{%- set text_align = cs_parts|first|default('center', true) -%}
+{%- set style_part = cs_parts[1] if cs_parts|length > 1 else 'icon-top' -%}
+{%- set extra_class = ' gdlr-core-' ~ text_align ~ '-align' -%}
+{%- if text_align != 'center' %}{% set extra_class = extra_class ~ ' gdlr-core-column-service-' ~ style_part %}{% endif -%}
+{%- set extra_class = extra_class ~ (' gdlr-core-with-caption' if opts.caption else ' gdlr-core-no-caption') -%}
+{%- if not opts['no-pdlr'] %}{% set extra_class = extra_class ~ ' gdlr-core-item-pdlr' %}{% endif -%}
+{%- if opts.class %}{% set extra_class = extra_class ~ ' ' ~ opts.class %}{% endif -%}
+<div class="gdlr-core-column-service-item gdlr-core-item-pdb {{ extra_class|e }}" {{ style('background-color', opts['background-color'], 'padding', pad4(opts.padding) if opts.padding != {'top':'','right':'','bottom':pdb,'left':'','settings':'unlink'} else '', 'margin', pad4(opts.margin) if opts.margin != {'top':'0px','right':'0px','bottom':'0px','left':'0px','settings':'link'} else '') }}{% if opts.id %} id="{{ opts.id|e }}" {% endif %}>
+{%- set media_html = '' -%}
+{%- if opts['media-type'] != 'none' -%}
+{%- set media_margin = pad4(opts['media-margin']) -%}
+{%- if not opts['media-type'] or opts['media-type'] == 'icon' -%}
+{%- set icon_cls = ' gdlr-core-icon-style-round' if opts['icon-style'] == 'round' else '' -%}
+{%- set icon_inner = ' gdlr-core-skin-e-background gdlr-core-skin-e-content' if opts['icon-style'] == 'round' else '' -%}
+{%- set media_html -%}
+<div class="gdlr-core-column-service-media gdlr-core-media-icon {{ icon_cls|e }}" {{ style('margin', media_margin) }} ><i class="{{ opts.icon|default('', true)|e }}{{ icon_inner|e }}" {{ style('font-size', icon_size, 'line-height', icon_size, 'width', icon_size, 'color', opts['icon-color'], 'background-color', opts['icon-background']) }} ></i></div>
+{%- endset -%}
+{%- elif opts['media-type'] == 'image' and opts.image -%}
+{%- set media_html -%}
+<div class="gdlr-core-column-service-media gdlr-core-media-image" {{ style('margin', media_margin, 'max-width', opts['media-image-max-width'], 'margin-left', 'auto' if text_align == 'center' else '', 'margin-right', 'auto' if text_align == 'center' else '') }} >{% if media_url(opts.image) %}<img src="{{ media_url(opts.image) }}" alt="{{ media_alt(opts.image)|e }}" />{% elif opts.image %}<img src="{{ opts.image|e }}" alt="" />{% endif %}</div>
+{%- endset -%}
+{%- elif opts['media-type'] == 'character' and opts.character -%}
+{%- set media_html -%}
+<div class="gdlr-core-column-service-media gdlr-core-character" {{ style('margin', media_margin, 'font-size', icon_size, 'color', opts['icon-color'], 'width', opts['character-width']) }} >{{ opts.character|safe }}</div>
+{%- endset -%}
+{%- endif -%}
+{%- endif -%}
+{%- if text_align == 'center' or style_part != 'icon-left-title' -%}
+{{ media_html }}<div class="gdlr-core-column-service-content-wrapper" >
+{%- else -%}
+<div class="gdlr-core-column-service-content-wrapper" >{{ media_html }}
+{%- endif -%}
+{%- if opts.title or opts.caption -%}
+{%- set caption_html -%}
+{%- if opts.caption %}<div class="gdlr-core-column-service-caption gdlr-core-info-font gdlr-core-skin-caption" {{ style('font-size', caption_size, 'font-weight', opts['caption-font-weight'], 'font-style', '' if opts['caption-font-style'] == 'default' else opts['caption-font-style'], 'text-transform', opts['caption-text-transform'], 'margin-top', opts['caption-top-margin']) }} >{{ opts.caption|safe }}</div>{% endif -%}
+{%- endset -%}
+<div class="gdlr-core-column-service-title-wrap" {{ style('margin-bottom', opts['title-bottom-margin']) }} >{% if caption_html and opts['caption-position'] == 'top' %}{{ caption_html }}{% endif %}{% if opts.title %}<{{ opts['heading-tag']|default('h3', true) }} class="gdlr-core-column-service-title gdlr-core-skin-title" {{ style('font-size', title_size, 'padding-top', opts['title-top-padding'], 'font-weight', opts['title-font-weight'], 'font-style', '' if opts['title-font-style'] == 'default' else opts['title-font-style'], 'letter-spacing', opts['title-letter-spacing'], 'text-transform', '' if opts['title-text-transform'] in ['uppercase'] else opts['title-text-transform']) }} >{{ opts.title|safe }}</{{ opts['heading-tag']|default('h3', true) }}>{% endif %}{% if caption_html and (not opts['caption-position'] or opts['caption-position'] == 'bottom') %}{{ caption_html }}{% endif %}</div>
+{%- endif -%}
+{%- if opts.content or children or (opts['read-more-text'] and opts['read-more-link']) -%}
+<div class="gdlr-core-column-service-content" {{ style('font-size', content_size, 'font-weight', opts['content-font-weight'], 'text-transform', opts['content-text-transform']) }} >{% if opts.content %}{{ opts.content|safe }}{% endif %}{{ children|safe }}{% if opts['read-more-text'] and opts['read-more-link'] %}<a class="gdlr-core-column-service-read-more gdlr-core-info-font" href="{{ opts['read-more-link']|e }}" {% if opts['read-more-link-target'] %} target="{{ opts['read-more-link-target']|e }}" {% endif %}{{ style('font-size', read_more_size, 'font-weight', opts['read-more-font-weight'], 'font-style', '' if opts['read-more-font-style'] == 'default' else opts['read-more-font-style'], 'margin-top', opts['read-more-top-margin']) }} >{{ opts['read-more-text']|e }}{% if opts['enable-read-more-icon'] == 'enable' and opts['read-more-icon'] %}<i class="{{ opts['read-more-icon']|e }}" {{ style('font-size', opts['read-more-icon-font-size']) }} ></i>{% endif %}</a>{% endif %}</div>
+{%- endif -%}
+</div></div>

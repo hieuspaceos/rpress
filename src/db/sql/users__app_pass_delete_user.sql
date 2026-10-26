@@ -1,0 +1,1 @@
+DELETE FROM app_passwords WHERE user_id=?1

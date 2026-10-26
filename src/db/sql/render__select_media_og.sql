@@ -1,0 +1,2 @@
+SELECT path, COALESCE(alt,''), COALESCE(mime,''), COALESCE(w,0), COALESCE(h,0)
+FROM media WHERE id=?1 LIMIT 1

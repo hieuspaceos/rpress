@@ -1,0 +1,1 @@
+UPDATE app_passwords SET last_used=datetime('now'), last_ip=?2 WHERE id=?1

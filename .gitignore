@@ -1,0 +1,10 @@
+target/
+cache/
+out-static/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+www/wp-content/uploads/
+out/
+.DS_Store

@@ -1,0 +1,3 @@
+{%- set bstyle = opts['blog-style'] | default('blog-column-with-frame', true) -%}
+{%- set layout = opts.layout | default('fitrows', true) -%}
+<div class="gdlr-core-blog-item gdlr-core-item-pdb clearfix  gdlr-core-style-{{ bstyle }} gdlr-core-{{ opts['blog-column-text-align'] | default('left', true) }}-align{% if bstyle == 'blog-column-with-frame' %} gdlr-core-item-pdlr{% endif %}{% if opts.class %} {{ opts.class }}{% endif %}" style="padding-bottom: 0px ;"  >{% if layout == 'carousel' %}{{ children | safe }}{% else %}<div class="gdlr-core-blog-item-holder gdlr-core-js-2 clearfix" data-layout="{{ layout }}" >{{ children | safe }}</div>{% endif %}</div>

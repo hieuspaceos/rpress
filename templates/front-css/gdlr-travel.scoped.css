@@ -1,0 +1,239 @@
+@font-face {
+  font-family: 'gdl-travel';
+  src:  url('fonts/gdl-travel.eot?6to6tk');
+  src:  url('fonts/gdl-travel.eot?6to6tk#iefix') format('embedded-opentype'),
+    url('fonts/gdl-travel.ttf?6to6tk') format('truetype'),
+    url('fonts/gdl-travel.woff?6to6tk') format('woff'),
+    url('fonts/gdl-travel.svg?6to6tk#gdl-travel') format('svg');
+  font-weight: normal;
+  font-style: normal;
+  font-display: block;
+}
+.gdlr-core-pb-livemode [class^="gdl-travel-"],
+.gdlr-core-pb-livemode [class*=" gdl-travel-"]{
+  
+  font-family: 'gdl-travel' !important;
+  speak: never;
+  font-style: normal;
+  font-weight: normal;
+  font-variant: normal;
+  text-transform: none;
+  line-height: 1;
+
+  
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+.gdlr-core-pb-livemode .gdl-travel-invoice-1:before{
+  content: "\e900";
+}
+.gdlr-core-pb-livemode .gdl-travel-padlock:before{
+  content: "\e901";
+}
+.gdlr-core-pb-livemode .gdl-travel-location-1:before{
+  content: "\e902";
+}
+.gdlr-core-pb-livemode .gdl-travel-technical-support-2:before{
+  content: "\e903";
+}
+.gdlr-core-pb-livemode .gdl-travel-hotel-4:before{
+  content: "\e904";
+}
+.gdlr-core-pb-livemode .gdl-travel-shopping-cart:before{
+  content: "\e905";
+}
+.gdlr-core-pb-livemode .gdl-travel-send:before{
+  content: "\e906";
+}
+.gdlr-core-pb-livemode .gdl-travel-internet:before{
+  content: "\e907";
+}
+.gdlr-core-pb-livemode .gdl-travel-optimization:before{
+  content: "\e908";
+}
+.gdlr-core-pb-livemode .gdl-travel-mechanics:before{
+  content: "\e909";
+}
+.gdlr-core-pb-livemode .gdl-travel-clock:before{
+  content: "\e90a";
+}
+.gdlr-core-pb-livemode .gdl-travel-improvement:before{
+  content: "\e90b";
+}
+.gdlr-core-pb-livemode .gdl-travel-information-4:before{
+  content: "\e90c";
+}
+.gdlr-core-pb-livemode .gdl-travel-price-tag:before{
+  content: "\e90d";
+}
+.gdlr-core-pb-livemode .gdl-travel-cogwheel:before{
+  content: "\e90e";
+}
+.gdlr-core-pb-livemode .gdl-travel-invoice-11:before{
+  content: "\e90f";
+}
+.gdlr-core-pb-livemode .gdl-travel-clock1:before{
+  content: "\e910";
+}
+.gdlr-core-pb-livemode .gdl-travel-smiley:before{
+  content: "\e911";
+}
+.gdlr-core-pb-livemode .gdl-travel-filter-1:before{
+  content: "\e912";
+}
+.gdlr-core-pb-livemode .gdl-travel-captcha-1:before{
+  content: "\e913";
+}
+.gdlr-core-pb-livemode .gdl-travel-chat:before{
+  content: "\e914";
+}
+.gdlr-core-pb-livemode .gdl-travel-map-4:before{
+  content: "\e915";
+}
+.gdlr-core-pb-livemode .gdl-travel-percentage-1:before{
+  content: "\e916";
+}
+.gdlr-core-pb-livemode .gdl-travel-price-tag1:before{
+  content: "\e917";
+}
+.gdlr-core-pb-livemode .gdl-travel-sound-mixer-1:before{
+  content: "\e918";
+}
+.gdlr-core-pb-livemode .gdl-travel-coupon:before{
+  content: "\e919";
+}
+.gdlr-core-pb-livemode .gdl-travel-travel:before{
+  content: "\e91a";
+}
+.gdlr-core-pb-livemode .gdl-travel-date:before{
+  content: "\e91b";
+}
+.gdlr-core-pb-livemode .gdl-travel-pay-per-click:before{
+  content: "\e91c";
+}
+.gdlr-core-pb-livemode .gdl-travel-piggy-bank:before{
+  content: "\e91d";
+}
+.gdlr-core-pb-livemode .gdl-travel-calendar:before{
+  content: "\e91e";
+}
+.gdlr-core-pb-livemode .gdl-travel-transfer:before{
+  content: "\e91f";
+}
+.gdlr-core-pb-livemode .gdl-travel-stock:before{
+  content: "\e920";
+}
+.gdlr-core-pb-livemode .gdl-travel-account:before{
+  content: "\e921";
+}
+.gdlr-core-pb-livemode .gdl-travel-fi-rs-map-marker:before{
+  content: "\e922";
+}
+.gdlr-core-pb-livemode .gdl-travel-account1:before{
+  content: "\e923";
+}
+.gdlr-core-pb-livemode .gdl-travel-location:before{
+  content: "\e924";
+}
+.gdlr-core-pb-livemode .gdl-travel-and-tourism:before{
+  content: "\e925";
+}
+.gdlr-core-pb-livemode .gdl-travel-plane:before{
+  content: "\e926";
+}
+.gdlr-core-pb-livemode .gdl-travel-washing-machine-1:before{
+  content: "\e927";
+}
+.gdlr-core-pb-livemode .gdl-travel-concierge-1:before{
+  content: "\e928";
+}
+.gdlr-core-pb-livemode .gdl-travel-swimming-pool-2:before{
+  content: "\e929";
+}
+.gdlr-core-pb-livemode .gdl-travel-food-service-1:before{
+  content: "\e92a";
+}
+.gdlr-core-pb-livemode .gdl-travel-dish-1:before{
+  content: "\e92b";
+}
+.gdlr-core-pb-livemode .gdl-travel-hair-dryer-1:before{
+  content: "\e92c";
+}
+.gdlr-core-pb-livemode .gdl-travel-telephone-1:before{
+  content: "\e92d";
+}
+.gdlr-core-pb-livemode .gdl-travel-oil-heater-1-1:before{
+  content: "\e92e";
+}
+.gdlr-core-pb-livemode .gdl-travel-air-conditioner-1:before{
+  content: "\e92f";
+}
+.gdlr-core-pb-livemode .gdl-travel-shower-1:before{
+  content: "\e930";
+}
+.gdlr-core-pb-livemode .gdl-travel-swimming-pool-1:before{
+  content: "\e931";
+}
+.gdlr-core-pb-livemode .gdl-travel-parking-1:before{
+  content: "\e932";
+}
+.gdlr-core-pb-livemode .gdl-travel-Frame-5781:before{
+  content: "\e933";
+}
+.gdlr-core-pb-livemode .gdl-travel-wifi-signal-2:before{
+  content: "\e934";
+}
+.gdlr-core-pb-livemode .gdl-travel-massage-1:before{
+  content: "\e935";
+}
+.gdlr-core-pb-livemode .gdl-travel-fi-rs-building:before{
+  content: "\e936";
+}
+.gdlr-core-pb-livemode .gdl-travel-fi-rs-mountains:before{
+  content: "\e937";
+}
+.gdlr-core-pb-livemode .gdl-travel-blueprint-1:before{
+  content: "\e938";
+}
+.gdlr-core-pb-livemode .gdl-travel-XMLID_874:before{
+  content: "\e939";
+}
+.gdlr-core-pb-livemode .gdl-travel-safe-box-1:before{
+  content: "\e93a";
+}
+.gdlr-core-pb-livemode .gdl-travel-watch-tv-1:before{
+  content: "\e93b";
+}
+.gdlr-core-pb-livemode .gdl-travel-video-call:before{
+  content: "\e93c";
+}
+.gdlr-core-pb-livemode .gdl-travel-picture:before{
+  content: "\e93d";
+}
+.gdlr-core-pb-livemode .gdl-travel-mail:before{
+  content: "\e93e";
+}
+.gdlr-core-pb-livemode .gdl-travel-star:before{
+  content: "\e93f";
+}
+.gdlr-core-pb-livemode .gdl-travel-hang-up:before{
+  content: "\e940";
+}
+.gdlr-core-pb-livemode .gdl-travel-thumbs-up:before{
+  content: "\e941";
+}
+.gdlr-core-pb-livemode .gdl-travel-lifebuoy:before{
+  content: "\e942";
+}
+.gdlr-core-pb-livemode .gdl-travel-calendar1:before{
+  content: "\e943";
+}
+.gdlr-core-pb-livemode .gdl-travel-wifi:before{
+  content: "\e944";
+}
+.gdlr-core-pb-livemode .gdl-travel-user:before{
+  content: "\e945";
+}
+.gdlr-core-pb-livemode .gdl-travel-45-minutes:before{
+  content: "\e946";
+}

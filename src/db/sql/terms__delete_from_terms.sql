@@ -1,0 +1,1 @@
+DELETE FROM terms WHERE id=?1

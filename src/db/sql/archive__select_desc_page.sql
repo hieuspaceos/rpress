@@ -1,0 +1,1 @@
+SELECT COALESCE(body_html,'') FROM posts WHERE slug=?1 AND kind='page' AND status='publish' LIMIT 1

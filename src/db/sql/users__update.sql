@@ -1,0 +1,1 @@
+UPDATE users SET email=?2, display_name=?3, first_name=?4, last_name=?5, website=?6, role=?7 WHERE id=?1

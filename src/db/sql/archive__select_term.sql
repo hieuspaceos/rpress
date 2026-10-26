@@ -1,0 +1,1 @@
+SELECT id, name, COALESCE(description,'') FROM terms WHERE taxonomy=?1 COLLATE NOCASE AND slug=?2 LIMIT 1

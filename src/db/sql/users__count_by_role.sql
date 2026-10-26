@@ -1,0 +1,1 @@
+SELECT role, count(*) FROM users GROUP BY role

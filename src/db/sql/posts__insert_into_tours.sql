@@ -1,0 +1,1 @@
+INSERT INTO tours(post_id,duration_days,price_range,max_people,departure_dates_json,view_count) SELECT ?1,duration_days,price_range,max_people,departure_dates_json,view_count FROM tours WHERE post_id=?2

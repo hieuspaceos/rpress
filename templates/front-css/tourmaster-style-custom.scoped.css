@@ -1,0 +1,184 @@
+.gdlr-core-pb-livemode .tourmaster-item-mgb{ margin-bottom: 40px; }
+.gdlr-core-pb-livemode .tourmaster-tour-category-grid-4 .tourmaster-tour-category-item-wrap .tourmaster-tour-category-thumbnail{ margin-left: -20px; margin-right: -20px; margin-bottom: -40px; }
+.gdlr-core-pb-livemode .tourmaster-invoice-logo{ width: 250px; }
+.gdlr-core-pb-livemode .tourmaster-single-header-title-wrap{ padding-top: 500px; }
+.gdlr-core-pb-livemode .tourmaster-single-header-title-wrap{ padding-bottom: 45px; }
+.gdlr-core-pb-livemode .tourmaster-single-header-background-overlay{ opacity: 0.15; }
+.gdlr-core-pb-livemode .tourmaster-single-header-top-overlay{ height: 154px; }
+.gdlr-core-pb-livemode .tourmaster-single-header-overlay{ height: 291px; }
+.gdlr-core-pb-livemode .tourmaster-tour-booking-submit input[type="submit"],
+.gdlr-core-pb-livemode .tourmaster-tour-booking-submit input[type="submit"]:hover,
+.gdlr-core-pb-livemode .tourmaster-tour-booking-submit .tourmaster-button,
+.gdlr-core-pb-livemode .tourmaster-enquiry-form .tourmaster-button,
+.gdlr-core-pb-livemode .tourmaster-header-price .tourmaster-header-price-overlay{ background: #5b7a67;  background: -webkit-linear-gradient(left, #5b7a67 , #5b7a67);  background: -o-linear-gradient(right, #5b7a67, #5b7a67);  background: -moz-linear-gradient(right, #5b7a67, #5b7a67);  background: linear-gradient(to right, #5b7a67 , #5b7a67); }
+.gdlr-core-pb-livemode .tourmaster-tour-style-1 .tourmaster-header-price .tourmaster-header-price-ribbon,
+.gdlr-core-pb-livemode .tourmaster-tour-style-1 .tourmaster-header-price .tourmaster-header-enquiry-ribbon{ background: #5b7a67; background: rgba(91, 122, 103, 0.9); }
+.gdlr-core-pb-livemode .tourmaster-tour-style-1 .tourmaster-tour-booking-bar-wrap.tourmaster-top .tourmaster-header-price .tourmaster-header-price-ribbon,
+.gdlr-core-pb-livemode .tourmaster-tour-style-1 .tourmaster-tour-booking-bar-wrap.tourmaster-bottom .tourmaster-header-price .tourmaster-header-price-ribbon,
+.gdlr-core-pb-livemode .tourmaster-tour-style-1 .tourmaster-tour-booking-bar-wrap.tourmaster-lock .tourmaster-header-price .tourmaster-header-price-ribbon,
+.gdlr-core-pb-livemode .tourmaster-tour-style-1 .tourmaster-tour-booking-bar-wrap.tourmaster-fixed .tourmaster-header-price .tourmaster-header-price-ribbon{ background: #5b7a67; }
+.gdlr-core-pb-livemode .tourmaster-header-price .tourmaster-header-price-ribbon,
+.gdlr-core-pb-livemode .tourmaster-header-price .tourmaster-tour-price-wrap,
+.gdlr-core-pb-livemode .tourmaster-header-price .tourmaster-header-enquiry{ color: #1a1a1a; }
+.gdlr-core-pb-livemode .tourmaster-header-price .tourmaster-tour-price-wrap.tourmaster-discount .tourmaster-tour-price,
+.gdlr-core-pb-livemode .tourmaster-header-price .tourmaster-tour-price-info{ color: #a3a3a3; }
+.gdlr-core-pb-livemode .tourmaster-wish-list-remove-item{ color: #ba4a4a; }
+.gdlr-core-pb-livemode .tourmaster-notification-box.tourmaster-failure,
+.gdlr-core-pb-livemode .tourmaster-user-update-notification.tourmaster-failure{ background: #ba4a4a; }
+.gdlr-core-pb-livemode .tourmaster-tour-booking-submit-error,
+.gdlr-core-pb-livemode .tourmaster-tour-booking-error-max-people{ background: #ba4a4a; }
+.gdlr-core-pb-livemode .tourmaster-tour-booking-bar-coupon-wrap .tourmaster-tour-booking-coupon-message.tourmaster-failed{ background-color: #ba4a4a; }
+.gdlr-core-pb-livemode .tourmaster-tour-rating i,
+.gdlr-core-pb-livemode .tourmaster-review-form .tourmaster-review-form-rating,
+.gdlr-core-pb-livemode .tourmaster-single-review-content .tourmaster-single-review-detail-rating i,
+.gdlr-core-pb-livemode .tourmaster-tour-review-item .tourmaster-tour-review-item-rating i,
+.gdlr-core-pb-livemode .tourmaster-tour-search-field-rating .tourmaster-rating-select{ color: #ffa11a; }
+.gdlr-core-pb-livemode .tourmaster-single-review-container.tourmaster-style-2 .tourmaster-single-review-head .tourmaster-tour-rating{ background-color: #f3f3f3; }
+.gdlr-core-pb-livemode .tourmaster-tour-style-1 .tourmaster-tour-booking-bar-inner,
+.gdlr-core-pb-livemode .tourmaster-tour-style-2 .tourmaster-tour-booking-bar-outer,
+.gdlr-core-pb-livemode .tourmaster-form-field .tourmaster-combobox-list-wrap ul,
+.gdlr-core-pb-livemode .tourmaster-template-payment .tourmaster-tour-booking-bar-wrap{ background-color: #ffffff; }
+.gdlr-core-pb-livemode .tourmaster-tour-booking-date .tourmaster-tour-booking-date-display,
+.gdlr-core-pb-livemode .tourmaster-tour-booking-bar-wrap .tourmaster-view-count{ color: #333333; }
+.gdlr-core-pb-livemode .tourmaster-tour-booking-bar-wrap .tourmaster-save-wish-list{ color: #333333; }
+.gdlr-core-pb-livemode .tourmaster-tour-booking-people-container .tourmaster-tour-booking-room-text{ color: #333333; }
+.gdlr-core-pb-livemode .tourmaster-tour-booking-bar-wrap .tourmaster-save-wish-list{ background-color: #fbfbfb; }
+.gdlr-core-pb-livemode .tourmaster-tour-booking-bar-wrap .tourmaster-booking-bottom,
+.gdlr-core-pb-livemode .tourmaster-tour-booking-bar-wrap .tourmaster-save-wish-list{ border-color: #ebebeb; }
+.gdlr-core-pb-livemode .tourmaster-tour-booking-bar-wrap .tourmaster-tour-booking-bar-summary-title{ color: #000000; }
+.gdlr-core-pb-livemode .tourmaster-tour-booking-bar-summary-info,
+.gdlr-core-pb-livemode .tourmaster-tour-booking-bar-summary-people-amount,
+.gdlr-core-pb-livemode .tourmaster-tour-booking-bar-summary-room-text{ color: #414141; }
+.gdlr-core-pb-livemode .tourmaster-price-breakdown,
+.gdlr-core-pb-livemode .tourmaster-tour-booking-bar-total-price-wrap{ color: #515151; }
+.gdlr-core-pb-livemode .tourmaster-tour-booking-bar-total-price,
+.gdlr-core-pb-livemode .tourmaster-tour-booking-bar-deposit-text{ color: #242424; }
+.gdlr-core-pb-livemode .tourmaster-payment-receipt-deposit-option label input + span,
+.gdlr-core-pb-livemode .tourmaster-tour-booking-bar-deposit-option label input + span,
+.gdlr-core-pb-livemode .tourmaster-tour-booking-bar-total-price-wrap.tourmaster-deposit,
+.gdlr-core-pb-livemode .tourmaster-tour-booking-bar-total-price-wrap.tourmaster-deposit .tourmaster-tour-booking-bar-total-price{ color: #a1a1a1; }
+.gdlr-core-pb-livemode .tourmaster-page-wrapper.tourmaster-tour-style-3 .tourmaster-tour-booking-bar-inner{ background: #f8faff; }
+.gdlr-core-pb-livemode .tourmaster-payment-head .tourmaster-payment-title{ color: #ffffff; }
+.gdlr-core-pb-livemode .tourmaster-payment-head .tourmaster-payment-head-overlay-opacity{ background-color: rgba(0, 0, 0, 0.5); }
+.gdlr-core-pb-livemode .tourmaster-payment-step-item .tourmaster-payment-step-item-title{ color: #ffffff; }
+.gdlr-core-pb-livemode .tourmaster-page-wrapper.tourmaster-payment-style-2 .tourmaster-payment-step-item .tourmaster-payment-step-item-title{ color: #ffffff; }
+.gdlr-core-pb-livemode .tourmaster-page-wrapper.tourmaster-payment-style-2 .tourmaster-payment-step-item .tourmaster-payment-step-item-title span{ border-color: #ffffff; }
+.gdlr-core-pb-livemode .tourmaster-page-wrapper.tourmaster-payment-style-2 .tourmaster-payment-step-item.tourmaster-checked .tourmaster-payment-step-item-title,
+.gdlr-core-pb-livemode .tourmaster-page-wrapper.tourmaster-payment-style-2 .tourmaster-payment-step-item.tourmaster-enable .tourmaster-payment-step-item-title,
+.gdlr-core-pb-livemode .tourmaster-page-wrapper.tourmaster-payment-style-2 .tourmaster-payment-step-item.tourmaster-current .tourmaster-payment-step-item-title{ color: #3d3d3d; }
+.gdlr-core-pb-livemode .tourmaster-page-wrapper.tourmaster-payment-style-2 .tourmaster-payment-step-item.tourmaster-checked .tourmaster-payment-step-item-title span,
+.gdlr-core-pb-livemode .tourmaster-page-wrapper.tourmaster-payment-style-2 .tourmaster-payment-step-item.tourmaster-enable .tourmaster-payment-step-item-title span,
+.gdlr-core-pb-livemode .tourmaster-page-wrapper.tourmaster-payment-style-2 .tourmaster-payment-step-item.tourmaster-current .tourmaster-payment-step-item-title span{ border-color: #3d3d3d; }
+.gdlr-core-pb-livemode .tourmaster-payment-complete-wrap,
+.gdlr-core-pb-livemode .tourmaster-payment-method-wrap{ background-color: #f5f5f5; }
+.gdlr-core-pb-livemode .tourmaster-payment-complete-wrap .tourmaster-payment-complete-head,
+.gdlr-core-pb-livemode .tourmaster-payment-method-wrap .tourmaster-payment-method-title,
+.gdlr-core-pb-livemode .tourmaster-payment-method-wrap .tourmaster-payment-method-or{ color: #262626; }
+.gdlr-core-pb-livemode .tourmaster-payment-complete-wrap .tourmaster-payment-complete-bottom-text,
+.gdlr-core-pb-livemode .tourmaster-payment-complete-wrap .tourmaster-payment-complete-head,
+.gdlr-core-pb-livemode .tourmaster-payment-method-wrap .tourmaster-payment-method-title{ border-color: #e3e3e3; }
+.gdlr-core-pb-livemode .tourmaster-payment-service-form-wrap{ background-color: #f5f5f5; }
+.gdlr-core-pb-livemode .tourmaster-payment-service-form-wrap .tourmaster-payment-service-form-title{ color: #1a1a1a; }
+.gdlr-core-pb-livemode .tourmaster-payment-service-form-wrap .tourmaster-payment-service-form-title{ border-color: #e3e3e3; }
+.gdlr-core-pb-livemode .tourmaster-payment-service-form-wrap .tourmaster-payment-service-form-item-title{ color: #6a6a6a; }
+.gdlr-core-pb-livemode .tourmaster-page-wrapper.tourmaster-payment-style-2 .tourmaster-tour-booking-side-payment-wrap .tourmaster-button.tourmaster-blue{ background: #0754b0; }
+.gdlr-core-pb-livemode .tourmaster-page-wrapper.tourmaster-payment-style-2 .tourmaster-tour-booking-side-payment-wrap .tourmaster-button{ background: #101010; }
+.gdlr-core-pb-livemode .tourmaster-template-search .tourmaster-template-wrapper,
+.gdlr-core-pb-livemode .tourmaster-template-archive .tourmaster-template-wrapper{ background-color: #ffffff; }
+.gdlr-core-pb-livemode .tourmaster-single-search-not-found-wrap .tourmaster-single-search-not-found-inner{ background-color: #f6f6f6; }
+.gdlr-core-pb-livemode .tourmaster-single-search-not-found-wrap .tourmaster-single-search-not-found-title{ color: #cccccc; }
+.gdlr-core-pb-livemode .tourmaster-single-search-not-found-wrap .tourmaster-single-search-not-found-caption{ color: #a8a8a8; }
+.gdlr-core-pb-livemode .tourmaster-single-header-top-overlay,
+.gdlr-core-pb-livemode .tourmaster-payment-head .tourmaster-payment-head-top-overlay{ background: -webkit-linear-gradient(to top, rgba(0, 0, 0, 0), rgba(0, 0, 0, 1)); background: -o-linear-gradient(to top, rgba(0, 0, 0, 0), rgba(0, 0, 0, 1)); background: -moz-linear-gradient(to top, rgba(0, 0, 0, 0), rgba(0, 0, 0, 1)); background: linear-gradient(to top, rgba(0, 0, 0, 0), rgba(0, 0, 0, 1)); }
+.gdlr-core-pb-livemode .tourmaster-single-header-overlay,
+.gdlr-core-pb-livemode .tourmaster-payment-head .tourmaster-payment-head-overlay{ background: -webkit-linear-gradient(to bottom, rgba(0, 0, 0, 0), rgba(0, 0, 0, 0.6)); background: -o-linear-gradient(to bottom, rgba(0, 0, 0, 0), rgba(0, 0, 0, 0.6)); background: -moz-linear-gradient(to bottom, rgba(0, 0, 0, 0), rgba(0, 0, 0, 0.6)); background: linear-gradient(to bottom, rgba(0, 0, 0, 0), rgba(0, 0, 0, 0.6)); }
+.gdlr-core-pb-livemode .single-tour .tourmaster-tour-info-outer{ background-color: #f5f5f5; }
+.gdlr-core-pb-livemode .single-tour .tourmaster-tour-info-wrap .tourmaster-tour-info{ color: #414141; }
+.gdlr-core-pb-livemode .tourmaster-single-review-head .tourmaster-tour-rating-text,
+.gdlr-core-pb-livemode .tourmaster-single-review-sort-by .tourmaster-head,
+.gdlr-core-pb-livemode .tourmaster-single-review-content .tourmaster-single-review-user-name,
+.gdlr-core-pb-livemode .tourmaster-single-review-content .tourmaster-single-review-user-type{ color: #272727; }
+.gdlr-core-pb-livemode .tourmaster-single-review-content .tourmaster-single-review-detail-date{ color: #a3a3a3; }
+.gdlr-core-pb-livemode .tourmaster-review-content-pagination span{ color: #696969; }
+.gdlr-core-pb-livemode .tourmaster-review-content-pagination span{ background-color: #f3f3f3; }
+.gdlr-core-pb-livemode .tourmaster-payment-step-item .tourmaster-payment-step-item-icon{ background: #161616; }
+.gdlr-core-pb-livemode .tourmaster-tour-style-1 .tourmaster-booking-tab-title{ background-color: #f5f5f5; }
+.gdlr-core-pb-livemode .tourmaster-booking-tab-title-item{ color: #929292; }
+.gdlr-core-pb-livemode .tourmaster-booking-tab-title-item.tourmaster-active{ color: #242424; }
+.gdlr-core-pb-livemode .tourmaster-tour-style-2 .tourmaster-booking-tab-title-item.tourmaster-active,
+.gdlr-core-pb-livemode .tourmaster-tour-style-blank .tourmaster-booking-tab-title-item.tourmaster-active{ border-color: #5b7a67; }
+.gdlr-core-pb-livemode .tourmaster-enquiry-form .tourmaster-enquiry-form-message.tourmaster-success{ background-color: #f1f8ff; }
+.gdlr-core-pb-livemode .tourmaster-enquiry-form .tourmaster-enquiry-form-message.tourmaster-success{ border-color: #e1ebfe; }
+.gdlr-core-pb-livemode .tourmaster-enquiry-form .tourmaster-enquiry-form-message.tourmaster-success{ color: #758ea8; }
+.gdlr-core-pb-livemode .tourmaster-enquiry-form .tourmaster-enquiry-form-message.tourmaster-failed{ background-color: #fff1f1; }
+.gdlr-core-pb-livemode .tourmaster-enquiry-form .tourmaster-enquiry-form-message.tourmaster-failed{ border-color: #fee1e1; }
+.gdlr-core-pb-livemode .tourmaster-urgency-message{ color: #ffffff; }
+.gdlr-core-pb-livemode .tourmaster-urgency-message{ background-color: #343434; }
+.gdlr-core-pb-livemode .tourmaster-enquiry-form .tourmaster-enquiry-form-message.tourmaster-failed{ color: #a87575; }
+.gdlr-core-pb-livemode .tourmaster-body .ui-datepicker{ background-color: #f5f5f5; }
+.gdlr-core-pb-livemode .tourmaster-body .ui-datepicker{ border-color: #ebebeb; }
+.gdlr-core-pb-livemode .tourmaster-body .ui-datepicker table tr th{ color: #808080; }
+.gdlr-core-pb-livemode .tourmaster-body .ui-datepicker table tr td a,
+.gdlr-core-pb-livemode .tourmaster-body .ui-datepicker-prev,
+.gdlr-core-pb-livemode .tourmaster-body .ui-datepicker-next{ background-color: #ffffff; }
+.gdlr-core-pb-livemode .tourmaster-body .ui-datepicker table tr td a,
+.gdlr-core-pb-livemode .tourmaster-body .ui-datepicker-prev,
+.gdlr-core-pb-livemode .tourmaster-body .ui-datepicker-next{ color: #5b5b5b; }
+.gdlr-core-pb-livemode .tourmaster-body .ui-datepicker table tr td a.ui-state-disable{ color: #c0c0c0; }
+.gdlr-core-pb-livemode .tourmaster-body .ui-datepicker-prev.ui-state-disabled,
+.gdlr-core-pb-livemode .tourmaster-body .ui-datepicker-prev.ui-state-disabled:hover,
+.gdlr-core-pb-livemode .tourmaster-body .ui-datepicker-next.ui-state-disabled,
+.gdlr-core-pb-livemode .tourmaster-body .ui-datepicker table tr td{ color: #c0c0c0; }
+.gdlr-core-pb-livemode .tourmaster-tour-item .tourmaster-tour-title a{ color: #333333; }
+.gdlr-core-pb-livemode .tourmaster-tour-item .tourmaster-tour-title a:hover{ color: #333333; }
+.gdlr-core-pb-livemode .tourmaster-tour-order-filterer-wrap{ background-color: #ffffff; }
+.gdlr-core-pb-livemode .tourmaster-tour-order-filterer-wrap .tourmaster-combobox-wrap select{ background-color: #ffffff; }
+.gdlr-core-pb-livemode .tourmaster-body .tourmaster-tour-order-filterer-style a{ color: #adadad; }
+.gdlr-core-pb-livemode .tourmaster-tour-medium.tourmaster-tour-frame .tourmaster-tour-medium-inner,
+.gdlr-core-pb-livemode .tourmaster-tour-full.tourmaster-tour-frame .tourmaster-tour-content-wrap,
+.gdlr-core-pb-livemode .tourmaster-tour-grid.tourmaster-tour-frame .tourmaster-tour-content-wrap{ background: #ffffff; }
+.gdlr-core-pb-livemode .tourmaster-tour-item .tourmaster-tour-discount-price,
+.gdlr-core-pb-livemode .tourmaster-tour-item .tourmaster-tour-price .tourmaster-tail{ color: #5b7a67; }
+.gdlr-core-pb-livemode .tourmaster-tour-item .tourmaster-tour-price-wrap.tourmaster-discount .tourmaster-tour-price,
+.gdlr-core-pb-livemode .tourmaster-tour-item .tourmaster-tour-price-wrap.tourmaster-discount .tourmaster-tour-price .tourmaster-tail{ color: #a7a7a7; }
+.gdlr-core-pb-livemode .tourmaster-tour-grid .tourmaster-tour-price-bottom-wrap{ background-color: #e7e7e7; }
+.gdlr-core-pb-livemode .tourmaster-tour-grid .tourmaster-tour-price-bottom-wrap .tourmaster-tour-price-head{ color: #5c5c5c; }
+.gdlr-core-pb-livemode .tourmaster-tour-grid .tourmaster-tour-price-bottom-wrap.tourmaster-with-discount .tourmaster-tour-price{ color: #989898; }
+.gdlr-core-pb-livemode .tourmaster-tour-review-item .tourmaster-tour-review-item-title a,
+.gdlr-core-pb-livemode .tourmaster-tour-review-item .tourmaster-tour-review-item-title a:hover{ color: #313131; }
+.gdlr-core-pb-livemode .tourmaster-tour-review-item .tourmaster-tour-review-item-user{ color: #5f5f5f; }
+.gdlr-core-pb-livemode .tourmaster-content-navigation-item-outer{ background-color: #ebebeb; }
+.gdlr-core-pb-livemode .tourmaster-content-navigation-item .tourmaster-content-navigation-tab{ color: #9a9a9a; }
+.gdlr-core-pb-livemode .tourmaster-content-navigation-item .tourmaster-content-navigation-tab.tourmaster-active,
+.gdlr-core-pb-livemode .tourmaster-content-navigation-item .tourmaster-content-navigation-tab:hover{ color: #1b1b1b; }
+.gdlr-core-pb-livemode .tourmaster-tour-search-item-head .tourmaster-tour-search-item-head-title,
+.gdlr-core-pb-livemode .tourmaster-tour-search-item .tourmaster-type-filter-title,
+.gdlr-core-pb-livemode .tourmaster-tour-search-item-style-2 .tourmaster-type-filter-title i.icon_plus{ color: #5b7a67; }
+.gdlr-core-pb-livemode .tourmaster-tour-search-item .tourmaster-type-filter-title i,
+.gdlr-core-pb-livemode .tourmaster-tour-search-item-head .tourmaster-tour-search-item-head-title i{ color: #212121; }
+.gdlr-core-pb-livemode .tourmaster-tour-search-wrap .tourmaster-tour-search-field input[type="text"],
+.gdlr-core-pb-livemode .tourmaster-tour-search-wrap .tourmaster-tour-search-field input[type="text"]:focus,
+.gdlr-core-pb-livemode .tourmaster-tour-search-wrap .tourmaster-tour-search-field select{ background-color: #ffffff; }
+.gdlr-core-pb-livemode .tourmaster-tour-search-wrap .tourmaster-tour-search-field input[type="text"],
+.gdlr-core-pb-livemode .tourmaster-tour-search-wrap .tourmaster-tour-search-field select,
+.gdlr-core-pb-livemode .tourmaster-tour-search-item-style-2 .tourmaster-tour-search-wrap .tourmaster-datepicker-wrap:after,
+.gdlr-core-pb-livemode .tourmaster-tour-search-wrap select{ border-color: #e5e5e5; }
+.gdlr-core-pb-livemode .tourmaster-tour-search-wrap .tourmaster-tour-search-title{ color: #ffffff; }
+.gdlr-core-pb-livemode .tourmaster-tour-search-wrap label{ color: #383838; }
+.gdlr-core-pb-livemode .tourmaster-tour-search-wrap .tourmaster-tour-search-field input[type="text"],
+.gdlr-core-pb-livemode .tourmaster-tour-search-wrap .tourmaster-tour-search-field input[type="text"]:focus,
+.gdlr-core-pb-livemode .tourmaster-tour-search-wrap select{ color: #7f7f7f; }
+.gdlr-core-pb-livemode .tourmaster-tour-search-wrap input::-webkit-input-placeholder{  color: #7f7f7f; }
+.gdlr-core-pb-livemode .tourmaster-tour-search-wrap input::-moz-placeholder{  color: #7f7f7f; }
+.gdlr-core-pb-livemode .tourmaster-tour-search-wrap input:-ms-input-placeholder{  color: #7f7f7f; }
+.gdlr-core-pb-livemode .tourmaster-tour-search-wrap input:-moz-placeholder{  color: #7f7f7f; }
+.gdlr-core-pb-livemode .tourmaster-tour-search-wrap .tourmaster-datepicker-wrap:after,
+.gdlr-core-pb-livemode .tourmaster-tour-search-wrap .tourmaster-tour-search-field-inner:after,
+.gdlr-core-pb-livemode .tourmaster-tour-search-wrap .tourmaster-combobox-wrap:after{ color: #383838; }
+.gdlr-core-pb-livemode .tourmaster-tour-search-wrap input.tourmaster-tour-search-submit[type="submit"],
+.gdlr-core-pb-livemode .tourmaster-tour-search-item.tourmaster-style-column-full-background .tourmaster-tour-search-field-submit .tourmaster-content{ color: #ffffff; }
+.gdlr-core-pb-livemode .tourmaster-tour-search-wrap.tourmaster-with-frame{ background-color: #ffffff; }
+.gdlr-core-pb-livemode .tourmaster-type-filter-term .tourmaster-type-filter-display,
+.gdlr-core-pb-livemode .tourmaster-search-style-2 .tourmaster-tour-order-filterer-wrap .tourmaster-combobox-wrap select,
+.gdlr-core-pb-livemode .tourmaster-search-style-2 .tourmaster-tour-search-field-keywords .tourmaster-tour-search-field-inner:after,
+.gdlr-core-pb-livemode .tourmaster-search-style-2 .tourmaster-tour-search-field .tourmaster-combobox-wrap:after{ color: #878787; }

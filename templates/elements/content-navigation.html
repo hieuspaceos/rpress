@@ -1,0 +1,27 @@
+{# tourmaster pb-element-content-navigation::get_content — tab nav bar with slide bar/dot #}
+{%- set tabs = opts.tabs if (opts.tabs is sequence and opts.tabs is not string) else [] -%}
+{%- if not tabs -%}
+  {%- set tabs = [ {"id": "section-1", "title": "Section 1"}, {"id": "section-2", "title": "Section 2"} ] -%}
+{%- endif -%}
+{%- set css_atts = [] -%}
+{%- if opts['background-color'] %}{% set css_atts = css_atts + ['background-color:' ~ opts['background-color']] %}{% endif -%}
+{%- if opts['border-color'] %}{% set css_atts = css_atts + ['border-color:' ~ opts['border-color']] %}{% endif -%}
+{%- if opts['enable-bottom-border'] == 'enable' -%}
+  {% set css_atts = css_atts + ['border-bottom-width:1px','border-bottom-style:solid'] %}
+{%- endif -%}
+<div class="tourmaster-content-navigation-item-wrap clearfix" {% if opts['padding-bottom'] and opts['padding-bottom'] != '30px' %} style="padding-bottom:{{ opts['padding-bottom'] }}"{% endif %}{% if opts.id %} id="{{ opts.id }}"{% endif %} >
+<div class="tourmaster-content-navigation-item-outer" id="tourmaster-content-navigation-item-outer" {% if css_atts %} style="{{ css_atts | join(';') }}"{% endif %} >
+<div class="tourmaster-content-navigation-item-container tourmaster-container" >
+<div class="tourmaster-content-navigation-item tourmaster-item-pdlr" >
+{%- for tab in tabs %}
+<a class="tourmaster-content-navigation-tab {% if loop.first %}tourmaster-active {% endif %}" style="{% if opts['font-size'] %}font-size:{{ opts['font-size'] }};{% endif %}{% if opts['font-weight'] %}font-weight:{{ opts['font-weight'] }};{% endif %}{% if opts['letter-spacing'] %}letter-spacing:{{ opts['letter-spacing'] }};{% endif %}{% if opts['text-transform'] %}text-transform:{{ opts['text-transform'] }};{% endif %}{% if opts['tab-padding'] %}padding:{{ opts['tab-padding'] }};{% endif %}" href="#{{ tab.id or '' }}" >{{ tab.title or '' }}</a>
+{%- endfor %}
+{%- if not opts['slide-bar-style'] or opts['slide-bar-style'] == 'bar' %}
+<div class="tourmaster-content-navigation-slider" {% if opts['slide-bar-color'] %} style="background-color:{{ opts['slide-bar-color'] }}"{% endif %} ></div>
+{%- elif opts['slide-bar-style'] == 'dot' %}
+<div class="tourmaster-content-navigation-slider tourmaster-style-dot" ><span {% if opts['slide-bar-color'] %} style="background-color:{{ opts['slide-bar-color'] }}"{% endif %} ></span></div>
+{%- endif %}
+</div>
+</div>
+</div>
+</div>

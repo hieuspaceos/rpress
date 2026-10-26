@@ -1,0 +1,1 @@
+SELECT name FROM post_terms WHERE post_id=?1 AND taxonomy=?2 ORDER BY slug

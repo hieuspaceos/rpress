@@ -1,0 +1,48 @@
+{% set st = opts.style|default('left', true) %}{% set carousel = opts.carousel|default('disable', true) %}{% set wf = opts['with-frame']|default('disable', true) %}{% set col = opts.column|default('3', true) %}{% if st == 'image-left' %}{% set col = '1' %}{% endif %}
+{# — testimonial tab (chat style used on site; generic path covers others) — #}
+{% macro tabitem(tab) %}
+  {% if st == 'chat' %}
+  <div class="gdlr-core-testimonial clearfix gdlr-core-outer-frame-element" >
+    {% if tab.content %}<div class="gdlr-core-testimonial-content gdlr-core-info-font gdlr-core-skin-content" {{ style('font-size', opts['content-size'] if opts['content-size'] and opts['content-size'] != '28px' else '', 'font-style', opts['content-font-style'], 'font-weight', opts['content-font-weight'], 'letter-spacing', opts['content-letter-spacing'], 'color', opts['content-color'], 'padding-bottom', opts['content-bottom-padding'] if opts['content-bottom-padding'] != '0px' else '', 'background', opts['chat-frame-background']) }} >{{ tab.content }}<div class="gdlr-core-testimonial-content-chat" {{ style('border-top-color', opts['chat-frame-background']) }} ></div></div>{% endif %}
+    {% if tab.rating %}<span class="gdlr-core-rating" {{ style('font-size', opts['rating-font-size'], 'margin-top', opts['rating-top-margin']) }}>{% set r = tab.rating|float * 2 %}{% for i in range(2,11,2) %}<i class="fa {% if r - i >= -0.5 %}fa-star{% elif r - i <= -1.5 %}fa-star-o{% else %}fa-star-half-o{% endif %}" {{ style('color', opts['star-rating-color']) }} ></i>{% endfor %}</span>{% endif %}
+    {% if tab.title %}<div class="gdlr-core-testimonial-title gdlr-core-title-font gdlr-core-skin-title" {{ style('color', opts['name-color'], 'font-size', opts['name-size'], 'font-weight', opts['name-font-weight'], 'font-style', opts['name-font-style'], 'letter-spacing', opts['name-letter-spacing'], 'text-transform', opts['name-text-transform']) }} >{{ tab.title }}</div>{% endif %}
+    {% if tab.position %}<div class="gdlr-core-testimonial-position gdlr-core-info-font gdlr-core-skin-caption" {{ style('color', opts['position-color'], 'font-size', opts['caption-size'], 'font-style', opts['position-font-style'], 'font-weight', opts['position-font-weight']) }} >{{ tab.position }}</div>{% endif %}
+    {% if tab.image %}<div class="gdlr-core-testimonial-author-image gdlr-core-media-image" {{ style('width', opts['thumbnail-width']) }} ><img src="{{ media_url(tab.image) }}" alt="{{ media_alt(tab.image)|e }}" /></div>{% endif %}
+  </div>
+  {% else %}
+  <div class="gdlr-core-testimonial clearfix{% if wf == 'enable' or st == 'block' %} gdlr-core-with-frame{% endif %}" >
+    {% if wf == 'enable' or st == 'block' %}<div class="gdlr-core-testimonial-frame clearfix gdlr-core-skin-e-background" {{ style('border-radius', opts['frame-border-radius'], 'background-color', opts['frame-background-color'], 'padding', opts['frame-padding']) }} ><div class="gdlr-core-testimonial-frame-border" {{ style('border-color', opts['frame-border-color'], 'border-radius', opts['frame-border-radius']) }} ></div>{% endif %}
+    <div class="gdlr-core-testimonial-content-wrap" >
+      {% if st != 'block' and tab.content %}<div class="gdlr-core-testimonial-content gdlr-core-info-font gdlr-core-skin-content" {{ style('font-size', opts['content-size'] if opts['content-size'] and opts['content-size'] != '28px' else '', 'line-height', opts['content-line-height'], 'font-style', opts['content-font-style'], 'font-weight', opts['content-font-weight'], 'letter-spacing', opts['content-letter-spacing'], 'color', opts['content-color'], 'padding-bottom', opts['content-bottom-padding'] if opts['content-bottom-padding'] != '0px' else '') }} >{% if st == 'left-bg' %}<div class="gdlr-core-testimonial-quote gdlr-core-quote-font gdlr-core-left"></div>{% endif %}{{ tab.content }}</div>{% endif %}
+      <div class="gdlr-core-testimonial-author-wrap clearfix" >
+        {% if st not in ['left-2','center-2'] and tab.image %}<div class="gdlr-core-testimonial-author-image gdlr-core-media-image" {{ style('width', opts['thumbnail-width']) }} ><img src="{{ media_url(tab.image) }}" alt="{{ media_alt(tab.image)|e }}" /></div>{% endif %}
+        <div class="gdlr-core-testimonial-author-content" >
+        {% if tab.title %}<div class="gdlr-core-testimonial-title gdlr-core-title-font gdlr-core-skin-title" {{ style('color', opts['name-color'], 'font-size', opts['name-size'], 'font-weight', opts['name-font-weight'], 'font-style', opts['name-font-style'], 'letter-spacing', opts['name-letter-spacing'], 'text-transform', opts['name-text-transform']) }} >{{ tab.title }}</div>{% endif %}
+        {% if tab.position or tab.rating %}<div class="gdlr-core-testimonial-position gdlr-core-info-font gdlr-core-skin-caption" {{ style('color', opts['position-color'], 'font-size', opts['caption-size'], 'font-style', opts['position-font-style'], 'font-weight', opts['position-font-weight']) }} >{% if tab.rating %}<span class="gdlr-core-rating{% if st in ['left','left-2','left-bg'] and opts['rating-position'] %} gdlr-core-{{ opts['rating-position'] }}{% endif %}" {{ style('font-size', opts['rating-font-size'], 'margin-top', opts['rating-top-margin']) }}>{% set r = tab.rating|float * 2 %}{% for i in range(2,11,2) %}<i class="fa {% if r - i >= -0.5 %}fa-star{% elif r - i <= -1.5 %}fa-star-o{% else %}fa-star-half-o{% endif %}" {{ style('color', opts['star-rating-color']) }} ></i>{% endfor %}</span>{% endif %}{% if tab.position %}{{ tab.position }}{% endif %}</div>{% endif %}
+        </div>
+        {% if st in ['left-2','center-2'] and tab.image %}<div class="gdlr-core-testimonial-author-image gdlr-core-media-image" {{ style('width', opts['thumbnail-width']) }} ><img src="{{ media_url(tab.image) }}" alt="{{ media_alt(tab.image)|e }}" /></div>{% endif %}
+      </div>
+      {% if st == 'block' and tab.content %}<div class="gdlr-core-testimonial-content gdlr-core-info-font gdlr-core-skin-content" >{{ tab.content }}</div>{% endif %}
+    </div>
+    {% if wf == 'enable' or st == 'block' %}</div>{% endif %}
+  </div>
+  {% endif %}
+{% endmacro %}
+<div class="gdlr-core-testimonial-item gdlr-core-item-pdb clearfix gdlr-core-testimonial-style-{{ st }}{% if st == 'center-2' %} gdlr-core-layout-{{ opts['center-2-layout']|default('normal', true) }}{% endif %}{% if carousel == 'enable' %} gdlr-core-item-pdlr{% endif %}{% if opts.class %} {{ opts.class }}{% endif %}" {% if opts['padding-bottom'] and opts['padding-bottom'] != pdb %}{{ style('padding-bottom', opts['padding-bottom']) }}{% endif %}{% if opts.id %} id="{{ opts.id|e }}" {% endif %} >
+{% if opts.title %}
+  {% if st in ['center','left-2'] and carousel == 'disable' %}<div class="gdlr-core-block-item-title-wrap gdlr-core-center-align"><h3 class="gdlr-core-block-item-title" >{{ opts.title }}</h3></div>
+  {% elif st not in ['center','left-2'] %}<div class="gdlr-core-testimonial-item-title-wrap {% if carousel != 'enable' %}gdlr-core-item-mglr{% endif %}" {{ style('margin-bottom', opts['title-wrap-bottom-margin']) }} ><h3 class="gdlr-core-testimonial-item-title" {{ style('font-size', opts['title-size'] if opts['title-size'] and opts['title-size'] != '28px' else '', 'font-weight', opts['title-font-weight'], 'text-transform', opts['title-text-transform'] if opts['title-text-transform'] and opts['title-text-transform'] != 'uppercase' else '', 'letter-spacing', opts['title-letter-spacing'], 'color', opts['title-color']) }} >{{ opts.title }}</h3></div>{% endif %}
+{% endif %}
+{% if carousel == 'disable' or carousel == 'masonry' %}
+  {% set tcol = (60 / col|int)|round|int %}
+  <div class="gdlr-core-testimonial-item-holder gdlr-core-js-2 clearfix" data-layout="{% if carousel == 'disable' %}fitrows{% else %}masonry{% endif %}" >
+  {% set ns = namespace(cnt=0) %}
+  {% for tab in opts.tabs|default([], true) %}
+  <div class="gdlr-core-testimonial-column gdlr-core-item-pdlr gdlr-core-item-mgb gdlr-core-item-list gdlr-core-column-{{ tcol }}{% if ns.cnt % 60 == 0 %} gdlr-core-column-first{% endif %}" >{{ tabitem(tab) }}</div>
+  {% set ns.cnt = ns.cnt + tcol %}
+  {% endfor %}
+  </div>
+{% else %}
+  <div class="gdlr-core-flexslider flexslider gdlr-core-js-2{% if opts['carousel-overflow'] %} gdlr-core-overflow-{{ opts['carousel-overflow'] }}{% endif %}{% if opts['carousel-navigation'] in ['bullet','both','touch-navigation-bullet','navigation-inner-bullet'] %} gdlr-core-has-bullet{% if opts['carousel-bullet-style'] != 'default' %} gdlr-core-bullet-style-{{ opts['carousel-bullet-style'] }}{% endif %}{% endif %}" data-type="carousel" {% if col %}data-column="{{ col }}" {% endif %}{% if opts['carousel-scrolling-item-amount'] %}data-move="{{ opts['carousel-scrolling-item-amount'] }}" {% endif %}{% if opts['carousel-pausetime'] %}data-pausetime="{{ opts['carousel-pausetime'] }}" {% endif %}{% if opts['carousel-slidespeed'] %}data-slidespeed="{{ opts['carousel-slidespeed'] }}" {% endif %}data-nav="{{ opts['carousel-navigation']|default('navigation', true) }}" {% if opts['carousel-start-at'] %}data-start-at="{{ opts['carousel-start-at'] }}" {% endif %}{% if opts['carousel-bullet-top-margin'] %}data-controls-top-margin="{{ opts['carousel-bullet-top-margin'] }}" {% endif %}{% if opts['carousel-item-margin'] %}data-margin="{{ opts['carousel-item-margin'] }}" {% endif %}{% if opts['carousel-autoslide'] and opts['carousel-autoslide'] != 'enable' %}data-disable-autoslide="1" {% endif %}><ul class="slides" >{% for tab in opts.tabs|default([], true) %}<li class="gdlr-core-item-mglr" >{{ tabitem(tab) }}</li>{% endfor %}</ul></div>
+{% endif %}
+</div>

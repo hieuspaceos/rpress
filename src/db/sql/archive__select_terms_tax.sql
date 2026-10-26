@@ -1,0 +1,1 @@
+SELECT id, slug, name FROM terms WHERE taxonomy=?1 ORDER BY id

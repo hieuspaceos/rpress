@@ -1,0 +1,142 @@
+/* CMS overrides — loaded last, after vendored WP admin css.
+   Keep vendored files untouched; all local fixes live here. */
+
+/* Admin menu: always pinned to the viewport (WP pins via sticky-menu JS,
+   which is unreliable here — pin it in CSS instead). Menu scrolls its own
+   overflow when taller than the viewport so bottom items stay reachable. */
+#adminmenuwrap {
+    position: fixed !important;
+    top: 32px;
+    bottom: 0;
+    left: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    scrollbar-width: none;
+}
+#adminmenuwrap::-webkit-scrollbar { display: none; }
+
+/* List table toolbar: keep bulk/filters/search/pager on one row like WP.
+   .tablenav is a float layout in WP; our markup nests .search-box inside
+   it, so use flex to guarantee a single line. */
+.tablenav.top {
+    display: flex;
+    align-items: center;
+    flex-wrap: nowrap;
+    gap: 8px;
+}
+.tablenav.top > .actions { flex: 0 0 auto; }
+.tablenav.top > .search-box {
+    float: none;
+    margin: 0 0 0 auto;
+    flex: 0 0 auto;
+}
+.tablenav.top > .tablenav-pages { float: none; margin: 0; }
+.tablenav.top > .view-switch { float: none; margin: 0; }
+
+/* Media attachment modal: WP's dialog is a centered card, not a
+   near-fullscreen frame — shrink to a readable size. */
+#att-modal > div {
+    inset: auto !important;
+    top: 50% !important;
+    left: 50% !important;
+    transform: translate(-50%, -50%);
+    width: min(920px, 92vw);
+    max-height: 82vh;
+    box-shadow: 0 5px 30px rgba(0,0,0,.4);
+}
+#att-modal #am-preview img {
+    max-height: 52vh;
+}
+
+/* Post editor: media buttons + TinyMCE toolbar pin via the wp-pin class
+   toggled by scroll JS in posts.rs (sticky CSS can't do this — the
+   toolbar's parent is only as tall as the toolbar itself). */
+#wp-content-editor-tools.wp-pin {
+    position: fixed;
+    top: 32px;
+    z-index: 100;
+    background: #f0f0f0;
+    border-bottom: 1px solid #e5e5e5;
+}
+.mce-toolbar-grp.wp-pin {
+    position: fixed !important;
+    top: 68px;
+    z-index: 99;
+    background: #fff;
+    border-bottom: 1px solid #e5e5e5;
+}
+
+/* Editor tools: media-buttons + Visual/Code tabs share one row like WP
+   (tabs are absolutely positioned at right in core; here keep flex so
+   they never wrap to a second line — the pinned toolbar's offset is
+   measured from this row's height). */
+#wp-content-editor-tools {
+    display: flex;
+    align-items: center;
+    padding: 8px 0;
+}
+#wp-content-editor-tools #media-buttons {
+    flex: 0 0 auto;
+    padding-bottom: 0;
+}
+#wp-content-editor-tools .wp-editor-tabs {
+    margin-left: auto;
+    padding-top: 0;
+}
+
+/* The quicktags toolbar is WP's HTML-mode button row. We don't ship the
+   quicktags script, so it renders as a permanent empty band above
+   TinyMCE — hide it. */
+#wp-content-editor-container .quicktags-toolbar {
+    display: none;
+}
+
+/* Editor content (TinyMCE iframe — also loaded there via content_css):
+   image alignment + caption layout matching wp-content.css. The vendored
+   editor.min.css lacks these, so align buttons flip classes with no
+   visible effect. */
+/* Left/right keep block flow with auto margins (not float) so adjacent
+   text never squeezes into a sliver beside a near-full-width caption. */
+.mce-content-body img.alignleft,
+.mce-content-body .wp-caption.alignleft {
+    display: block;
+    margin-left: 0 !important;
+    margin-right: auto !important;
+}
+.mce-content-body img.alignright,
+.mce-content-body .wp-caption.alignright {
+    display: block;
+    margin-left: auto !important;
+    margin-right: 0 !important;
+}
+.mce-content-body img.aligncenter,
+.mce-content-body .wp-caption.aligncenter {
+    display: block;
+    margin-left: auto !important;
+    margin-right: auto !important;
+}
+.mce-content-body .wp-caption {
+    max-width: 100%;
+    background: #f1f1f1;
+    padding-top: 4px;
+    margin: 10px 0;
+}
+.mce-content-body .wp-caption dd {
+    margin: 0;
+    padding: 0 4px 5px;
+    font-size: 11px;
+    line-height: 17px;
+    color: #444;
+}
+
+/* Sidebar: pin the whole metabox column under the adminbar while the
+   editor is in view (wp-pin toggled by scroll JS in posts.rs). The column
+   is taller than the viewport, so it scrolls its own overflow — every
+   metabox stays reachable without losing the main scroll position. */
+#postbox-container-1.wp-pin {
+    position: fixed !important;
+    top: 32px;
+    bottom: 0;
+    overflow-y: auto;
+    z-index: 50;
+}

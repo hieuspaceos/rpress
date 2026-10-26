@@ -1,0 +1,19 @@
+{% set fields = opts.fields|default([], true) %}
+{% set st = opts.style|default('column', true) %}
+<div class="tourmaster-tour-search-item tourmaster-search-style-{{ st }} tourmaster-item-pdlr tourmaster-item-pdb{% if opts['with-frame'] == 'enable' %} tourmaster-with-frame{% endif %}{% if opts.class %} {{ opts.class }}{% endif %}" {% if opts.id %}id="{{ opts.id|e }}" {% endif %}{% if opts['padding-bottom'] and opts['padding-bottom'] != pdb %}{{ style('padding-bottom', opts['padding-bottom']) }}{% endif %}>
+{% if opts.title %}<h3 class="tourmaster-tour-search-item-title">{{ opts.title }}</h3>{% endif %}
+<form class="tourmaster-tour-search-form" method="get" action="{{ site.search_url|default(site_url ~ '/tour-search/', true) }}">
+<div class="tourmaster-tour-search-wrap clearfix tourmaster-search-column-style{% if opts['input-size'] %} tourmaster-search-{{ opts['input-size'] }}{% endif %}{% if opts['input-box-style'] %} tourmaster-search-{{ opts['input-box-style'] }}{% endif %}">
+{% for f in fields %}
+  {% set label = f|replace('duracion','Duración')|replace('duree','Durée')|replace('region-es','Región')|replace('region','Región')|replace('estilo','Estilo')|replace('style','Style')|replace('perfil','Perfil')|replace('profil','Profil') %}
+  <div class="tourmaster-tour-search-field tourmaster-tour-search-field-{{ f|e }} tourmaster-column-15">
+    <select name="{{ f|e }}"><option value="">{{ label }}</option></select>
+  </div>
+{% endfor %}
+{% if opts['enable-rating-field'] == 'enable' %}
+  <div class="tourmaster-tour-search-field tourmaster-tour-search-field-rating"><label>Rating</label><select name="rating"><option value="">Rating</option><option value="5">5</option><option value="4">4+</option><option value="3">3+</option></select></div>
+{% endif %}
+  <div class="tourmaster-tour-search-submit"><input type="submit" value="Search"></div>
+</div>
+</form>
+</div>

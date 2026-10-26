@@ -1,0 +1,1 @@
+SELECT id, path, COALESCE(alt,'') FROM media ORDER BY id DESC LIMIT 60
