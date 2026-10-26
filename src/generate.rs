@@ -7,6 +7,7 @@ use anyhow::{Context, Result};
 use rusqlite::Connection;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 pub fn atomic_write(path: &Path, contents: impl AsRef<[u8]>) -> Result<()> {
@@ -53,6 +54,22 @@ pub fn run(db: &Path, templates: &Path, out: &Path, site_url: &str) -> Result<()
         .prepare("SELECT modified_at FROM posts WHERE id=?1")?;
 
     let lang_cfg = crate::lang::config(&conn);
+
+    // Page-builder posts (Elementor & co): harvest the origin's rendered
+    // HTML instead of re-rendering — fidelity by construction. Table is
+    // written by import; absent on dbs imported before this feature.
+    let mut harvest: std::collections::HashSet<i64> = std::collections::HashSet::new();
+    let legacy_origin: String = conn
+        .query_row("SELECT value FROM settings WHERE key='legacy_origin'", [], |r| r.get(0))
+        .unwrap_or_default();
+    if let Ok(mut s) = conn.prepare("SELECT post_id FROM harvest_posts") {
+        if let Ok(rows) = s.query_map([], |r| r.get(0)) {
+            harvest = rows.flatten().collect();
+        }
+    }
+    let mut harvested = 0u64;
+    let mut harvest_failed = 0u64;
+
     let mut raw_redirects: Vec<(String, String)> = Vec::new(); // raw slug → canonical (tours)
     for (id, slug, lang, kind) in &rows {
         // Tours write at the canonical display_slug path — the same value
@@ -75,7 +92,23 @@ pub fn run(db: &Path, templates: &Path, out: &Path, site_url: &str) -> Result<()
         }
         let rel = rel_path_with_cfg(&lang_cfg, *id, front, lang, kind, &wslug);
         let dest = out.join(&rel);
-        match render::render_slug(db, templates, slug, lang, kind, site_url) {
+        let rendered = if harvest.contains(id) && !legacy_origin.is_empty() {
+            let path = rel.to_string_lossy().replace("index.html", "");
+            match harvest_page(&legacy_origin, &path, site_url) {
+                Ok(h) => {
+                    harvested += 1;
+                    Some(Ok((h, "harvested".to_string())))
+                }
+                Err(e) => {
+                    harvest_failed += 1;
+                    eprintln!("[harvest] {path} failed: {e:#} — rendering normally");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        match rendered.unwrap_or_else(|| render::render_slug(db, templates, slug, lang, kind, site_url)) {
             Ok((html, _status)) => {
                 atomic_write(&dest, html)?;
                 // sibling index.md — the markdown content-negotiation target
@@ -217,6 +250,9 @@ pub fn run(db: &Path, templates: &Path, out: &Path, site_url: &str) -> Result<()
     write_llms_txt(out, &conn, site_url, "voyage")?;
 
     let dur = t0.elapsed();
+    if !harvest.is_empty() {
+        println!("harvest: {harvested} fetched, {harvest_failed} failed (of {} builder posts)", harvest.len());
+    }
     println!(
         "generate: {written} pages, {failed} failed, {} in {:.1}s → {}",
         urls.len(),
@@ -390,6 +426,29 @@ pub(crate) fn write_404(out: &Path, templates: &Path, conn: &Connection, site_ur
         .render(minijinja::Value::from_serialize(serde_json::Value::Object(ctx)))?;
     atomic_write(&out.join("404.html"), html)?;
     Ok(())
+}
+
+/// Fetch the origin's rendered page for a builder post and rewrite origin
+/// URLs to the local site_url. Serves the builder's own output — fidelity
+/// by construction; links still resolve locally (assets 307-fallback).
+fn harvest_page(origin: &str, path: &str, site_url: &str) -> Result<String> {
+    let base = origin.trim_end_matches('/');
+    let url = format!("{base}/{}", path.trim_start_matches('/'));
+    let o = Command::new("curl")
+        .args(["-sfL", "--max-time", "30", "-A", "rpress-harvest/1.0", &url])
+        .output()
+        .with_context(|| format!("curl {url}"))?;
+    if !o.status.success() {
+        anyhow::bail!("{url} → http {}", o.status);
+    }
+    let mut html = String::from_utf8_lossy(&o.stdout).into_owned();
+    if html.len() < 500 {
+        anyhow::bail!("{url} too short ({}b) — refusing", html.len());
+    }
+    let local = site_url.trim_end_matches('/');
+    html = html.replace(base, local);
+    html = html.replace(&base.replace('/', "\\/"), &local.replace('/', "\\/"));
+    Ok(html)
 }
 
 /// Run `pagefind --site <out>` when the binary is installed (6.5).

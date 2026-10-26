@@ -236,7 +236,7 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
         })
         .filter(|l| languages.contains(l))
         .or_else(|| languages.iter().next().cloned())
-        .unwrap_or_else(|| "fr".into());
+        .unwrap_or_else(|| "en".into());
 
     // post_translations: description = {lang: object_id}. Keep the legacy
     // fr/es pair table for old admin screens, and also populate the generic
@@ -326,6 +326,14 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
     )?;
     let mut stmt_set = tx.prepare(sql!("import__insert_or_replace"))?;
 
+    // Posts whose body was authored in a page builder rpress can't
+    // interpret (Elementor today; the table is the hook for more) — generate
+    // harvests their rendered HTML from the origin instead of re-rendering.
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS harvest_posts(post_id INTEGER PRIMARY KEY)",
+    )?;
+    let mut stmt_h = tx.prepare("INSERT OR IGNORE INTO harvest_posts(post_id) VALUES(?1)")?;
+
     let mut wp_to_cms: HashMap<i64, i64> = HashMap::new();
 
     // posts pass
@@ -388,6 +396,9 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
                     p.content,
                 ])?;
                 wp_to_cms.insert(p.id, p.id);
+                if p.meta.contains_key("_elementor_data") {
+                    stmt_h.execute(params![p.id])?;
+                }
                 for (k, vals) in &p.meta {
                     for mv in vals {
                         stmt_meta.execute(params![p.id, k, mv])?;
@@ -584,11 +595,15 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
     // Expected counts captured at parse time — `import verify` compares the
     // DB against these instead of per-site constants. Counted from the source
     // collections, not the DB, so dropped rows still surface as mismatches.
-    if !languages.is_empty() {
-        let langs = languages.iter().cloned().collect::<Vec<_>>().join(",");
-        stmt_set.execute(params!["languages", langs])?;
-        stmt_set.execute(params!["primary_lang", primary.clone()])?;
+    // Monolingual sites have no `language` taxonomy — declare the set as just
+    // the primary lang so languages/primary_lang are always written and posts
+    // (all assigned `primary`) are never "without lang".
+    if languages.is_empty() {
+        languages.insert(primary.clone());
     }
+    let langs = languages.iter().cloned().collect::<Vec<_>>().join(",");
+    stmt_set.execute(params!["languages", langs])?;
+    stmt_set.execute(params!["primary_lang", primary.clone()])?;
 
     {
         let mut expect: std::collections::BTreeMap<String, i64> = Default::default();
@@ -631,7 +646,7 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
 
     drop((
         stmt_post, stmt_meta, stmt_media, stmt_pt, stmt_comment, stmt_ra, stmt_redir, stmt_menu,
-        stmt_mi, stmt_trans, stmt_trans_member, stmt_term, stmt_ttrans, stmt_set,
+        stmt_mi, stmt_trans, stmt_trans_member, stmt_term, stmt_ttrans, stmt_set, stmt_h,
     ));
     tx.commit()?;
 
