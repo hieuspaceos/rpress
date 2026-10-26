@@ -185,7 +185,9 @@ a test-site clone (~4.9 GB wp-content, 294 MB dump) imports, renders
 core assets local (no remote fallback needed for normal pages). Remaining
 gaps: admin translation editing is still the legacy FR/ES pairing UI
 (public render is already N-language), `term_translations` pairing is
-two-language, and `pagefind` must be installed for site search.
+two-language, and `pagefind` must be installed for site search. The importer also
+populates the `terms` table from `wp_term_taxonomy` (required by
+category widgets and term archives — Polylang internals are skipped).
 
 Some theme-specific markup lives in `templates/` as the reference theme;
 swapping a theme means swapping templates + `www/` assets — see

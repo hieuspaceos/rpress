@@ -305,6 +305,7 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
         sql!("import__insert_or_ignore_11"),
     )?;
     let mut stmt_trans_member = tx.prepare(sql!("import__insert_or_ignore_translation_member"))?;
+    let mut stmt_term = tx.prepare(sql!("import__insert_or_replace_terms"))?;
     let mut stmt_ttrans = tx.prepare(
         sql!("import__insert_or_ignore_12"),
     )?;
@@ -402,6 +403,17 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
     // Rows keep members that exist as real wp_posts (ghost ids = Polylang
     // pointing at deleted posts). A pair with one ghost collapses; a fully
     // ghost group is dropped.
+    // terms table: every wp_term_taxonomy row that is a real site term
+    // (language/translation taxonomies are Polylang internals, not terms).
+    // id = term_id — WP's cat-item-N classes and term_translations use it.
+    for (_tt, (term_id, tax, desc)) in &ttax {
+        if matches!(tax.as_str(), "language" | "post_translations" | "term_translations" | "post_format") {
+            continue;
+        }
+        if let Some((name, slug)) = terms.get(term_id) {
+            stmt_term.execute(params![term_id, tax, slug, name, desc])?;
+        }
+    }
     let all_post_ids: std::collections::HashSet<i64> = posts.iter().map(|p| p.id).collect();
     for (f, e) in &trans_rows {
         if f.is_some_and(|id| !all_post_ids.contains(&id)) || e.is_some_and(|id| !all_post_ids.contains(&id)) {
@@ -576,7 +588,7 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
 
     drop((
         stmt_post, stmt_meta, stmt_media, stmt_pt, stmt_comment, stmt_ra, stmt_redir, stmt_menu,
-        stmt_mi, stmt_trans, stmt_trans_member, stmt_ttrans, stmt_set,
+        stmt_mi, stmt_trans, stmt_trans_member, stmt_term, stmt_ttrans, stmt_set,
     ));
     tx.commit()?;
 
