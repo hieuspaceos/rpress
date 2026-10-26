@@ -81,8 +81,13 @@ WordPress or integrate a specialized provider.
 - **Public intake** — comments and reviews, rate-limited, CORS-scoped.
 - **Markdown mirrors** — every page also serves `GET /<slug>.md` and
   `Accept: text/markdown`; `llms.txt` indexes the whole site.
-- **Multilingual** — `posts.lang` + `post_translations` pairing (FR/ES in the
-  reference site; any language pair works).
+- **Multilingual (N languages)** — languages imported from Polylang into
+  `post_translation_members(group_id, lang, post_id)`; any non-primary
+  language renders under `/<lang>/`, hreflang alternates for every
+  translation member, per-language feeds/search/archives, template fallback
+  `base_<lang>.html` → primary, sidebar/footer per-lang with primary
+  fallback. Public render is N-language; the admin edit screen still
+  exposes the legacy two-language pairing.
 - **SPA- Feel navigation** — `nav.js` prefetch-on-hover + same-origin DOM
   swap; theme JS re-init via the `rpress:swapped` hook.
 - **Agent-ready surface** — deterministic CLI commands, markdown mirrors, and
@@ -128,8 +133,30 @@ layout.
 
 The steps are also available separately: `rpress import parse`,
 `rpress import verify`, `rpress generate`, `rpress user add` — for partial
-reruns and debugging. `migrate` is the happy path; the next release gate is a
-repeatable E2E migration proof from a clean WordPress dump + `wp-content` copy.
+reruns and debugging. `migrate` is the happy path.
+
+## E2E site workflow
+
+For a repeatable dump → assets → import → configure → generate → verify run
+against a **test clone** (never production), use `scripts/e2e-site.sh` with a
+per-site env file — see `WORKFLOW.md` and `sites/_template.env`:
+
+```bash
+cp sites/_template.env sites/mysite.env   # fill source + local URL
+./scripts/e2e-site.sh sites/mysite.env pull       # rsync dump + wp-content + wp-includes
+./scripts/e2e-site.sh sites/mysite.env import     # parse + verify counts
+./scripts/e2e-site.sh sites/mysite.env configure  # local URLs, admin user
+./scripts/e2e-site.sh sites/mysite.env generate   # render cache/
+./scripts/e2e-site.sh sites/mysite.env check      # sampled routes per language
+./scripts/e2e-site.sh sites/mysite.env parity     # origin-vs-local markup gate
+./scripts/e2e-site.sh sites/mysite.env serve      # local server
+```
+
+`configure` records `asset_origin` (missing-asset fallback) and
+`legacy_origin` (render-time URL rewrite), sets `site_url` to the local URL,
+and rewrites plain-text URL columns (`menu_items.url`,
+`redirects.new_url`). `pull` refuses non-test sources unless
+`CLONE_SOURCE_OK=yes`.
 
 ## Layout
 
@@ -140,21 +167,25 @@ src/
   render*.rs    public page render + cache write-back
   generate.rs   bulk warm/refresh (not the serving path)
   intake.rs     public comment/review intake
+  lang.rs       language config + N-language path/template helpers
   sitefx.rs     sitemap, feeds, robots.txt, 404, redirects.map, llms.txt
   schema.rs     DDL owner
-templates/      minijinja templates — admin/ + public theme shells
-www/            persistent public assets (front.css, nav.js, uploads)
+templates/      minijinja templates — admin/ + public theme shells (base_<lang>.html)
+scripts/        e2e-site.sh — repeatable dump→serve workflow per site env
+sites/          per-site env configs (source, local URL, clone opt-in)
+www/            persistent public assets (front.css, nav.js, uploads, wp-includes)
 docs/           architecture, code standards, API reference
 ```
 
 ## Project status
 
-Post-split hardening is complete: `cargo check` passes, `cargo test` has 23
-passing tests, the `rpress` rename is complete across code/docs/scripts, local
-asset serving is path/symlink hardened, and upload/session/cache contracts are
-documented. Extracted production evidence exists from the earlier
-`vps-ssh/cms` deployment path; the remaining release gate is a repeatable E2E
-migration proof in this standalone `rpress` project.
+Post-split hardening is complete and the E2E migration workflow exists:
+a test-site clone (~4.9 GB wp-content, 294 MB dump) imports, renders
+~1240 pages with zero failures, and serves locally with all theme/plugin/
+core assets local (no remote fallback needed for normal pages). Remaining
+gaps: admin translation editing is still the legacy FR/ES pairing UI
+(public render is already N-language), `term_translations` pairing is
+two-language, and `pagefind` must be installed for site search.
 
 Some theme-specific markup lives in `templates/` as the reference theme;
 swapping a theme means swapping templates + `www/` assets — see
