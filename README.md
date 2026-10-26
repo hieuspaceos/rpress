@@ -135,28 +135,49 @@ The steps are also available separately: `rpress import parse`,
 `rpress import verify`, `rpress generate`, `rpress user add` — for partial
 reruns and debugging. `migrate` is the happy path.
 
-## E2E site workflow
+## E2E site workflow — `rpress site`
 
-For a repeatable dump → assets → import → configure → generate → verify run
-against a **test clone** (never production), use `scripts/e2e-site.sh` with a
-per-site env file — see `WORKFLOW.md` and `sites/_template.env`:
+The full WP clone → localhost sandbox → deploy pipeline is built into the
+binary. A wizard prompts on a TTY; every question has a flag twin so agents
+run fully non-interactive:
 
 ```bash
-cp sites/_template.env sites/mysite.env   # fill source + local URL
-./scripts/e2e-site.sh sites/mysite.env pull       # rsync dump + wp-content + wp-includes
-./scripts/e2e-site.sh sites/mysite.env import     # parse + verify counts
-./scripts/e2e-site.sh sites/mysite.env configure  # local URLs, admin user
-./scripts/e2e-site.sh sites/mysite.env generate   # render cache/
-./scripts/e2e-site.sh sites/mysite.env check      # sampled routes per language
-./scripts/e2e-site.sh sites/mysite.env parity     # origin-vs-local markup gate
-./scripts/e2e-site.sh sites/mysite.env serve      # local server
+rpress site init   mysite   # probe ssh | local | archive → sites/mysite.env
+rpress site build  mysite   # pull→import→configure→generate→check, per-phase
+                            # ok/warn/fail + --from <phase> resume + --json
+rpress site serve  mysite   # sandbox + per-language test checklist
+rpress site serve  mysite --smoke    # probe routes on a throwaway port, exit
+rpress site deploy mysite --target static \
+    --domain https://example.com --dest user@host:/var/www/site --yes
+```
+
+- `init` **probes** instead of asking: on `--source ssh` it finds
+  `wp-config.php`, reads DB creds, lists or exports dumps (`wp-cli`/
+  `mysqldump`), and reads `siteurl` from the live DB. `--source local` scans
+  a dir for `*.sql` + `wp-content`; `--source archive` unpacks
+  `.zip/.tar(.gz)/.sql.gz` first. `--ssh` takes `user@host` or a `vps.sh`
+  alias (password/keyfile hosts).
+- `deploy` requires an explicit `--domain` (never derived from the source)
+  and refuses `domain == source origin`. Targets: `static` (rsync docroot —
+  no admin/comments), `pages` (Cloudflare Pages via wrangler), `vps` (full
+  app payload + printed nginx/systemd runbook). `--dry-run` previews.
+- Remote pulls are clone-only: `CLONE_SOURCE_OK=yes` in the env or `--clone-ok`.
+
+### Shell fallback
+
+The same `sites/<name>.env` drives `scripts/e2e-site.sh` — see `WORKFLOW.md`:
+
+```bash
+cp sites/_template.env sites/mysite.env   # or let `site init` write it
+./scripts/e2e-site.sh sites/mysite.env all      # pull→import→configure→generate→check
+./scripts/e2e-site.sh sites/mysite.env parity   # origin-vs-local markup gate
+./scripts/e2e-site.sh sites/mysite.env serve
 ```
 
 `configure` records `asset_origin` (missing-asset fallback) and
 `legacy_origin` (render-time URL rewrite), sets `site_url` to the local URL,
 and rewrites plain-text URL columns (`menu_items.url`,
-`redirects.new_url`). `pull` refuses non-test sources unless
-`CLONE_SOURCE_OK=yes`.
+`redirects.new_url`).
 
 ## Layout
 
