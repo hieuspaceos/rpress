@@ -146,7 +146,7 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
                             | "medium_size_w" | "medium_size_h"
                             | "medium_large_size_w" | "medium_large_size_h"
                             | "large_size_w" | "large_size_h" | "uploads_use_yearmonth"
-                            | "gdlr-core-page-builder-view-mode"
+                            | "gdlr-core-page-builder-view-mode" | "polylang"
                     ) {
                         options.insert(k, mv);
                     }
@@ -223,6 +223,21 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
             }
         }
     }
+    // Site primary language — resolved from Polylang's serialized option
+    // (default_language), falling back to the first detected lang. Needed
+    // before the post loop: posts without a language term get this lang.
+    let primary = options
+        .get("polylang")
+        .and_then(|v| {
+            regex::Regex::new(r#"default_lang(?:uage)?";s:\d+:"([a-z]+)""#)
+                .ok()?
+                .captures(v)
+                .map(|c| c[1].to_string())
+        })
+        .filter(|l| languages.contains(l))
+        .or_else(|| languages.iter().next().cloned())
+        .unwrap_or_else(|| "fr".into());
+
     // post_translations: description = {lang: object_id}. Keep the legacy
     // fr/es pair table for old admin screens, and also populate the generic
     // post_translation_members table for N-language render/hreflang.
@@ -342,8 +357,8 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
                 let lang = match post_lang.get(&p.id) {
                     Some(l) => l.clone(),
                     None => {
-                        rep.log(format!("WARN post {} has no language term, default fr", p.id));
-                        "fr".to_string()
+                        rep.log(format!("WARN post {} has no language term, default {}", p.id, primary));
+                        primary.clone()
                     }
                 };
                 let body_json = build_body_json(p, &mut rep);
@@ -566,11 +581,39 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
         ])?;
     }
 
+    // Expected counts captured at parse time — `import verify` compares the
+    // DB against these instead of per-site constants. Counted from the source
+    // collections, not the DB, so dropped rows still surface as mismatches.
     if !languages.is_empty() {
         let langs = languages.iter().cloned().collect::<Vec<_>>().join(",");
-        let primary = if languages.contains("fr") { "fr".to_string() } else { languages.iter().next().cloned().unwrap_or_else(|| "fr".into()) };
         stmt_set.execute(params!["languages", langs])?;
-        stmt_set.execute(params!["primary_lang", primary])?;
+        stmt_set.execute(params!["primary_lang", primary.clone()])?;
+    }
+
+    {
+        let mut expect: std::collections::BTreeMap<String, i64> = Default::default();
+        for p in &posts {
+            if p.status != "publish" && p.post_type != "attachment" {
+                continue;
+            }
+            match p.post_type.as_str() {
+                "attachment" => *expect.entry("media".into()).or_default() += 1,
+                "nav_menu_item" => *expect.entry("menu_items".into()).or_default() += 1,
+                pt => {
+                    if let Some(kind) = kind_of(pt) {
+                        let lang = post_lang.get(&p.id).cloned().unwrap_or_else(|| primary.clone());
+                        *expect.entry(format!("posts:{kind}:{lang}")).or_default() += 1;
+                    }
+                }
+            }
+        }
+        // menus come from nav_menu terms, not wp_posts
+        expect.insert("menus".into(), ttax.values().filter(|(_, tax, _)| tax == "nav_menu").count() as i64);
+        expect.insert("comments_total".into(), comments.len() as i64);
+        expect.insert("redirects".into(), redirs.len() as i64);
+        expect.insert("translation_members".into(),
+            trans_groups.iter().map(|(_, m)| m.len() as i64).sum());
+        stmt_set.execute(params!["import_expect", serde_json::to_string(&expect)?])?;
     }
 
     for (k, v) in &options {

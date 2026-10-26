@@ -176,25 +176,42 @@ pub fn run(db: &Path) -> Result<()> {
     let mut failed = 0u32;
 
     println!("== content counts ==");
-    check(&c, &mut failed, "posts fr", "SELECT COUNT(*) FROM posts WHERE kind='post' AND lang='fr' AND status='publish'", 592);
-    check(&c, &mut failed, "posts es", "SELECT COUNT(*) FROM posts WHERE kind='post' AND lang='es' AND status='publish'", 359);
-    check(&c, &mut failed, "pages fr", "SELECT COUNT(*) FROM posts WHERE kind='page' AND lang='fr' AND status='publish'", 28);
-    check(&c, &mut failed, "pages es", "SELECT COUNT(*) FROM posts WHERE kind='page' AND lang='es' AND status='publish'", 21);
-    check(&c, &mut failed, "tours fr", "SELECT COUNT(*) FROM posts WHERE kind='tour' AND lang='fr' AND status='publish'", 30);
-    check(&c, &mut failed, "tours es", "SELECT COUNT(*) FROM posts WHERE kind='tour' AND lang='es' AND status='publish'", 14);
-    check(&c, &mut failed, "reviews", "SELECT COUNT(*) FROM posts WHERE kind='site-review' AND status='publish'", 165);
-    check(&c, &mut failed, "comments approved", "SELECT COUNT(*) FROM comments WHERE status='approved'", 180);
-    check(&c, &mut failed, "comments pending", "SELECT COUNT(*) FROM comments WHERE status='pending'", 50);
-    check(&c, &mut failed, "menus", "SELECT COUNT(*) FROM menus", 4);
-    check(&c, &mut failed, "menu_items", "SELECT COUNT(*) FROM menu_items", 208);
-    check(&c, &mut failed, "media", "SELECT COUNT(*) FROM media", 9622);
-    check(&c, &mut failed, "post_translations rows", "SELECT COUNT(*) FROM post_translations", 354);
-
-    let redir: i64 = c.query_row(sql!("verify__select_count_from_1"), [], |r| r.get(0)).unwrap_or(0);
-    let redir_ok = redir >= 90;
-    println!("{:<44} got={:<8} expect={:<8} {}", "redirects >= 90", redir, 90, if redir_ok { "OK" } else { "MISMATCH" });
-    if !redir_ok {
-        failed += 1;
+    // Expected counts are recorded per-site at parse time in
+    // settings.import_expect — never constants, so any dump verifies.
+    let expect_json: Option<String> = c
+        .query_row(sql!("render__select_value_from_settings"), rusqlite::params!["import_expect"], |r| r.get(0))
+        .ok();
+    match expect_json.and_then(|j| serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&j).ok()) {
+        None => println!("(no import_expect — content counts not checked; re-import to record them)"),
+        Some(expect) => {
+            let mut keys: Vec<&String> = expect.keys().collect();
+            keys.sort();
+            for k in keys {
+                let n = expect[k].as_i64().unwrap_or(0);
+                if let Some(rest) = k.strip_prefix("posts:") {
+                    let (kind, lang) = rest.rsplit_once(':').unwrap_or((rest, ""));
+                    check(&c, &mut failed, &format!("{kind} {lang}"),
+                        &format!("SELECT COUNT(*) FROM posts WHERE kind='{kind}' AND lang='{lang}' AND status='publish'"), n);
+                } else {
+                    let (label, sql) = match k.as_str() {
+                        "comments_total" => ("comments", "SELECT COUNT(*) FROM comments"),
+                        "menus" => ("menus", "SELECT COUNT(*) FROM menus"),
+                        "menu_items" => ("menu_items", "SELECT COUNT(*) FROM menu_items"),
+                        "media" => ("media", "SELECT COUNT(*) FROM media"),
+                        "translation_members" => ("translation members", "SELECT COUNT(*) FROM post_translation_members"),
+                        _ => continue,
+                    };
+                    check(&c, &mut failed, label, sql, n);
+                }
+            }
+            let want: i64 = expect.get("redirects").and_then(|v| v.as_i64()).unwrap_or(0);
+            let redir: i64 = c.query_row(sql!("verify__select_count_from_1"), [], |r| r.get(0)).unwrap_or(0);
+            let redir_ok = redir >= want;
+            println!("{:<44} got={:<8} expect={:<8} {}", format!("redirects >= {want}"), redir, want, if redir_ok { "OK" } else { "MISMATCH" });
+            if !redir_ok {
+                failed += 1;
+            }
+        }
     }
 
     println!("\n== integrity ==");
@@ -211,8 +228,11 @@ pub fn run(db: &Path) -> Result<()> {
         "SELECT COUNT(*) FROM post_translations t WHERE (t.fr_post_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM posts p WHERE p.id=t.fr_post_id)) OR (t.es_post_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM posts p WHERE p.id=t.es_post_id))", 0);
     check(&c, &mut failed, "body_json invalid",
         "SELECT COUNT(*) FROM posts WHERE json_valid(body_json)=0", 0);
+    // posts whose lang isn't in the imported languages set (N-lang generic)
     check(&c, &mut failed, "posts without lang",
-        "SELECT COUNT(*) FROM posts WHERE lang NOT IN ('fr','es')", 0);
+        "SELECT COUNT(*) FROM posts p WHERE NOT EXISTS (
+           SELECT 1 FROM settings s WHERE s.key='languages'
+             AND (','||s.value||',') LIKE ('%,'||p.lang||',%'))", 0);
     check(&c, &mut failed, "settings.page_on_front set",
         "SELECT COUNT(*) FROM settings WHERE key='page_on_front' AND value != '0'", 1);
 
