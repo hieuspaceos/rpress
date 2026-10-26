@@ -101,7 +101,7 @@ pub(crate) fn page(conn: &Connection, templates: &Path, ctx: &PostCtx) -> Result
             [],
             |r| r.get::<_, String>(0),
         )
-        .unwrap_or_else(|_| "pressrs".into());
+        .unwrap_or_else(|_| "rpress".into());
     let seo_title = if seo_title.is_empty() {
         ctx.title.clone()
     } else {
@@ -312,7 +312,7 @@ fn site_name_of(conn: &Connection) -> String {
         [],
         |r| r.get::<_, String>(0),
     )
-    .unwrap_or_else(|_| "pressrs".into())
+    .unwrap_or_else(|_| "rpress".into())
 }
 fn product_jsonld(
     title: &str,

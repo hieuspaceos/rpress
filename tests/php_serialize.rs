@@ -1,4 +1,4 @@
-use pressrs::php_serialize::{serialize, unserialize};
+use rpress::php_serialize::{serialize, unserialize};
 use serde_json::Value;
 
 #[test]

@@ -1,9 +1,9 @@
-# pressrs
+# rpress
 
 A WordPress-parity CMS that serves static files — written in Rust, shipping as a
 single 14 MB binary with SQLite bundled.
 
-pressrs is built for one job: take over a WordPress site **without changing how
+rpress is built for one job: take over a WordPress site **without changing how
 the people who run it work**. The admin reproduces wp-admin screens — posts,
 pages, media, comments, users, menus, widgets, revisions, quick-edit, bulk
 actions — and the front end serves pre-rendered HTML straight from disk.
@@ -27,7 +27,7 @@ point — and it is not free.
   engine — two systems to maintain, and the cache still expires, purges, and
   desyncs.
 
-**With pressrs:**
+**With rpress:**
 
 - One binary + one `.db` file + one `cache/` directory. Deploy is `scp`.
 - A public request is `fs::read` of a pre-rendered file — 100–1000× less
@@ -49,7 +49,7 @@ If your site is content — posts, pages, galleries, comments, reviews — the
 trade is strongly in your favor. If your site is a store, a forum, or a
 membership app, it is not: keep WordPress.
 
-| | WordPress | pressrs |
+| | WordPress | rpress |
 |---|---|---|
 | Request path | PHP boot → 50–200 MySQL queries → plugin hooks | `fs::read` one cached HTML file |
 | Render | Every request | Once on publish / first hit (render-on-miss safety net) |
@@ -77,15 +77,15 @@ membership app, it is not: keep WordPress.
 - **Multilingual** — `posts.lang` + `post_translations` pairing (FR/ES in the
   reference site; any language pair works).
 - **SPA- Feel navigation** — `nav.js` prefetch-on-hover + same-origin DOM
-  swap; theme JS re-init via the `pressrs:swapped` hook.
+  swap; theme JS re-init via the `rpress:swapped` hook.
 
 ## The model
 
 ```mermaid
 flowchart LR
-    WP["WP SQL dump"] --> IMP["pressrs import → SQLite"]
+    WP["WP SQL dump"] --> IMP["rpress import → SQLite"]
     ADMIN["Admin panel<br/>axum /admin/*"] -->|save| DB[(site.db)]
-    GEN["pressrs generate"] -->|render_slug + minijinja| OUT["cache/<slug>/index.html"]
+    GEN["rpress generate"] -->|render_slug + minijinja| OUT["cache/<slug>/index.html"]
     REQ["Visitor → GET /bai-viet"] --> SERVE{public_page}
     SERVE -->|"hit"| OUT
     SERVE -->|"miss, no extension"| LIVE["render_slug live → write-back"]
@@ -101,14 +101,14 @@ back — the same trick WP caching plugins approximate. nginx or a CDN can front
 ```bash
 cargo build --release
 
-# Point at a WP SQL dump; pressrs imports, creates an admin user,
+# Point at a WP SQL dump; rpress imports, creates an admin user,
 # renders every page into cache/, and prints the credentials.
-./target/release/pressrs migrate dump.sql --db site.db \
+./target/release/rpress migrate dump.sql --db site.db \
     --templates templates --out cache --www www \
     --site-url https://example.com
 
 # Then serve.
-./target/release/pressrs serve --site default --db site.db \
+./target/release/rpress serve --site default --db site.db \
     --templates templates --out cache --www www --bind 127.0.0.1:8000
 ```
 
@@ -116,8 +116,8 @@ Admin: `http://127.0.0.1:8000/admin` — the password was printed by
 `migrate`. See `CMS-OPERATIONS.md` for nginx fronting and multi-site
 layout.
 
-The steps are also available separately: `pressrs import parse`,
-`pressrs import verify`, `pressrs generate`, `pressrs user add` — for
+The steps are also available separately: `rpress import parse`,
+`rpress import verify`, `rpress generate`, `rpress user add` — for
 partial reruns and debugging. `migrate` is the happy path.
 
 ## Layout

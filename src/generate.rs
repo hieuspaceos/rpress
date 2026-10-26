@@ -502,7 +502,7 @@ pub(crate) fn write_feeds(out: &Path, conn: &Connection, site: &str) -> Result<(
                 [],
                 |r| r.get::<_, String>(0),
             )
-            .unwrap_or_else(|_| "pressrs".into());
+            .unwrap_or_else(|_| "rpress".into());
         let xml = format!(
             r#"<?xml version="1.0" encoding="UTF-8"?><rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/"><channel><title>{channel_title}</title><link>{channel_link}</link><description>Feed</description>
 {items}</channel></rss>"#
@@ -623,7 +623,7 @@ pub(crate) fn write_llms_txt(out: &Path, conn: &Connection, site: &str, tour_bas
             [],
             |r| r.get::<_, String>(0),
         )
-        .unwrap_or_else(|_| "pressrs".into());
+        .unwrap_or_else(|_| "rpress".into());
     let mut body = String::new();
     body.push_str(&format!("# {site_name}\n\n"));
     body.push_str("## Pages\n\n");

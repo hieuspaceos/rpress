@@ -21,7 +21,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "cms")]
+#[command(name = "rpress")]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -50,7 +50,7 @@ enum Cmd {
         #[arg(long, default_value = "http://localhost:8400")]
         site_url: String,
     },
-    /// WP → pressrs one-liner: import dump, create admin, generate site
+    /// WP → rpress one-liner: import dump, create admin, generate site
     Migrate {
         dump: PathBuf,
         #[arg(long, default_value = "cms.db")]
@@ -176,7 +176,7 @@ fn main() -> Result<()> {
             println!("== generate ==");
             generate::run(&db, &templates, &out, &site_url)?;
             println!(
-                "== done ==\nnext: pressrs serve --bind 127.0.0.1:8400 --db {} --templates {} --out {}\nadmin:  http://127.0.0.1:8400/admin",
+                "== done ==\nnext: rpress serve --bind 127.0.0.1:8400 --db {} --templates {} --out {}\nadmin:  http://127.0.0.1:8400/admin",
                 db.display(),
                 templates.display(),
                 out.display(),

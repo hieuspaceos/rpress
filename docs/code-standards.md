@@ -1,4 +1,4 @@
-# Code standards — pressrs
+# Code standards — rpress
 
 ## Hard rules
 
@@ -31,7 +31,7 @@
    `legacy_origin`). Seeded content that is the reference theme's lives in
    `src/seed/*.json` (loaded via `include_str!`), never inline `r#"..."#`
    blobs in `src/*.rs`.
-10. **WP→pressrs bootstrap is `pressrs migrate <dump>`.** One command runs
+10. **WP→rpress bootstrap is `rpress migrate <dump>`.** One command runs
     import → admin creation (random password, printed once) → generate.
     Keep it thin: it calls `import::run`, `auth::add_user`, `generate::run` —
     no new logic inside the command.

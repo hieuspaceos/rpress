@@ -142,7 +142,7 @@ pub(crate) fn page(conn: &Connection, templates: &Path, ctx: &PostCtx) -> Result
             [],
             |r| r.get::<_, String>(0),
         )
-        .unwrap_or_else(|_| "pressrs".into());
+        .unwrap_or_else(|_| "rpress".into());
     let mut crumbs: Vec<Value> = vec![json!({
         "url": site,
         "class": "home",
@@ -952,7 +952,7 @@ fn filter_content(raw: &str, site: &str, post_id: i64, _media: &std::collections
 
 /// Rewrite the imported site origin to the configured one. The source
 /// domain lives in `settings.legacy_origin` (set at import time); an empty
-/// value means "no rewrite" so pressrs ships domain-free.
+/// value means "no rewrite" so rpress ships domain-free.
 fn rewrite_origin(raw: &str, site: &str, conn: &Connection) -> String {
     let s = raw.replace("{{ site_url }}", site);
     let origin = crate::intake::setting(conn, "legacy_origin", "");

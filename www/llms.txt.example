@@ -1,3 +1,3 @@
 # Site title
 
-Generated at runtime by pressrs sitefx::emit_site_files — do not commit real llms.txt (it carries site URLs).
+Generated at runtime by rpress sitefx::emit_site_files — do not commit real llms.txt (it carries site URLs).

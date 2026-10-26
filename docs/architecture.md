@@ -1,4 +1,4 @@
-# Architecture — pressrs
+# Architecture — rpress
 
 One site-agnostic binary, three layers, WP-shaped names on purpose.
 
@@ -8,7 +8,7 @@ flowchart LR
     CLI --> IMP[import.rs WP dump → SQLite]
     CLI --> GEN[generate.rs → cache/ warm]
     CLI --> MIG[migrate.rs WP → running site]
-    SRV --> DB[(db/ rusqlite → pressrs.db)]
+    SRV --> DB[(db/ rusqlite → rpress.db)]
     SRV --> TPL[templates/ minijinja]
     SRV --> STATIC[cache/ + www/]
 ```
@@ -30,8 +30,8 @@ call a `db::` function. Rendering helpers (`esc`, `chrome`, `html_admin`,
 
 ```mermaid
 flowchart TB
-    nginx --> A[pressrs serve :8400 --site site-a --host a.example.com]
-    nginx --> B[pressrs serve :8401 --site site-b --host b.example.com]
+    nginx --> A[rpress serve :8400 --site site-a --host a.example.com]
+    nginx --> B[rpress serve :8401 --site site-b --host b.example.com]
     A --> DB1[(site-a.db)]
     B --> DB2[(site-b.db)]
 
@@ -160,7 +160,7 @@ from WP/Polylang; preserved, not normalized.
 - No REST JSON admin API beyond `/api/v1/posts` (list) and `/api/generate*`.
 - Public pages are **lazy render-cache, not a baked tree**: `/{*public}`
   serves `cache/<slug>/index.html` when present, else renders on demand
-  and writes back (publish-only, atomic tmp+rename). `pressrs generate` still
+  and writes back (publish-only, atomic tmp+rename). `rpress generate` still
   exists as a bulk warm/refresh tool but is no longer the serving path —
   a cold `cache/` warms itself from traffic. `www/` is the persistent
   sibling (uploads, vendored plugin/theme assets, `llms.txt`, `front.css`,

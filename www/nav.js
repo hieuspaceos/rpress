@@ -123,7 +123,7 @@
         // Theme JS that bound to nodes inside the swapped region is
         // dead now — emit a hook so themes can re-init menus, sliders,
         // galleries. Nothing theme-specific lives in nav.js itself.
-        document.dispatchEvent(new CustomEvent('pressrs:swapped', { detail: { url: url } }));
+        document.dispatchEvent(new CustomEvent('rpress:swapped', { detail: { url: url } }));
         if (push) history.pushState(null, '', url);
         lastNavUrl = url;
         window.scrollTo(0, 0);

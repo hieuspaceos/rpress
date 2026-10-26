@@ -511,7 +511,7 @@ fn render_row(
             [],
             |r| r.get::<_, String>(0),
         )
-        .unwrap_or_else(|_| "pressrs".into());
+        .unwrap_or_else(|_| "rpress".into());
     let seo_title = seo_title
         .filter(|s| !s.is_empty())
         .map(|t| crate::db::resolve_seo(&t, &title, &site_name))
@@ -2118,7 +2118,7 @@ fn post_jsonld(
             [],
             |r| r.get::<_, String>(0),
         )
-        .unwrap_or_else(|_| "pressrs".into());
+        .unwrap_or_else(|_| "rpress".into());
     let json = schema_to_json(&value, &|tok: &str| -> String {
         match tok {
             "seo_title" | "title" => title.to_string(),
