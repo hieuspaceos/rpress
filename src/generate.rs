@@ -149,7 +149,23 @@ pub fn run(db: &Path, templates: &Path, out: &Path, site_url: &str) -> Result<()
                     .ok();
                 urls.push((format!("{}{}", site_url.trim_end_matches('/'), crate::lang::page_path(&lang_cfg, lang, "page", "", "voyage")), "page".into(), lastmod));
             }
-            Err(e) => eprintln!("skip {lang} front: {e:#}"),
+            Err(e) => {
+                // No localized front post — harvest origin/{lang}/ when the
+                // site has builder posts and a known origin.
+                if !legacy_origin.is_empty() {
+                    let path = rel.to_string_lossy().replace("index.html", "");
+                    match harvest_page(&legacy_origin, &path, site_url) {
+                        Ok(h) => {
+                            atomic_write(&out.join(&rel), h)?;
+                            harvested += 1;
+                            written += 1;
+                            continue;
+                        }
+                        Err(he) => eprintln!("[harvest] {lang} front: {he:#}"),
+                    }
+                }
+                eprintln!("skip {lang} front: {e:#}")
+            }
         }
     }
 
