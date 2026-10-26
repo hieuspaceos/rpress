@@ -185,6 +185,14 @@ impl Remote {
             Remote::Ssh { target } => ("SSH_TARGET", target.clone()),
         }
     }
+
+    /// Short human label for diagnostics — "ct4" or "user@host".
+    pub fn label(&self) -> String {
+        match self {
+            Remote::Vps { name, .. } => name.clone(),
+            Remote::Ssh { target } => target.clone(),
+        }
+    }
 }
 
 // ---------- interactive prompts ----------

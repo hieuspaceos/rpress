@@ -174,7 +174,9 @@ fn pull(c: &Ctx) -> Result<PhaseOut> {
     if !c.env.clone_source_ok {
         bail!("CLONE_SOURCE_OK is not yes in sites/{}.env — pull only reads clones, never prod", c.env.site);
     }
-    need_bin("rsync")?;
+    if let Err(e) = need_bin("rsync") {
+        eprintln!("[pull] {e} — remote pulls will use the tar/base64 stream transport");
+    }
     std::fs::create_dir_all(&c.work)?;
 
     // dump
@@ -228,6 +230,7 @@ fn pull(c: &Ctx) -> Result<PhaseOut> {
     }
 
     // repo-owned front assets — always local, never a 307
+    std::fs::create_dir_all(&c.www)?;
     for f in ["front.css", "nav.js"] {
         let src = c.root.join("www").join(f);
         if src.is_file() {
@@ -253,10 +256,50 @@ fn rsync_local(src: &Path, dest: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Pull a remote path into `dest` — vps.sh askpass rsync or plain ssh rsync.
+/// Pull a remote path into `dest`.
+///
+/// Transports, in order: rsync (fast, resumable) → tar+base64 stream over a
+/// plain ssh channel. The stream fallback exists because real VPSes break
+/// rsync in several ways — missing/old remote rsync, banner text corrupting
+/// the protocol, restricted shells that only allow plain ssh commands —
+/// and a bare "unexpected end of file" tells the user nothing. Preflight
+/// checks report *which* of those it actually is.
 fn remote_pull(c: &Ctx, remote_path: &str, dest: &Path) -> Result<()> {
     std::fs::create_dir_all(dest)?;
     let remote = c.remote()?;
+    let label = remote.label();
+
+    remote.lines("echo rpress-ok").map_err(|e| {
+        anyhow::anyhow!("cannot reach {label} — check ssh key/agent or VPN: {e:#}")
+    })?;
+
+    let q = shell_quote(remote_path);
+    let kind = remote
+        .lines(&format!(
+            "if test -d {q}; then echo dir; elif test -f {q}; then echo file; fi"
+        ))?
+        .into_iter()
+        .next()
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "remote path missing: {remote_path} — re-check WP_ROOT / DUMP_REMOTE on {label}"
+            )
+        })?;
+
+    match rsync_pull(&remote, remote_path, dest) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            eprintln!(
+                "[pull] rsync {label}:{remote_path} failed ({}) — falling back to tar/base64 stream",
+                one_line(&e.to_string())
+            );
+            stream_pull(&remote, remote_path, dest, kind == "dir")
+        }
+    }
+}
+
+/// rsync a remote path — vps.sh askpass helper or plain ssh BatchMode.
+fn rsync_pull(remote: &Remote, remote_path: &str, dest: &Path) -> Result<()> {
     match remote {
         Remote::Vps { name, script } => {
             let pull = script
@@ -264,12 +307,12 @@ fn remote_pull(c: &Ctx, remote_path: &str, dest: &Path) -> Result<()> {
                 .unwrap_or(Path::new("."))
                 .join(".askpass/rsync-pull.sh");
             let o = site::run(Command::new(&pull).args([
-                &name,
+                name,
                 remote_path,
                 &format!("{}/", dest.display()),
             ]))?;
             if !o.ok {
-                bail!("rsync-pull {name}:{remote_path} failed: {}", o.stderr.trim());
+                bail!("{}", o.stderr.trim());
             }
         }
         Remote::Ssh { target } => {
@@ -282,11 +325,103 @@ fn remote_pull(c: &Ctx, remote_path: &str, dest: &Path) -> Result<()> {
                 &format!("{}/", dest.display()),
             ]))?;
             if !o.ok {
-                bail!("rsync {target}:{remote_path} failed: {}", o.stderr.trim());
+                bail!("{}", o.stderr.trim());
             }
         }
     }
     Ok(())
+}
+
+/// Last-resort transport for hosts where rsync/scp fail (protocol mismatch,
+/// banner-mangled streams, restricted shells): tar+base64 through the same
+/// plain ssh channel `Remote::exec` already proves works. Slower and not
+/// resumable, but it survives broken remote rsyncs and mangled pipes.
+fn stream_pull(remote: &Remote, remote_path: &str, dest: &Path, is_dir: bool) -> Result<()> {
+    need_bin("base64")?;
+    let q = shell_quote(remote_path);
+    let (remote_cmd, local_sh) = if is_dir {
+        need_bin("tar")?;
+        (
+            format!("cd {q} && tar czf - . | base64"),
+            format!("base64 -d | tar xzf - -C {}", shell_quote(&dest.to_string_lossy())),
+        )
+    } else {
+        let name = Path::new(remote_path).file_name().unwrap_or_default();
+        (
+            format!("base64 {q}"),
+            format!(
+                "base64 -d > {}",
+                shell_quote(&dest.join(name).to_string_lossy())
+            ),
+        )
+    };
+    stream_pipeline(remote, &remote_cmd, &local_sh)
+        .with_context(|| format!("stream pull {remote_path}"))
+}
+
+/// Pipe a remote command's stdout into a local shell pipeline without
+/// buffering the payload in memory.
+fn stream_pipeline(remote: &Remote, remote_cmd: &str, local_sh: &str) -> Result<()> {
+    let mut prod = match remote {
+        Remote::Vps { name, script } => Command::new(script)
+            .args([name.as_str(), remote_cmd])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn(),
+        Remote::Ssh { target } => Command::new("ssh")
+            .args([
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "ConnectTimeout=15",
+                target.as_str(),
+                remote_cmd,
+            ])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn(),
+    }
+    .context("spawn remote producer")?;
+
+    // drain remote stderr on a side thread so a chatty remote can't
+    // deadlock the pipe
+    let err_thr = prod.stderr.take().map(|mut e| {
+        std::thread::spawn(move || {
+            let mut s = String::new();
+            let _ = std::io::Read::read_to_string(&mut e, &mut s);
+            s
+        })
+    });
+
+    let mut cons = Command::new("sh")
+        .args(["-c", local_sh])
+        .stdin(prod.stdout.take().context("producer stdout")?)
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .context("spawn local consumer")?;
+
+    let pst = prod.wait()?;
+    let cst = cons.wait()?;
+    let perr = err_thr
+        .and_then(|t| t.join().ok())
+        .unwrap_or_default();
+    if !pst.success() {
+        bail!("remote stream failed: {}", perr.trim());
+    }
+    if !cst.success() {
+        bail!("local unpack failed: {local_sh}");
+    }
+    Ok(())
+}
+
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+fn one_line(s: &str) -> String {
+    s.lines().next().unwrap_or("").trim().to_string()
 }
 
 fn need_bin(name: &str) -> Result<()> {
