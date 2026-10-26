@@ -89,7 +89,7 @@ fn screen_options(opts: &DashOpts, csrf: &str) -> String {
 }
 
 /// At a Glance body: post/page/tour/media counts + comments/moderation +
-/// honest version footer (phase spec: `cms v{crate_version}` only).
+/// honest version footer.
 fn glance_box(c: &Connection) -> String {
     let n = |sql: &str| -> i64 {
         c.query_row(sql, [], |r| r.get(0)).unwrap_or(0)
@@ -113,7 +113,7 @@ fn glance_box(c: &Connection) -> String {
 <li><a href="/admin/comments">{comments} Comments</a> · <a href="/admin/comments?status=pending">{pending} in moderation</a></li>
 </ul>
 </div>
-<p id="wp-version-message"><span id="footer-version">cms v{}</span></p>
+<p id="wp-version-message"><span id="footer-version">rpress v{}</span></p>
 </div>"#,
             env!("CARGO_PKG_VERSION")
         ),
@@ -175,13 +175,9 @@ fn activity_comment_row(r: &crud::comments::CommentRow, csrf: &str) -> String {
 
 /// Activity body: Awaiting Moderation (pending > 0), Recently Published,
 /// Comments — WP `wp_dashboard_recent_posts` + `wp_dashboard_recent_comments`.
-fn activity_box(c: &Connection, sc: &SiteCtx, csrf: &str) -> String {
+fn activity_box(_c: &Connection, sc: &SiteCtx, csrf: &str) -> String {
     let mut h = String::from("<div id=\"activity-widget\">");
-    let pending: i64 = c
-        .query_row("SELECT COUNT(*) FROM comments WHERE status='pending'", [], |r| {
-            r.get(0)
-        })
-        .unwrap_or(0);
+    let pending = crate::db::pending_comments_count(&sc.db);
     if pending > 0 {
         let mut bubble = format!(
             "<div class=\"dashboard-pending-comments\"><span class=\"awaiting-mod count-{pending}\"><span class=\"pending-count\" aria-hidden=\"true\">{pending}</span></span> <a href=\"/admin/comments?status=pending\">pending moderation</a>"
@@ -380,11 +376,7 @@ pub(crate) async fn dashboard(State(app): State<App>, headers: HeaderMap) -> Res
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
     let opts = dash_opts(sc, s.user_id);
-    let pending: i64 = c
-        .query_row("SELECT COUNT(*) FROM comments WHERE status='pending'", [], |r| {
-            r.get(0)
-        })
-        .unwrap_or(0);
+    let pending = crate::db::pending_comments_count(&sc.db);
 
     // WP widget order; hidden ones are skipped, visible ones deal
     // round-robin across the configured column count.
@@ -414,14 +406,7 @@ pub(crate) async fn dashboard(State(app): State<App>, headers: HeaderMap) -> Res
 
     // Widget edits are DB-only until the next full build — surface the
     // pending state WP's immediate-publish model can't on a static site.
-    let widgets_dirty = c
-        .query_row(
-            "SELECT value FROM settings WHERE key='widgets_dirty'",
-            [],
-            |r| r.get::<_, String>(0),
-        )
-        .map(|v| v == "1")
-        .unwrap_or(false);
+    let widgets_dirty = crate::db::setting_value(&sc.db, "widgets_dirty", "0") == "1";
     let pending_notice = if widgets_dirty {
         r#"<div class="notice notice-warning"><p><strong>Widget changes are pending publish.</strong> Run Generate to update the site.</p></div>"#
     } else {
@@ -513,11 +498,7 @@ pub(crate) async fn health_page(State(app): State<App>, headers: HeaderMap) -> R
                 .into_response()
         }
     };
-    let pending: i64 = c
-        .query_row("SELECT COUNT(*) FROM comments WHERE status='pending'", [], |r| {
-            r.get(0)
-        })
-        .unwrap_or(0);
+    let pending = crate::db::pending_comments_count(&sc.db);
     let checks = health_checks(&c, sc, pending);
     let good = checks.iter().all(|x| x.pass);
 

@@ -34,6 +34,8 @@ flowchart TB
     nginx --> B[rpress serve :8401 --site site-b --host b.example.com]
     A --> DB1[(site-a.db)]
     B --> DB2[(site-b.db)]
+```
+
 
 The binary is site-agnostic; the *process* is bound to one site via CLI args.
 `App.sites` is a `Host → SiteCtx` map so one process CAN serve several hosts,
@@ -109,7 +111,7 @@ Categories/Tags screens can create terms with no post yet),
 `media`, `menus`/`menu_items`, `comments`, `submissions`,
 `settings` (site_url/site_name/legacy_origin/asset_origin/widgets_dirty
   + misc options), `sidebars`/`widgets` (widget instances — WP-parity model),
-`sessions` (in-memory only — restart logs everyone out, intentional).
+`sessions` (persistent login tokens; in-memory map is a hot cache only).
 
 Language model: `posts.lang` ∈ {`fr`,`es`}; FR/ES pairing via
 `post_translations`. ES taxonomies use `-es`-suffixed slugs or separate
@@ -118,10 +120,7 @@ from WP/Polylang; preserved, not normalized.
 
 ## Decisions worth knowing
 
-- **Sessions in-memory, CSRF per-session, scoped per-site.** Restart =
-  relogin; chosen over a sessions table to keep the DB append-only-ish. CSRF
-  token lives on `Sess`; `Sess.site` pins the token to one site's `slug` so
-  credentialed access never leaks across vhosts.
+- **Sessions persist in SQLite, CSRF stays per in-memory session, and tokens are scoped per-site.** Restart can rehydrate a valid `rpress_session` token from the `sessions` table, then mints a fresh CSRF token in memory. `Sess.site` pins the token to one site's `slug` so credentialed access never leaks across vhosts. DB backups therefore contain live auth material until expiry/revocation.
 - **`form=` attribute pattern.** `<form>` inside `<tbody>` is dropped by the
   HTML parser, which silently broke Quick Edit submits. Rule: quick-edit and
   bulk forms declare the form *outside* the table; controls inside rows carry

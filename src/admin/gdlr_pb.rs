@@ -320,14 +320,10 @@ fn icons(sc: &SiteCtx) -> Value {
 }
 
 fn get_setting(conn: &Connection, key: &str) -> Value {
-    conn.query_row("SELECT value FROM settings WHERE key=?1", [key], |r| r.get::<_, String>(0))
-        .ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or(Value::Null)
+    crate::db::setting_json_value_conn(conn, key)
 }
 fn put_setting(conn: &Connection, key: &str, v: &Value) {
-    let _ = conn.execute(
-        "INSERT INTO settings(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-        rusqlite::params![key, v.to_string()],
-    );
+    let _ = crate::db::setting_json_put_conn(conn, key, v);
 }
 
 /* ================= canvas templates (pb-*.php get_template) ================= */

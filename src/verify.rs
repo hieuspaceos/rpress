@@ -1,4 +1,4 @@
-//! Audit-count verification for cms.db.
+//! Audit-count verification for an rpress SQLite database.
 
 #[allow(unused_imports)]
 use crate::sql;
@@ -230,7 +230,7 @@ pub fn run(db: &Path) -> Result<()> {
 
     println!("\n== db size ==");
     let sz = std::fs::metadata(db).map(|m| m.len()).unwrap_or(0);
-    println!("cms.db = {:.1} MB (limit 500)", sz as f64 / 1e6);
+    println!("database = {:.1} MB (limit 500)", sz as f64 / 1e6);
     if sz as f64 > 500e6 {
         failed += 1;
     }

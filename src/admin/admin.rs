@@ -43,21 +43,14 @@ pub(crate) async fn api_generate(
         // 1. WP `_wp_scheduled_delete` equivalent: trash > 30 days dies.
         crate::sitefx::purge_duties(&db, &out);
         // 2. Emit sitemap/feeds/robots/404/search/redirects.map.
-        let base = crate::db::conn(&db).ok()
-            .and_then(|c| c.query_row(sql!("admin__select_value_from"), [], |r| r.get::<_, String>(0)).ok())
-            .unwrap_or_else(|| "/".to_string());
+        let base = crate::db::setting_value(&db, "site_url", "/");
         if let Err(e) = crate::sitefx::emit_site_files(&db, &templates, &out, &base) {
             eprintln!("emit_site_files: {e:#}");
         }
         // 3. Clear the page cache — it re-warms itself from traffic.
         crate::admin::admin::bust_cache_dir(&out);
         // Keep `widgets_dirty` honest: a full bust means nothing pending.
-        if let Ok(c) = crate::db::conn(&db) {
-            let _ = c.execute(
-                "INSERT OR REPLACE INTO settings(key, value) VALUES('widgets_dirty','0')",
-                [],
-            );
-        }
+        let _ = crate::db::setting_put(&db, "widgets_dirty", "0");
         flag.store(false, Ordering::SeqCst);
     });
     Redirect::to("/admin").into_response()
@@ -595,7 +588,7 @@ pub(crate) async fn media_new_page(State(app): State<App>, headers: HeaderMap) -
 <p>You are using the multi-file uploader. Problems? <label style="text-decoration:underline;cursor:pointer">Try the browser uploader <input type="file" name="file" style="width:0;height:0;opacity:0" onchange="this.form.submit()"></label> instead.</p>
 </form>
 <div id="media-items"></div>
-<p class="max-upload-size">Maximum upload file size: 64 MB.</p>
+<p class="max-upload-size">Maximum upload file size: {upload_limit}.</p>
 </div></div>
 <style>.drag-drop{{border:4px dashed #c3c4c7;min-height:300px;display:flex;align-items:center;justify-content:center;text-align:center;margin:20px 0}}
 .drag-drop.dragover{{border-color:#2271b1;background:#f0f6fb}}
@@ -640,6 +633,7 @@ function upload(files){{
 </script>"##,
         chrome = chrome("media", &s),
         csrf = s.csrf,
+        upload_limit = crate::db::UPLOAD_LIMIT_DISPLAY,
     );
     html_page(&s, "Upload Media", &inner, true).into_response()
 }
@@ -1403,7 +1397,7 @@ pub(crate) fn media_frame_html(csrf: &str) -> String {
 <div id="mf-drop" style="border:4px dashed #c3c4c7;min-height:220px;display:flex;align-items:center;justify-content:center;flex-direction:column">
 <p style="font-size:20px;color:#3c434a">Drop files to upload</p><p>or</p>
 <p><button type="button" class="button button-hero" onclick="document.getElementById('mf-file').click()">Select Files</button></p>
-<p style="color:#646970">Maximum upload file size: 64 MB.</p>
+<p style="color:#646970">Maximum upload file size: {upload_limit}.</p>
 </div>
 <input type="file" id="mf-file" multiple style="display:none">
 <div id="mf-prog"></div>
@@ -1562,7 +1556,8 @@ window.mf_select = window.mf_select || function(id,thumb){{
   document.getElementById('set-featured-image').style.display='none';
 }};
 </script>"##,
-        csrf = csrf
+        csrf = csrf,
+        upload_limit = crate::db::UPLOAD_LIMIT_DISPLAY,
     )
 }
 

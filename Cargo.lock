@@ -868,28 +868,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rpress"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "argon2",
- "axum",
- "clap",
- "image",
- "minijinja",
- "parking_lot",
- "rand",
- "regex",
- "rusqlite",
- "serde",
- "serde_json",
- "serde_urlencoded",
- "sha2",
- "similar",
- "tokio",
-]
-
-[[package]]
 name = "proc-macro2"
 version = "1.0.107"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -986,6 +964,28 @@ name = "regex-syntax"
 version = "0.8.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
+
+[[package]]
+name = "rpress"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "argon2",
+ "axum",
+ "clap",
+ "image",
+ "minijinja",
+ "parking_lot",
+ "rand",
+ "regex",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+ "sha2",
+ "similar",
+ "tokio",
+]
 
 [[package]]
 name = "rusqlite"

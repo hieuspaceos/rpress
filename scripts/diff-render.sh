@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Compare cms render output to captured reference HTML.
+# Compare rpress render output to captured reference HTML.
 # Normalizes whitespace; reports class-set overlap (byte-identical is phase-3).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-CMS="${ROOT}/target/release/cms"
-DB="${ROOT}/cms.db"
+CMS="${ROOT}/target/release/rpress"
+DB="${ROOT}/rpress.db"
 TPL="${ROOT}/templates"
 REF="${ROOT}/templates/reference"
-OUT="${TMPDIR:-/tmp}/cms-diff"
+OUT="${TMPDIR:-/tmp}/rpress-diff"
 mkdir -p "$OUT"
 
 norm() { python3 -c "

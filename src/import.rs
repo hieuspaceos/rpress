@@ -1,4 +1,4 @@
-//! Import pass: parse dump → in-memory WP model → write cms.db + report.
+//! Import pass: parse dump → in-memory WP model → write rpress.db + report.
 
 use crate::php_serialize::unserialize;
 #[allow(unused_imports)]
@@ -190,7 +190,7 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
 
     // ---- Pass 2: map → SQLite ----------------------------------------------
     let _ = std::fs::remove_file(db_path);
-    let conn = crate::db::conn(db_path).context("open cms.db")?;
+    let conn = crate::db::conn(db_path).context("open rpress.db")?;
     crate::schema::migrate_conn(&conn)?;
     conn.execute_batch(sql!("import__pragma_synchronous_off"))?;
     let tx = conn.unchecked_transaction()?;

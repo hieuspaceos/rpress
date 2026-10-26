@@ -704,18 +704,8 @@ pub(crate) async fn widgets_add(
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
     let settings = default_settings(&typ, &id);
-    let ord: i64 = conn
-        .query_row(
-            "SELECT COALESCE(MAX(ord)+1, 0) FROM widgets WHERE sidebar_id=?1",
-            [&sidebar],
-            |r| r.get(0),
-        )
-        .unwrap_or(0);
-    let ok = conn.execute(
-        "INSERT INTO widgets(id, sidebar_id, type, title, settings_json, ord)
-         VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
-        rusqlite::params![id, sidebar, typ, title, settings, ord],
-    );
+    let ord = crud::widget_next_ord(&conn, &sidebar);
+    let ok = crud::widget_insert(&conn, &id, &sidebar, &typ, &title, &settings, ord);
     if ok.is_err() {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
@@ -916,23 +906,12 @@ pub(crate) async fn widgets_save(
     if !sidebar_ids(&conn).contains(&target) {
         target = cur_sidebar.clone();
     }
-    let ord: i64 = if target == cur_sidebar {
-        conn.query_row("SELECT ord FROM widgets WHERE id=?1", [&id], |r| {
-            r.get::<_, i64>(0)
-        })
-        .unwrap_or(0)
+    let ord = if target == cur_sidebar {
+        crud::widget_ord(&conn, &id)
     } else {
-        conn.query_row(
-            "SELECT COALESCE(MAX(ord)+1, 0) FROM widgets WHERE sidebar_id=?1",
-            [&target],
-            |r| r.get(0),
-        )
-        .unwrap_or(0)
+        crud::widget_next_ord(&conn, &target)
     };
-    let ok = conn.execute(
-        "UPDATE widgets SET sidebar_id=?1, title=?2, settings_json=?3, ord=?4 WHERE id=?5",
-        rusqlite::params![target, title, Value::Object(settings).to_string(), ord, id],
-    );
+    let ok = crud::widget_update(&conn, &id, &target, &title, &Value::Object(settings).to_string(), ord);
     if ok.is_err() {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
@@ -966,21 +945,12 @@ pub(crate) async fn widgets_delete(
         return Redirect::to("/admin/widgets?msg=notfound").into_response();
     };
     if sidebar == INACTIVE {
-        let _ = conn.execute("DELETE FROM widgets WHERE id=?1", [&id]);
+        let _ = crud::widget_delete(&conn, &id);
         mark_dirty(&sc.db);
         return Redirect::to("/admin/widgets?msg=deleted").into_response();
     }
-    let ord: i64 = conn
-        .query_row(
-            "SELECT COALESCE(MAX(ord)+1, 0) FROM widgets WHERE sidebar_id=?1",
-            [INACTIVE],
-            |r| r.get(0),
-        )
-        .unwrap_or(0);
-    let _ = conn.execute(
-        "UPDATE widgets SET sidebar_id=?1, ord=?2 WHERE id=?3",
-        rusqlite::params![INACTIVE, ord, id],
-    );
+    let ord = crud::widget_next_ord(&conn, INACTIVE);
+    let _ = crud::widget_move(&conn, &id, INACTIVE, ord);
     mark_dirty(&sc.db);
     crate::admin::admin::bust_cache(&sc);
     Redirect::to("/admin/widgets?msg=removed").into_response()
@@ -1032,14 +1002,7 @@ pub(crate) async fn widgets_order(
         let Ok(tx) = conn.unchecked_transaction() else {
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         };
-        let mut ids: Vec<String> = Vec::new();
-        if let Ok(mut st) =
-            tx.prepare("SELECT id FROM widgets WHERE sidebar_id=?1 ORDER BY ord")
-        {
-            if let Ok(rows) = st.query_map([&scope_sidebar], |r| r.get::<_, String>(0)) {
-                ids.extend(rows.flatten());
-            }
-        }
+        let mut ids = crud::widget_ids_in_sidebar(&tx, &scope_sidebar);
         let Some(pos) = ids.iter().position(|x| x == &id) else {
             return Redirect::to("/admin/widgets?msg=notfound").into_response();
         };
@@ -1052,10 +1015,7 @@ pub(crate) async fn widgets_order(
         };
         ids.swap(pos, j);
         for (i, wid) in ids.iter().enumerate() {
-            let _ = tx.execute(
-                "UPDATE widgets SET ord=?1 WHERE id=?2 AND sidebar_id=?3",
-                rusqlite::params![i as i64, wid, scope_sidebar],
-            );
+            let _ = crud::widget_set_ord(&tx, wid, i as i64, Some(&scope_sidebar));
         }
         let _ = tx.commit();
         mark_dirty(&sc.db);
@@ -1070,14 +1030,7 @@ pub(crate) async fn widgets_order(
     // the posted sidebar.
     if let Ok(tx) = conn.unchecked_transaction() {
         for (i, wid) in ordered.iter().enumerate() {
-            if let Some(sb) = &apply_sidebar {
-                let _ = tx.execute(
-                    "UPDATE widgets SET ord=?1 WHERE id=?2 AND sidebar_id=?3",
-                    rusqlite::params![i as i64, wid, sb],
-                );
-            } else {
-                let _ = tx.execute("UPDATE widgets SET ord=?1 WHERE id=?2", rusqlite::params![i as i64, wid]);
-            }
+            let _ = crud::widget_set_ord(&tx, wid, i as i64, apply_sidebar.as_deref());
         }
         let _ = tx.commit();
     }
@@ -1126,14 +1079,7 @@ pub(crate) async fn sidebar_add(
     if sidebar_ids(&conn).contains(&id) || crate::widgets::is_const_sidebar(&id) {
         return Redirect::to("/admin/widgets?msg=sbexists").into_response();
     }
-    // lang 'all': custom sidebars aren't lang-partitioned; pages pick by id.
-    if conn
-        .execute(
-            "INSERT INTO sidebars(id, name, lang) VALUES(?1, ?2, 'all')",
-            rusqlite::params![id, name],
-        )
-        .is_err()
-    {
+    if crud::sidebar_insert(&conn, &id, &name).is_err() {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
     mark_dirty(&sc.db);
@@ -1158,28 +1104,14 @@ pub(crate) async fn sidebar_delete(
     if !csrf_ok(&s, &map) {
         return StatusCode::FORBIDDEN.into_response();
     }
-    let Ok(conn) = crate::db::conn(&sc.db) else {
+    let Ok(mut conn) = crate::db::conn(&sc.db) else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
     let id = map.get("id").cloned().unwrap_or_default();
     if crate::widgets::is_const_sidebar(&id) {
         return Redirect::to("/admin/widgets?msg=sbconst").into_response();
     }
-    if let Ok(tx) = conn.unchecked_transaction() {
-        let ord: i64 = tx
-            .query_row(
-                "SELECT COALESCE(MAX(ord)+1, 0) FROM widgets WHERE sidebar_id=?1",
-                [INACTIVE],
-                |r| r.get(0),
-            )
-            .unwrap_or(0);
-        let _ = tx.execute(
-            "UPDATE widgets SET sidebar_id=?1, ord=ord+?2 WHERE sidebar_id=?3",
-            rusqlite::params![INACTIVE, ord, id],
-        );
-        let _ = tx.execute("DELETE FROM sidebars WHERE id=?1", [&id]);
-        let _ = tx.commit();
-    }
+    let _ = crud::sidebar_delete_and_park_widgets(&mut conn, &id, INACTIVE);
     mark_dirty(&sc.db);
     crate::admin::admin::bust_cache(&sc);
     Redirect::to("/admin/widgets?msg=sbdeleted").into_response()

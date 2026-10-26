@@ -1,4 +1,4 @@
-//! Site-level file side-effects that used to live inside `cms generate`.
+//! Site-level file side-effects that used to live inside `rpress generate`.
 //! Under the render-first + lazy write-back model these are produced
 //! on-demand (the first public hit renders, then writes back) or warmed
 //! once at `serve()` boot — never by a full-site build.
@@ -158,7 +158,7 @@ fn collect_raw_redirects(conn: &Connection, site: &str) -> Result<Vec<(String, S
     Ok(raw)
 }
 
-/// One pass over everything `cms generate` used to emit besides post HTML.
+/// One pass over everything `rpress generate` used to emit besides post HTML.
 /// Cheap enough to run at `serve()` boot: pure SQL + string writes, no
 /// renders. Called once on startup so a cold cache still has sitemap,
 /// feeds, robots, redirects and the search page from minute zero.

@@ -319,7 +319,7 @@ pub(crate) async fn form_save(
         .and_then(|c| c.to_str().ok())
         .and_then(|c| {
             c.split(';')
-                .find_map(|p| p.trim().strip_prefix("cms_session="))
+                .find_map(|p| p.trim().strip_prefix(&format!("{}=", SESSION_COOKIE)))
                 .map(|s| s.to_string())
         })
         .and_then(|tok| app.sessions.lock().get(&tok).map(|s| s.csrf.clone()))

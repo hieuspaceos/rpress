@@ -2,11 +2,16 @@
 
 ## Hard rules
 
-1. **SQL only in `src/db/sql/*.sql`, loaded via `sql!("name")`.** No string
-   literals, no `format!` interpolation into SQL — parameters are `?1`-style.
-   `admin/` never calls `prepare`/`query_row` directly; it calls a `db::`
-   function. The `sql!` macro is `include_str!` at compile time — a missing
-   file is a build error, not a runtime surprise.
+1. **SQL ownership is `src/db/` first.** New SQL must live in `src/db/sql/*.sql`
+   and be loaded via `sql!("name")`, or in a narrow `src/db/*` helper when the
+   query is generated or purely local to a data helper. New admin handlers must
+   call `db::` functions instead of embedding SQL. Existing ported plugin/admin
+   code is being migrated behind helpers as it is touched.
+
+   Allowed exceptions must stay narrow and documented in code review: plugin
+   adapter modules may call `sql!(...)` directly when preserving upstream
+   WordPress plugin semantics, and admin handlers may own transaction scope
+   while individual mutations still go through `db::` helpers.
 2. **All POSTs check CSRF** via `check_csrf(&s, &f.csrf)` (`403` on mismatch).
    Handlers follow the shape: `need_auth` → `check_csrf` → mutate →
    `Redirect::to`.
@@ -84,8 +89,8 @@ scheduled: `published_at` in the future; `publish_due` (called from
   only public JSON is `/api/v1/*`.
 - Don't read `terms` for display names in admin lists when `post_terms.name`
   already carries it (keeps list queries single-level).
-- Don't add a users/sessions table — in-memory sessions are a feature
-  (restart = logout).
+- Don't add a second session store. Login sessions persist in the `sessions`
+  table; `app.sessions` is only the hot in-memory cache and CSRF owner.
 - Don't add a second path to a screen: post/page/tour differ only inside
   `KINDS` (`admin/posts.rs`). A new CPT gets a `KindSpec` row — not a new
   handler, list screen, or editor.

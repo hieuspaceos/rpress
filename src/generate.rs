@@ -1,4 +1,4 @@
-//! `cms generate` — render every publish post into an HTML tree.
+//! `rpress generate` — render every publish post into an HTML tree.
 
 #[allow(unused_imports)]
 use crate::sql;
@@ -6,9 +6,25 @@ use crate::render;
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+pub fn atomic_write(path: &Path, contents: impl AsRef<[u8]>) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    let tmp = path.with_extension(format!(
+        "tmp-{}-{stamp}",
+        std::process::id()
+    ));
+    fs::write(&tmp, contents)?;
+    fs::rename(&tmp, path)?;
+    Ok(())
+}
 
 pub fn run(db: &Path, templates: &Path, out: &Path, site_url: &str) -> Result<()> {
     let t0 = Instant::now();
@@ -58,17 +74,14 @@ pub fn run(db: &Path, templates: &Path, out: &Path, site_url: &str) -> Result<()
         }
         let rel = rel_path(*id, front, lang, kind, &wslug);
         let dest = out.join(&rel);
-        if let Some(p) = dest.parent() {
-            fs::create_dir_all(p)?;
-        }
         match render::render_slug(db, templates, slug, lang, kind, site_url) {
             Ok((html, _status)) => {
-                fs::write(&dest, html)?;
+                atomic_write(&dest, html)?;
                 // sibling index.md — the markdown content-negotiation target
                 // (/slug/index.md + Accept header). Only for post/tour/page.
                 if let Some(md) = render::post_markdown(&conn, slug, lang, kind, site_url) {
                     let md_dest = dest.with_file_name("index.md");
-                    let _ = fs::write(&md_dest, md);
+                    let _ = atomic_write(&md_dest, md);
                 }
                 written += 1;
                 let loc_path = rel.to_string_lossy().replace("index.html", "");
@@ -95,7 +108,7 @@ pub fn run(db: &Path, templates: &Path, out: &Path, site_url: &str) -> Result<()
         let dest = out.join("es/index.html");
         match render::render_slug(db, templates, "es", "es", "", site_url) {
             Ok((html, _status)) => {
-                fs::write(&dest, html)?;
+                atomic_write(&dest, html)?;
                 written += 1;
                 let lastmod: Option<String> = conn
                     .query_row(
@@ -146,13 +159,10 @@ pub fn run(db: &Path, templates: &Path, out: &Path, site_url: &str) -> Result<()
         let mut emit = |_tax: &str, _slug: &str, lang: &str, path: &str| -> Result<()> {
             let rel = PathBuf::from(format!("{path}/index.html"));
             let dest = out.join(&rel);
-            if let Some(p) = dest.parent() {
-                fs::create_dir_all(p)?;
-            }
             let render_slug_arg = path.trim_matches('/');
             match render::render_slug(db, templates, render_slug_arg, lang, "archive", site_url) {
                 Ok((html, _status)) => {
-                    fs::write(&dest, html)?;
+                    atomic_write(&dest, html)?;
                     written += 1;
                     let loc_path = rel.to_string_lossy().replace("index.html", "");
                     urls.push((
@@ -312,13 +322,7 @@ pub fn regen_post(db: &Path, templates: &Path, out: &Path, post_id: i64) -> Resu
             Ok((r.get(0)?, r.get(1)?, r.get(2)?))
         })?;
     let (html, _status) = render::render_slug(db, templates, &slug, &lang, &kind, &site_url)?;
-    if let Some(p) = dest.parent() {
-        fs::create_dir_all(p)?;
-    }
-    // tmp+rename: a reader mid-write must never see a half file.
-    let tmp = dest.with_extension("tmp");
-    fs::write(&tmp, html)?;
-    fs::rename(&tmp, &dest)?;
+    atomic_write(&dest, html)?;
     Ok(())
 }
 
@@ -392,7 +396,7 @@ pub(crate) fn write_404(out: &Path, templates: &Path, conn: &Connection, site_ur
     let html = env
         .get_template("404.html")?
         .render(minijinja::Value::from_serialize(serde_json::Value::Object(ctx)))?;
-    fs::write(out.join("404.html"), html)?;
+    atomic_write(&out.join("404.html"), html)?;
     Ok(())
 }
 
@@ -434,8 +438,7 @@ pub(crate) fn write_search(out: &Path, templates: &Path, conn: &Connection, site
             .get_template("search.html")?
             .render(minijinja::Value::from_serialize(serde_json::Value::Object(ctx)))?;
         let d = out.join(dir);
-        fs::create_dir_all(&d)?;
-        fs::write(d.join("index.html"), html)?;
+        atomic_write(&d.join("index.html"), html)?;
     }
     Ok(())
 }
@@ -507,7 +510,7 @@ pub(crate) fn write_feeds(out: &Path, conn: &Connection, site: &str) -> Result<(
             r#"<?xml version="1.0" encoding="UTF-8"?><rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/"><channel><title>{channel_title}</title><link>{channel_link}</link><description>Feed</description>
 {items}</channel></rss>"#
         );
-        fs::write(dest, xml)?;
+        atomic_write(&dest, xml)?;
     }
     Ok(())
 }
@@ -579,7 +582,7 @@ pub(crate) fn write_sitemap(out: &Path, site: &str, urls: &[(String, String, Opt
             body.push_str("</url>");
         }
         body.push_str("</urlset>");
-        fs::write(out.join(&name), body)?;
+        atomic_write(&out.join(&name), body)?;
         index.push_str(&format!("<sitemap><loc>{site}/{name}</loc>"));
         if let Some(lm) = index_lastmod {
             index.push_str(&format!("<lastmod>{lm}</lastmod>"));
@@ -587,13 +590,16 @@ pub(crate) fn write_sitemap(out: &Path, site: &str, urls: &[(String, String, Opt
         index.push_str("</sitemap>");
     }
     index.push_str("</sitemapindex>");
-    fs::write(out.join("sitemap.xml"), index)?;
+    atomic_write(
+        &out.join("sitemap.xml"),
+        index,
+    )?;
     Ok(())
 }
 
 pub(crate) fn write_robots(out: &Path, site: &str) -> Result<()> {
-    fs::write(
-        out.join("robots.txt"),
+    atomic_write(
+        &out.join("robots.txt"),
         format!("User-agent: *\nAllow: /\nSitemap: {site}/sitemap.xml\n"),
     )?;
     Ok(())
@@ -634,23 +640,24 @@ pub(crate) fn write_llms_txt(out: &Path, conn: &Connection, site: &str, tour_bas
         let md = format!("{site}{prefix}{dir}/{slug}/index.md");
         body.push_str(&format!("- [{title}]({html}) ([md]({md}))\n"));
     }
-    fs::write(out.join("llms.txt"), body)?;
+    atomic_write(&out.join("llms.txt"), body)?;
     Ok(())
 }
 
 pub(crate) fn write_redirects(out: &Path, conn: &Connection, raw: &[(String, String)]) -> Result<()> {
-    let mut f = fs::File::create(out.join("redirects.map"))?;
+    let mut body = String::new();
     let mut stmt = conn.prepare(sql!("generate__select_old_slug_new_url"))?;
     let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
     for row in rows {
         let (old, new) = row?;
         let old = old.trim_start_matches('/');
-        writeln!(f, "~^/{old}  {new};")?;
+        body.push_str(&format!("~^/{old}  {new};\n"));
     }
     // raw slug → canonical display slug for tours whose stored slug is
     // degenerate (6416 'x' → /voyage/du-nord-au-sud-vietnam-12-jours/).
     for (old, new) in raw {
-        writeln!(f, "~^{old}  {new};")?;
+        body.push_str(&format!("~^{old}  {new};\n"));
     }
+    atomic_write(&out.join("redirects.map"), body)?;
     Ok(())
 }

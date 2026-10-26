@@ -247,7 +247,7 @@ CREATE INDEX IF NOT EXISTS idx_post_meta_key ON post_meta(meta_key);
 "#;
 
 /// Columns added after the initial DDL — `ALTER TABLE` migrations applied on
-/// every `serve` startup (and import) so existing `cms.db` files upgrade in
+/// every `serve` startup (and import) so existing `.db` files upgrade in
 /// place. Idempotent via `PRAGMA table_info`.
 const MIGRATIONS: &[(&str, &str, &str)] = &[
     // (table, column, column DDL)
@@ -334,7 +334,7 @@ pub fn migrate_conn(c: &rusqlite::Connection) -> anyhow::Result<()> {
     // Backfill posts.body_html (wp post_content) for rows imported before
     // the field existed: non-gdlr bodies are a single text-box wrapper —
     // lift its content out; gdlr rows stay empty (their post_content was
-    // never imported; a fresh `cms import` fills it).
+    // never imported; a fresh `rpress import` fills it).
     backfill_body_html(c);
     seed_forms(c)?;
     Ok(())

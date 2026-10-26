@@ -62,6 +62,10 @@ pub(crate) struct App {
     pub(crate) miss_rate: Arc<Mutex<intake::Rate>>,
 }
 
+pub(crate) const SESSION_COOKIE: &str = "rpress_session";
+pub(crate) const CLEAR_SESSION_COOKIE: &str = "rpress_session=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0";
+
+
 pub(crate) struct Sess {
     pub(crate) site: String,
     pub(crate) site_name: String,
@@ -81,7 +85,7 @@ pub async fn serve(db: PathBuf, templates: PathBuf, out: PathBuf, www: PathBuf, 
     let uploads_root = www.join("wp-content/uploads");
     let _ = crud::media_backfill_dates(&db, &uploads_root);
     let _ = crud::promote_tours(&db);
-    // Boot duties that used to live inside `cms generate`:
+    // Boot duties that used to live inside `rpress generate`:
     //   1. seed default widgets/sidebars so a fresh DB isn't empty
     //   2. purge 30-day-old trash (WP _wp_scheduled_delete equivalent)
     //   3. emit the utility files (sitemap/robots/feeds/404/search/
@@ -91,9 +95,7 @@ pub async fn serve(db: PathBuf, templates: PathBuf, out: PathBuf, www: PathBuf, 
     }
     crate::sitefx::purge_duties(&db, &out);
     {
-        let site_url_boot: String = crate::db::conn(&db).ok()
-            .and_then(|c| c.query_row(crate::sql!("admin__select_value_from"), [], |r| r.get::<_, String>(0)).ok())
-            .unwrap_or_else(|| "/".to_string());
+        let site_url_boot = crate::db::setting_value(&db, "site_url", "/");
         if let Err(e) = crate::sitefx::emit_site_files(&db, &templates, &out, &site_url_boot) {
             eprintln!("emit_site_files: {e:#}");
         }
@@ -234,15 +236,15 @@ pub async fn serve(db: PathBuf, templates: PathBuf, out: PathBuf, www: PathBuf, 
         .route("/admin/profile", get(users::profile_page))
         .route("/admin/settings/{section}", get(settings::settings_page).post(settings::settings_save))
         // Public site: generated file under out/ wins, else render the slug
-        // on demand (mirrors `cms render slug`), else out/404.html.
+        // on demand (mirrors `rpress render slug`), else out/404.html.
         .route("/{*public}", get(public_page))
-        // Multipart uploads cap at 25MB; axum's default 2MB body limit would
-        // 413 every real file. 26MB leaves headroom for multipart framing.
-        .layer(axum::extract::DefaultBodyLimit::max(26 * 1024 * 1024))
+        // Multipart uploads cap at the shared media upload limit; the small
+        // headroom leaves room for multipart framing over the file bytes.
+        .layer(axum::extract::DefaultBodyLimit::max((crud::UPLOAD_LIMIT_BYTES + 1024 * 1024) as usize))
         .layer(axum::middleware::from_fn_with_state(state.clone(), clear_dead_session_cookie))
         .with_state(state);
     let listener = tokio::net::TcpListener::bind(bind).await?;
-    eprintln!("cms listening on http://{bind}");
+    eprintln!("rpress listening on http://{bind}");
     axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await?;
     Ok(())
 }
@@ -442,6 +444,23 @@ fn write_cache(sc: &SiteCtx, rel: &str, html: &str) {
     }
 }
 
+pub fn safe_read_under(root: &std::path::Path, rel: &str) -> Option<Vec<u8>> {
+    if rel.contains("..") || rel.starts_with('/') || rel.contains('\\') {
+        return None;
+    }
+    let root = root.canonicalize().ok()?;
+    let candidate = root.join(rel);
+    let metadata = std::fs::symlink_metadata(&candidate).ok()?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return None;
+    }
+    let candidate = candidate.canonicalize().ok()?;
+    if !candidate.starts_with(&root) {
+        return None;
+    }
+    std::fs::read(candidate).ok()
+}
+
 fn read_out(sc: &SiteCtx, rel: &str) -> Option<Vec<u8>> {
     // `out` = disposable HTML cache. Persistent dirs (user uploads, vendored
     // plugin/theme assets, shared front assets) live under `www` — never
@@ -454,12 +473,7 @@ fn read_out(sc: &SiteCtx, rel: &str) -> Option<Vec<u8>> {
     } else {
         &sc.out
     };
-    let p = base.join(rel);
-    if p.is_file() {
-        std::fs::read(p).ok()
-    } else {
-        None
-    }
+    safe_read_under(base, rel)
 }
 
 fn public_mime(rel: &str) -> &'static str {
@@ -505,11 +519,11 @@ pub(crate) fn site_for<'a>(app: &'a App, headers: &HeaderMap) -> &'a SiteCtx {
     }
 }
 
-/// Proxy addresses allowed to set X-Forwarded-For. `CMS_TRUSTED_PROXY` is a
+/// Proxy addresses allowed to set X-Forwarded-For. `RPRESS_TRUSTED_PROXY` is a
 /// comma-separated IP list (e.g. "127.0.0.1,10.0.0.1"); empty = trust none —
 /// spoofed XFF can never bypass rate limits (A3).
 static TRUSTED_PROXIES: std::sync::LazyLock<Vec<IpAddr>> = std::sync::LazyLock::new(|| {
-    std::env::var("CMS_TRUSTED_PROXY")
+    std::env::var("RPRESS_TRUSTED_PROXY")
         .unwrap_or_default()
         .split(',')
         .filter_map(|s| s.trim().parse().ok())
@@ -552,7 +566,7 @@ pub(crate) fn get_sess<'a>(app: &'a App, sc: &'a SiteCtx, headers: &HeaderMap) -
     // Flipped posts regenerate their single output file off the request
     // thread so publish latency stays one request, not one full generate.
     publish_due(sc);
-    let tok = cookie(headers, "cms_session")?;
+    let tok = cookie(headers, SESSION_COOKIE)?;
     let mut map = app.sessions.lock();
     // Rehydrate from the `sessions` table on a map miss — cookie logins now
     // survive a restart (sessions are persisted, decision B). On any hit,
@@ -673,36 +687,15 @@ pub(crate) fn allowed_origins(sc: &SiteCtx) -> Vec<String> {
 }
 
 pub(crate) fn site_url(sc: &SiteCtx) -> String {
-    crate::db::conn(&sc.db)
-        .ok()
-        .and_then(|c| {
-            c.query_row(
-                "SELECT value FROM settings WHERE key='site_url'",
-                [],
-                |r| r.get::<_, String>(0),
-            )
-            .ok()
-        })
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "/".into())
+    crate::db::setting_value(&sc.db, "site_url", "/")
 }
 
 /// Origin for assets we don't hold locally (CSS/JS/fonts/uploads) —
 /// `settings.asset_origin`, falling back to `site_url`. Keeps a local
-/// `cms serve` preview fully styled while the files still live on the WP box.
+/// `rpress serve` preview fully styled while the files still live on the WP box.
 pub(crate) fn asset_origin(sc: &SiteCtx) -> String {
-    let v = crate::db::conn(&sc.db)
-        .ok()
-        .and_then(|c| {
-            c.query_row(
-                "SELECT value FROM settings WHERE key='asset_origin'",
-                [],
-                |r| r.get::<_, String>(0),
-            )
-            .ok()
-        })
-        .filter(|s| !s.is_empty());
-    v.unwrap_or_else(|| site_url(sc))
+    let v = crate::db::setting_value(&sc.db, "asset_origin", "");
+    if v.is_empty() { site_url(sc) } else { v }
 }
 
 /// Authenticate and resolve the site in one step.
@@ -715,9 +708,9 @@ pub(crate) fn check_csrf(s: &Sess, sent: &str) -> Result<(), Response> {
     Ok(())
 }
 
-/// Middleware: when a request carried a `cms_session` cookie whose token no
+/// Middleware: when a request carried an `rpress_session` cookie whose token no
 /// longer resolves (expired/deleted/revoked) and the handler bounced to
-/// `/admin/login`, append `Set-Cookie: cms_session=` so the browser stops
+/// `/admin/login`, append `Set-Cookie: rpress_session=` so the browser stops
 /// resending the dead token. Covers the many handlers that replace
 /// `need_auth`'s `Err(Response)` with their own login redirect.
 async fn clear_dead_session_cookie(
@@ -725,7 +718,7 @@ async fn clear_dead_session_cookie(
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
-    let tok = cookie(req.headers(), "cms_session");
+    let tok = cookie(req.headers(), SESSION_COOKIE);
     let mut res = next.run(req).await;
     if let Some(tok) = tok {
         let dead = !app.sessions.lock().contains_key(&tok);
@@ -733,7 +726,7 @@ async fn clear_dead_session_cookie(
         if dead && bounced {
             res.headers_mut().insert(
                 header::SET_COOKIE,
-                HeaderValue::from_static("cms_session=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0"),
+                HeaderValue::from_static(CLEAR_SESSION_COOKIE),
             );
         }
     }
@@ -753,11 +746,11 @@ pub(crate) fn need_auth<'a>(app: &'a App, headers: &HeaderMap) -> Result<(Sess, 
     // Stale/expired cookie → clear it so the browser stops resending a dead
     // token (get_sess already dropped it from the map; the DB row is expired
     // or deleted and session_get refuses it).
-    if cookie(headers, "cms_session").is_some() {
+    if cookie(headers, SESSION_COOKIE).is_some() {
         let mut r = Redirect::to("/admin/login").into_response();
         r.headers_mut().insert(
             header::SET_COOKIE,
-            HeaderValue::from_static("cms_session=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0"),
+            HeaderValue::from_static(CLEAR_SESSION_COOKIE),
         );
         return Err(r);
     }
@@ -970,16 +963,17 @@ pub(crate) fn chrome_start(active: &str, s: &Sess) -> String {
 <li id="wp-admin-bar-my-account" class="menupop"><a class="ab-item" href="/admin/profile">Howdy, "#,
     );
     html.push_str(&email);
-    html.push_str(
+    html.push_str(&format!(
         r#"</a>
-<div class="ab-sub-wrapper"><ul class="ab-submenu"><li id="wp-admin-bar-logout"><form method="post" action="/api/logout" style="margin:0"><button type="submit" class="ab-item" style="background:none;border:0;cursor:pointer;width:100%;text-align:left">Log Out</button></form></li></ul></div></li>
+<div class="ab-sub-wrapper"><ul class="ab-submenu"><li id="wp-admin-bar-logout"><form method="post" action="/api/logout" style="margin:0"><input type="hidden" name="csrf" value="{csrf}"><button type="submit" class="ab-item" style="background:none;border:0;cursor:pointer;width:100%;text-align:left">Log Out</button></form></li></ul></div></li>
 </ul>
 </div>
 </div>
 <div id="wpbody" role="main">
 <div id="wpbody-content">
 "#,
-    );
+        csrf = esc(&s.csrf)
+    ));
     html
 }
 
@@ -1048,15 +1042,11 @@ pub(crate) fn esc(s: &str) -> String {
 
 async fn wp_asset(State(app): State<App>, headers: HeaderMap, Path(path): Path<String>) -> Response {
     let sc = site_for(&app, &headers);
-    if path.contains("..") || path.starts_with('/') {
-        return StatusCode::NOT_FOUND.into_response();
-    }
-    let p = sc.templates.join("admin/wp").join(&path);
-    let b = match std::fs::read(&p) {
-        Ok(b) => b,
-        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+    let b = match safe_read_under(&sc.templates.join("admin/wp"), &path) {
+        Some(b) => b,
+        None => return StatusCode::NOT_FOUND.into_response(),
     };
-    let ct = match p.extension().and_then(|s| s.to_str()).unwrap_or("") {
+    let ct = match PathBuf::from(&path).extension().and_then(|s| s.to_str()).unwrap_or("") {
         "css" => "text/css; charset=utf-8",
         "js" => "text/javascript; charset=utf-8",
         "woff2" => "font/woff2",
@@ -1068,44 +1058,28 @@ async fn wp_asset(State(app): State<App>, headers: HeaderMap, Path(path): Path<S
     ([(header::CONTENT_TYPE, ct)], b).into_response()
 }
 
-/// `/wp-content/uploads/*` — imported media lives on the live WP host, not
-/// this box. Serve the file when a local copy exists under `out/`, else
-/// redirect to the site_url origin so the builder preview and media modal
-/// show the real image. `nosniff` on every response and no scriptable
-/// content type (svg → octet-stream) closes upload-borne stored XSS (A4).
+/// `/wp-content/uploads/*` — imported media lives under `www/` when copied
+/// locally. Serve safe media inline; force scriptable legacy extensions to
+/// download as octet-stream so copied WP uploads cannot become same-origin XSS.
+/// Missing local files redirect to `asset_origin` for preview parity.
 async fn uploads(State(app): State<App>, headers: HeaderMap, Path(path): Path<String>) -> Response {
     let sc = site_for(&app, &headers);
-    if path.contains("..") || path.starts_with('/') {
-        return StatusCode::NOT_FOUND.into_response();
-    }
-    let p = sc.www.join("wp-content/uploads").join(&path);
-    if p.is_file() {
-        if let Ok(bytes) = std::fs::read(&p) {
-            let mime = match p
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("")
-                .to_ascii_lowercase()
-                .as_str()
-            {
-                "jpg" | "jpeg" => "image/jpeg", "png" => "image/png", "gif" => "image/gif",
-                "webp" => "image/webp", "avif" => "image/avif", "ico" => "image/x-icon",
-                "mp4" => "video/mp4", "webm" => "video/webm", "pdf" => "application/pdf",
-                "woff2" => "font/woff2", "woff" => "font/woff", "ttf" => "font/ttf",
-                "otf" => "font/otf", "eot" => "application/vnd.ms-fontobject",
-                "css" => "text/css; charset=utf-8", "js" => "application/javascript; charset=utf-8",
-                "svg" => "image/svg+xml", "xml" => "application/xml; charset=utf-8",
-                _ => "application/octet-stream",
-            };
-            return (
-                [
-                    (header::CONTENT_TYPE, mime),
-                    (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
-                ],
-                bytes,
-            )
-                .into_response();
+    let root = sc.www.join("wp-content/uploads");
+    if let Some(bytes) = safe_read_under(&root, &path) {
+        let (mime, attachment) = crud::served_upload_mime(&path);
+        let mut res = Response::builder()
+            .header(header::CONTENT_TYPE, mime)
+            .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff");
+        if attachment {
+            let name = path.rsplit('/').next().unwrap_or("download.bin").replace('"', "_");
+            res = res.header(
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{name}\""),
+            );
         }
+        return res
+            .body(Body::from(bytes))
+            .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
     }
     let origin = asset_origin(sc).trim_end_matches('/').to_string();
     if origin.starts_with("http") {
@@ -1122,13 +1096,9 @@ pub(crate) fn hex(b: &[u8]) -> String {
 /// only inside the page-builder Live Mode canvas so it matches the public site.
 async fn front_css(State(app): State<App>, headers: HeaderMap, Path(path): Path<String>) -> Response {
     let sc = site_for(&app, &headers);
-    if path.contains("..") || path.starts_with('/') {
-        return StatusCode::NOT_FOUND.into_response();
-    }
-    let p = sc.templates.join("front-css").join(&path);
-    match std::fs::read(&p) {
-        Ok(b) => ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], b).into_response(),
-        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    match safe_read_under(&sc.templates.join("front-css"), &path) {
+        Some(b) => ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], b).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
     }
 }
 

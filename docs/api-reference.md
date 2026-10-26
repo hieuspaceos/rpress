@@ -1,12 +1,12 @@
-# API reference — cms
+# API reference — rpress
 
 Route authority is `src/admin/mod.rs::serve()` — one `Router::new()` chain.
 This file documents intent + contract, not mechanics. If a row drifts from
 the router, the router wins.
 
-Auth: every `/admin/*` route needs the `cms_session` cookie scoped to the
+Auth: every `/admin/*` route needs the `rpress_session` cookie scoped to the
 current site's `SiteCtx.slug` — a token minted on one host is rejected on
-another. Every mutating route needs the session CSRF token (`name="csrf"`).
+another. Every mutating route, including logout, needs the session CSRF token (`name="csrf"`).
 ## Admin screens (HTML)
 
 | Route | Handler (`admin/`) | Purpose |
@@ -57,7 +57,7 @@ another. Every mutating route needs the session CSRF token (`name="csrf"`).
 | widget mutations | `widgets.rs` | all set `settings.widgets_dirty=1`; dashboard shows "pending publish" + Publish until the next emit/bust clears it |
 | `GET|POST /admin/settings/{section}` | `settings.rs` | `general|writing|reading|discussion|media|permalink|privacy`; permalink/category/tag base render disabled (fixed structure on static site); email controls unsupported — no mail transport |
 | `GET /admin/wp/{*path}`, `GET /admin/front-css/{*path}`, `GET /admin/vendor/htmx.min.js` | `admin.rs` | vendored WP admin assets |
-| `GET /wp-content/uploads/{*path}` | `mod.rs::uploads` | local copy under `www/wp-content/uploads` else redirect to `asset_origin`; nosniff, svg→octet-stream |
+| `GET /wp-content/uploads/{*path}` | `mod.rs::uploads` | local copy under `www/wp-content/uploads` else redirect to `asset_origin`; nosniff; SVG/XML/HTML/JS/CSS/unknown local legacy files force download as octet-stream |
 
 ## JSON / machine routes
 

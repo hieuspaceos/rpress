@@ -30,18 +30,7 @@ fn tax_labels(tax: &str) -> (String, String) {
 /// settings.tour_custom_taxs = {slug: label} (tourmaster's
 /// `tourmaster_custom_tour_taxs` option equivalent; hierarchy always on).
 fn custom_taxs(db: &std::path::Path) -> std::collections::BTreeMap<String, String> {
-    crate::db::conn(db)
-        .ok()
-        .and_then(|c| {
-            c.query_row(
-                "SELECT value FROM settings WHERE key='tour_custom_taxs'",
-                [],
-                |r| r.get::<_, String>(0),
-            )
-            .ok()
-        })
-        .and_then(|v| serde_json::from_str(&v).ok())
-        .unwrap_or_default()
+    crud::setting_json_map(db, "tour_custom_taxs")
 }
 
 fn new_filter_html(s: &Sess) -> String {
@@ -83,13 +72,7 @@ pub(crate) async fn tax_new_filter(State(app): State<App>, headers: HeaderMap, F
     }
     let mut taxs = custom_taxs(&sc.db);
     taxs.insert(slug.clone(), f.label.trim().to_string());
-    if let Ok(c) = crate::db::conn(&sc.db) {
-        let _ = c.execute(
-            "INSERT INTO settings(key,value) VALUES('tour_custom_taxs',?1)
-             ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            [serde_json::to_string(&taxs).unwrap_or_default()],
-        );
-    }
+    let _ = crud::setting_json_put_map(&sc.db, "tour_custom_taxs", &taxs);
     Redirect::to(&format!("/admin/tax/{slug}")).into_response()
 }
 #[derive(Deserialize)]

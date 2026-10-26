@@ -181,24 +181,31 @@ pub(crate) async fn login(
         .header(header::LOCATION, "/admin")
         .header(
             header::SET_COOKIE,
-            format!("cms_session={tok}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age={ttl}"),
+            format!("{}={tok}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age={ttl}", SESSION_COOKIE),
         )
         .body(Body::empty())
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
-pub(crate) async fn logout(State(app): State<App>, headers: HeaderMap) -> Response {
-    if let Some(tok) = cookie(&headers, "cms_session") {
+pub(crate) async fn logout(
+    State(app): State<App>,
+    headers: HeaderMap,
+    Form(f): Form<HashMap<String, String>>,
+) -> Response {
+    let Ok((s, sc)) = need_auth(&app, &headers) else {
+        return Redirect::to("/admin/login").into_response();
+    };
+    if let Err(r) = check_csrf(&s, f.get("csrf").map(|x| x.as_str()).unwrap_or("")) {
+        return r;
+    }
+    if let Some(tok) = cookie(&headers, SESSION_COOKIE) {
         app.sessions.lock().remove(&tok);
-        let _ = udb::session_delete(&site_for(&app, &headers).db, &tok);
+        let _ = udb::session_delete(&sc.db, &tok);
     }
     Response::builder()
         .status(StatusCode::SEE_OTHER)
         .header(header::LOCATION, "/admin/login")
-        .header(
-            header::SET_COOKIE,
-            "cms_session=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0",
-        )
+        .header(header::SET_COOKIE, CLEAR_SESSION_COOKIE)
         .body(Body::empty())
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }

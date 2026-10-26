@@ -30,9 +30,9 @@ pub(crate) fn color_class(s: &Sess) -> String {
 }
 
 /// Drop every session owned by `user_id`, keeping `keep_token` alive.
-/// `Sess` doesn't store its own token, so callers pass
-/// `cookie(&headers, "cms_session")`. When a keep-token exists its site scopes
-/// the drop (multi-site shares one map, user ids are per-site); `None` drops
+/// `Sess` doesn't store its own token, so callers pass the `rpress_session`
+/// cookie value. When a keep-token exists its site scopes the drop
+/// (multi-site shares one map, user ids are per-site); `None` drops
 /// that id everywhere (used by delete — over-dropping only forces re-login).
 /// Integrator: sessions live in `app.sessions: Mutex<HashMap<token, Sess>>`.
 pub(crate) fn drop_sessions_for(app: &App, user_id: i64, keep_token: Option<&str>) {
@@ -948,7 +948,7 @@ pub(crate) async fn users_save(State(app): State<App>, headers: HeaderMap, Form(
             return (StatusCode::INTERNAL_SERVER_ERROR, "password not changed").into_response();
         }
         // Password set → kill that user's other sessions (WP does the same).
-        let keep = if is_self { cookie(&headers, "cms_session") } else { None };
+        let keep = if is_self { cookie(&headers, SESSION_COOKIE) } else { None };
         let _ = udb::session_delete_others(&sc.db, f.id, keep.as_deref().unwrap_or(""));
         drop_sessions_for(&app, f.id, keep.as_deref());
     }
@@ -977,7 +977,7 @@ pub(crate) async fn users_logout_others(State(app): State<App>, headers: HeaderM
             return r.into_response();
         }
     }
-    let keep = if f.id == s.user_id { cookie(&headers, "cms_session") } else { None };
+    let keep = if f.id == s.user_id { cookie(&headers, SESSION_COOKIE) } else { None };
     // Persisted sessions die too — without this the other device just
     // rehydrates from `sessions` on its next request.
     let _ = udb::session_delete_others(&sc.db, f.id, keep.as_deref().unwrap_or(""));

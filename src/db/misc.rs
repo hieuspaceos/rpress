@@ -4,6 +4,193 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+pub const UPLOAD_LIMIT_BYTES: usize = 25 * 1024 * 1024;
+pub const UPLOAD_LIMIT_DISPLAY: &str = "25 MB";
+
+/// Local legacy upload serving policy. New uploads already reject scriptable
+/// extensions; restored WP uploads still pass through this guard.
+pub fn served_upload_mime(filename: &str) -> (&'static str, bool) {
+    match filename
+        .rsplit_once('.')
+        .map(|(_, e)| e.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("jpg" | "jpeg") => ("image/jpeg", false),
+        Some("png") => ("image/png", false),
+        Some("gif") => ("image/gif", false),
+        Some("webp") => ("image/webp", false),
+        Some("avif") => ("image/avif", false),
+        Some("ico") => ("image/x-icon", false),
+        Some("mp4") => ("video/mp4", false),
+        Some("webm") => ("video/webm", false),
+        Some("pdf") => ("application/pdf", false),
+        Some("woff2") => ("font/woff2", false),
+        Some("woff") => ("font/woff", false),
+        Some("ttf") => ("font/ttf", false),
+        Some("otf") => ("font/otf", false),
+        Some("eot") => ("application/vnd.ms-fontobject", false),
+        Some("svg" | "xml" | "html" | "htm" | "js" | "mjs" | "css") => {
+            ("application/octet-stream", true)
+        }
+        _ => ("application/octet-stream", true),
+    }
+}
+
+pub fn setting_value(db: &Path, key: &str, default: &str) -> String {
+    crate::db::conn(db)
+        .ok()
+        .and_then(|c| c.query_row("SELECT value FROM settings WHERE key=?1", [key], |r| r.get::<_, String>(0)).ok())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| default.to_string())
+}
+
+pub fn setting_put(db: &Path, key: &str, value: &str) -> Result<()> {
+    let c = crate::db::conn(db)?;
+    c.execute(
+        "INSERT OR REPLACE INTO settings(key, value) VALUES(?1, ?2)",
+        params![key, value],
+    )?;
+    Ok(())
+}
+
+pub fn setting_json_value_conn(conn: &rusqlite::Connection, key: &str) -> serde_json::Value {
+    conn.query_row("SELECT value FROM settings WHERE key=?1", [key], |r| r.get::<_, String>(0))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or(serde_json::Value::Null)
+}
+
+pub fn setting_json_put_conn(conn: &rusqlite::Connection, key: &str, value: &serde_json::Value) -> Result<()> {
+    conn.execute(
+        "INSERT INTO settings(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        params![key, value.to_string()],
+    )?;
+    Ok(())
+}
+
+pub fn setting_json_map(db: &Path, key: &str) -> std::collections::BTreeMap<String, String> {
+    crate::db::conn(db)
+        .ok()
+        .and_then(|c| {
+            c.query_row("SELECT value FROM settings WHERE key=?1", [key], |r| r.get::<_, String>(0))
+                .ok()
+        })
+        .and_then(|v| serde_json::from_str(&v).ok())
+        .unwrap_or_default()
+}
+
+pub fn setting_json_put_map(db: &Path, key: &str, value: &std::collections::BTreeMap<String, String>) -> Result<()> {
+    setting_put(db, key, &serde_json::to_string(value)?)
+}
+
+pub fn widget_next_ord(conn: &rusqlite::Connection, sidebar: &str) -> i64 {
+    conn.query_row("SELECT COALESCE(MAX(ord)+1, 0) FROM widgets WHERE sidebar_id=?1", [sidebar], |r| r.get(0))
+        .unwrap_or(0)
+}
+
+pub fn widget_insert(conn: &rusqlite::Connection, id: &str, sidebar: &str, typ: &str, title: &str, settings: &str, ord: i64) -> Result<()> {
+    conn.execute(
+        "INSERT INTO widgets(id, sidebar_id, type, title, settings_json, ord) VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
+        params![id, sidebar, typ, title, settings, ord],
+    )?;
+    Ok(())
+}
+
+pub fn widget_update(conn: &rusqlite::Connection, id: &str, sidebar: &str, title: &str, settings: &str, ord: i64) -> Result<()> {
+    conn.execute(
+        "UPDATE widgets SET sidebar_id=?1, title=?2, settings_json=?3, ord=?4 WHERE id=?5",
+        params![sidebar, title, settings, ord, id],
+    )?;
+    Ok(())
+}
+
+pub fn widget_delete(conn: &rusqlite::Connection, id: &str) -> Result<()> {
+    conn.execute("DELETE FROM widgets WHERE id=?1", [id])?;
+    Ok(())
+}
+
+pub fn widget_move(conn: &rusqlite::Connection, id: &str, sidebar: &str, ord: i64) -> Result<()> {
+    conn.execute("UPDATE widgets SET sidebar_id=?1, ord=?2 WHERE id=?3", params![sidebar, ord, id])?;
+    Ok(())
+}
+
+pub fn widget_ord(conn: &rusqlite::Connection, id: &str) -> i64 {
+    conn.query_row("SELECT ord FROM widgets WHERE id=?1", [id], |r| r.get::<_, i64>(0))
+        .unwrap_or(0)
+}
+
+pub fn widget_ids_in_sidebar(conn: &rusqlite::Connection, sidebar: &str) -> Vec<String> {
+    let mut ids = Vec::new();
+    if let Ok(mut st) = conn.prepare("SELECT id FROM widgets WHERE sidebar_id=?1 ORDER BY ord") {
+        if let Ok(rows) = st.query_map([sidebar], |r| r.get::<_, String>(0)) {
+            ids.extend(rows.flatten());
+        }
+    }
+    ids
+}
+
+pub fn widget_set_ord(conn: &rusqlite::Connection, id: &str, ord: i64, sidebar: Option<&str>) -> Result<()> {
+    if let Some(sidebar) = sidebar {
+        conn.execute("UPDATE widgets SET ord=?1 WHERE id=?2 AND sidebar_id=?3", params![ord, id, sidebar])?;
+    } else {
+        conn.execute("UPDATE widgets SET ord=?1 WHERE id=?2", params![ord, id])?;
+    }
+    Ok(())
+}
+
+pub fn sidebar_insert(conn: &rusqlite::Connection, id: &str, name: &str) -> Result<()> {
+    conn.execute(
+        "INSERT INTO sidebars(id, name, lang) VALUES(?1, ?2, 'all')",
+        params![id, name],
+    )?;
+    Ok(())
+}
+
+pub fn sidebar_delete_and_park_widgets(conn: &mut rusqlite::Connection, id: &str, inactive: &str) -> Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    let ord = widget_next_ord(&tx, inactive);
+    tx.execute(
+        "UPDATE widgets SET sidebar_id=?1, ord=ord+?2 WHERE sidebar_id=?3",
+        params![inactive, ord, id],
+    )?;
+    tx.execute("DELETE FROM sidebars WHERE id=?1", [id])?;
+    tx.commit()?;
+    Ok(())
+}
+
+pub fn pending_comments_count(db: &Path) -> i64 {
+    crate::db::conn(db)
+        .ok()
+        .and_then(|c| c.query_row("SELECT COUNT(*) FROM comments WHERE status='pending'", [], |r| r.get(0)).ok())
+        .unwrap_or(0)
+}
+
+pub fn gdlr_media_json(db: &Path, site: &str) -> Result<String> {
+    let conn = crate::db::conn(db)?;
+    let mut stmt = conn.prepare("SELECT id, path, COALESCE(alt,''), COALESCE(mime,'') FROM media ORDER BY id DESC")?;
+    let rows = stmt.query_map([], |r| {
+        Ok(serde_json::json!({
+            "id": r.get::<_, i64>(0)?,
+            "path": r.get::<_, String>(1)?,
+            "alt": r.get::<_, String>(2)?,
+            "mime": r.get::<_, String>(3)?,
+        }))
+    })?;
+    let site = site.trim_end_matches('/').to_string();
+    let v: Vec<serde_json::Value> = rows
+        .flatten()
+        .map(|mut m| {
+            if let Some(p) = m.get("path").and_then(|p| p.as_str()).map(|x| x.to_string()) {
+                m.as_object_mut().map(|o| o.insert("url".into(), serde_json::json!(format!("{site}/wp-content/uploads/{p}"))));
+            }
+            m
+        })
+        .collect();
+    Ok(serde_json::to_string(&v)?)
+}
+
+
 /// wp-admin upload handler: file → `uploads/YYYY/MM/name.ext` + media row.
 /// Title defaults to the file stem like WP does.
 /// Filename sanitized like `sanitize_file_name` (WP keeps a narrow charset).
@@ -27,8 +214,8 @@ pub(crate) fn upload_ext_ok(filename: &str) -> bool {
 }
 
 pub fn save_upload(db: &Path, uploads: &Path, filename: &str, bytes: &[u8], alt: &str, owner: &str) -> Result<i64> {
-    if bytes.len() > 25 * 1024 * 1024 {
-        anyhow::bail!("max 25MB");
+    if bytes.len() > UPLOAD_LIMIT_BYTES {
+        anyhow::bail!("max {UPLOAD_LIMIT_DISPLAY}");
     }
     if !upload_ext_ok(filename) {
         anyhow::bail!("file type not allowed");
@@ -100,8 +287,8 @@ pub fn save_upload(db: &Path, uploads: &Path, filename: &str, bytes: &[u8], alt:
 /// on-disk original to `media/{id}_original.{ext}` under uploads and records
 /// it in `backup_path` so Restore Original can bring it back.
 pub fn media_replace_upload(db: &Path, uploads: &Path, id: i64, bytes: &[u8]) -> Result<()> {
-    if bytes.len() > 25 * 1024 * 1024 {
-        anyhow::bail!("max 25MB");
+    if bytes.len() > UPLOAD_LIMIT_BYTES {
+        anyhow::bail!("max {UPLOAD_LIMIT_DISPLAY}");
     }
     let c = crate::db::conn(db)?;
     let row: Option<(String, Option<String>)> = c

@@ -29,7 +29,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Import WP dump → cms.db
+    /// Import WP dump → rpress.db
     Import {
         #[command(subcommand)]
         step: ImportStep,
@@ -41,7 +41,7 @@ enum Cmd {
     },
     /// Write static HTML tree
     Generate {
-        #[arg(long, default_value = "cms.db")]
+        #[arg(long, default_value = "rpress.db")]
         db: PathBuf,
         #[arg(long, default_value = "templates")]
         templates: PathBuf,
@@ -53,7 +53,7 @@ enum Cmd {
     /// WP → rpress one-liner: import dump, create admin, generate site
     Migrate {
         dump: PathBuf,
-        #[arg(long, default_value = "cms.db")]
+        #[arg(long, default_value = "rpress.db")]
         db: PathBuf,
         #[arg(long, default_value = "templates")]
         templates: PathBuf,
@@ -71,7 +71,7 @@ enum Cmd {
     Serve {
         #[arg(long, default_value = "127.0.0.1:8400")]
         bind: String,
-        #[arg(long, default_value = "cms.db")]
+        #[arg(long, default_value = "rpress.db")]
         db: PathBuf,
         #[arg(long, default_value = "templates")]
         templates: PathBuf,
@@ -98,18 +98,18 @@ enum Cmd {
 
 #[derive(Subcommand)]
 enum ImportStep {
-    /// Parse dump, map to cms.db, write import-report.txt
+    /// Parse dump, map to rpress.db, write import-report.txt
     Parse {
         #[arg(long, default_value = "dump.sql")]
         dump: PathBuf,
-        #[arg(long, default_value = "cms.db")]
+        #[arg(long, default_value = "rpress.db")]
         db: PathBuf,
         #[arg(long, default_value = "import-report.txt")]
         report: PathBuf,
     },
-    /// Run audit-count checklist against cms.db
+    /// Run audit-count checklist against rpress.db
     Verify {
-        #[arg(long, default_value = "cms.db")]
+        #[arg(long, default_value = "rpress.db")]
         db: PathBuf,
     },
 }
@@ -118,7 +118,7 @@ enum ImportStep {
 enum RenderStep {
     Slug {
         slug: String,
-        #[arg(long, default_value = "cms.db")]
+        #[arg(long, default_value = "rpress.db")]
         db: PathBuf,
         #[arg(long, default_value = "templates")]
         templates: PathBuf,
@@ -128,12 +128,12 @@ enum RenderStep {
         site_url: String,
     },
     Coverage {
-        #[arg(long, default_value = "cms.db")]
+        #[arg(long, default_value = "rpress.db")]
         db: PathBuf,
     },
     /// Tag-diff parity check vs templates/reference/
     VerifyRefs {
-        #[arg(long, default_value = "cms.db")]
+        #[arg(long, default_value = "rpress.db")]
         db: PathBuf,
         #[arg(long, default_value = "templates")]
         templates: PathBuf,
@@ -201,13 +201,13 @@ enum UserStep {
         password: String,
         #[arg(long, default_value = "editor")]
         role: String,
-        #[arg(long, default_value = "cms.db")]
+        #[arg(long, default_value = "rpress.db")]
         db: PathBuf,
     },
     Passwd {
         email: String,
         password: String,
-        #[arg(long, default_value = "cms.db")]
+        #[arg(long, default_value = "rpress.db")]
         db: PathBuf,
     },
 }
