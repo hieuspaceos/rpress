@@ -1,6 +1,34 @@
 # E2E workflow — WP clone → running rpress site
 
-Generic, per-site. One env file + one script; nothing hardcodes a site.
+Generic, per-site. One env file; nothing hardcodes a site.
+
+## The CLI way (preferred)
+
+```sh
+rpress site init   mysite                      # wizard, or flags — see below
+rpress site build  mysite                      # pull→import→configure→generate→check
+rpress site serve  mysite                      # sandbox + test checklist
+rpress site serve  mysite --smoke              # agent variant: probe routes, exit
+rpress site deploy mysite --target static --domain https://ex.com --dest user@h:/var/www/x --yes
+```
+
+`init` probes instead of asking: `--source ssh` finds wp-config.php, reads DB
+creds, lists (or exports) dumps, reads `siteurl` from the live DB;
+`--source local` scans a dir for `*.sql` + `wp-content`; `--source archive`
+unpacks `.zip/.tar(.gz)/.sql.gz` first. Every prompt has a flag twin — agents
+run non-interactively. `--ssh` takes `user@host` or a `vps.sh` alias
+(password/keyfile hosts via `../vps-ssh`).
+
+`build` reports per phase (`ok|warn|fail` + hint + `--from <phase>` resume),
+`--json` for machine output. `serve` preflights db/cache/port, prints the
+per-language checklist, `--smoke` probes routes without a browser.
+
+`deploy` needs an explicit `--domain` (never derived from the source) and
+refuses `domain == source origin`. Targets: `static` (rsync docroot, no
+dynamic routes), `pages` (Cloudflare Pages via wrangler), `vps` (full app
+payload + printed nginx/systemd runbook). `--dry-run` previews.
+
+## The shell way (fallback)
 
 ```sh
 cp sites/_template.env sites/mysite.env   # edit: SITE, BIND, SITE_URL, pull source
@@ -8,6 +36,8 @@ scripts/e2e-site.sh sites/mysite.env all  # pull → import → configure → ge
 scripts/e2e-site.sh sites/mysite.env serve
 scripts/e2e-site.sh sites/mysite.env parity   # quality gate vs origin (optional)
 ```
+
+Both read the same `sites/<name>.env` — init output works with either.
 
 State: `work/<SITE>/{dump.sql, rpress.db, cache/, www/, credentials.txt}`.
 `work/` is gitignored, fully disposable — rerun `all` any time.

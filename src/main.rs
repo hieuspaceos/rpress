@@ -13,6 +13,11 @@ mod render_tour;
 mod schema;
 mod widgets;
 mod admin;
+mod site;
+mod site_build;
+mod site_init;
+mod site_deploy;
+mod site_serve;
 mod sitefx;
 mod sqldump;
 mod verify;
@@ -68,6 +73,11 @@ enum Cmd {
     User {
         #[command(subcommand)]
         step: UserStep,
+    },
+    /// Site workflow: init → build → serve → deploy (one env per site)
+    Site {
+        #[command(subcommand)]
+        step: SiteStep,
     },
     Serve {
         #[arg(long, default_value = "127.0.0.1:8400")]
@@ -184,6 +194,34 @@ fn main() -> Result<()> {
             );
             Ok(())
         },
+        Cmd::Site { step } => match step {
+            SiteStep::Init(args) => site_init::run(site_init::InitArgs {
+                site: args.site,
+                source: args.source,
+                ssh: args.ssh,
+                wp_root: args.wp_root,
+                dump_remote: args.dump_remote,
+                fresh_dump: args.fresh_dump,
+                dump: args.dump,
+                wp_content: args.wp_content,
+                backup: args.backup,
+                site_url: args.site_url,
+                bind: args.bind,
+                name: args.name,
+                tour_base: args.tour_base,
+                clone_ok: args.clone_ok,
+                force: args.force,
+            }),
+            SiteStep::Build { site, only, from, json, templates } => {
+                site_build::run(site_build::BuildArgs { site, only, from, json, templates })
+            }
+            SiteStep::Serve { site, bind, smoke } => {
+                site_serve::run(site_serve::ServeArgs { site, bind, smoke })
+            }
+            SiteStep::Deploy { site, target, domain, dest, project, app_dir, yes, dry_run } => {
+                site_deploy::run(site_deploy::DeployArgs { site, target, domain, dest, project, app_dir, yes, dry_run })
+            }
+        },
         Cmd::Serve { bind, db, templates, out, www, host, site, name, tour_base } => {
             let addr: std::net::SocketAddr = bind.parse()?;
             let name = name.unwrap_or_else(|| host.clone());
@@ -193,6 +231,114 @@ fn main() -> Result<()> {
             tokio::runtime::Runtime::new()?.block_on(admin::serve(db, templates, out, www, addr, site, host, name, tour_base))
         }
     }
+}
+
+#[derive(Subcommand)]
+enum SiteStep {
+    /// Onboard a WP source → writes sites/<name>.env
+    Init(InitArgs),
+    /// pull → import → configure → generate → check, per-phase reporting
+    Build {
+        /// Site slug (sites/<slug>.env)
+        site: String,
+        /// Run only these phases, comma-separated
+        #[arg(long)]
+        only: Option<String>,
+        /// Resume from this phase onward
+        #[arg(long)]
+        from: Option<String>,
+        /// Machine-readable report on stdout
+        #[arg(long)]
+        json: bool,
+        /// Templates dir (default: ./templates)
+        #[arg(long)]
+        templates: Option<PathBuf>,
+    },
+    /// Preflight + test checklist + serve the sandbox site
+    Serve {
+        /// Site slug (sites/<slug>.env)
+        site: String,
+        /// Override the env's BIND
+        #[arg(long)]
+        bind: Option<String>,
+        /// Spawn, probe the key routes, report and exit — no browser needed
+        #[arg(long)]
+        smoke: bool,
+    },
+    /// Deploy a tested site: --target static|pages|vps, always with --domain
+    Deploy {
+        /// Site slug (sites/<slug>.env)
+        site: String,
+        /// static | pages | vps
+        #[arg(long)]
+        target: String,
+        /// Public origin, e.g. https://example.com (never guessed)
+        #[arg(long)]
+        domain: Option<String>,
+        /// static/vps: <dir> | <user@host>:<path> | vps:<alias>:<path>
+        #[arg(long)]
+        dest: Option<String>,
+        /// pages: Cloudflare Pages project name (default: site slug)
+        #[arg(long)]
+        project: Option<String>,
+        /// vps: remote app dir label for the runbook (default: dest path)
+        #[arg(long)]
+        app_dir: Option<String>,
+        /// Skip the confirmation prompt (agents)
+        #[arg(long)]
+        yes: bool,
+        /// Print the plan, change nothing
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
+#[derive(clap::Args)]
+struct InitArgs {
+    /// Site slug (sites/<slug>.env); prompted when interactive
+    site: Option<String>,
+    /// ssh | local | archive
+    #[arg(long)]
+    source: Option<String>,
+    /// user@host — probe wp-config, DB creds and dumps over ssh
+    #[arg(long)]
+    ssh: Option<String>,
+    /// Remote WordPress root (skips wp-config discovery)
+    #[arg(long)]
+    wp_root: Option<String>,
+    /// Remote .sql path (skips dump discovery)
+    #[arg(long)]
+    dump_remote: Option<String>,
+    /// Export a fresh dump on the host via wp-cli/mysqldump
+    #[arg(long)]
+    fresh_dump: bool,
+    /// Local .sql[.gz] file, or a dir to scan for one
+    #[arg(long)]
+    dump: Option<PathBuf>,
+    /// Local wp-content dir (or a parent dir to scan)
+    #[arg(long)]
+    wp_content: Option<PathBuf>,
+    /// Backup archive: .zip / .tar(.gz) / .sql.gz / .sql
+    #[arg(long)]
+    backup: Option<PathBuf>,
+    /// Origin URL the dump came from (probed when possible)
+    #[arg(long)]
+    site_url: Option<String>,
+    /// Local bind for serve, e.g. 127.0.0.1:8410 (auto-picks a free port)
+    #[arg(long)]
+    bind: Option<String>,
+    /// Display name in admin chrome
+    #[arg(long)]
+    name: Option<String>,
+    /// Tour CPT URL segment
+    #[arg(long)]
+    tour_base: Option<String>,
+    /// Confirm the pull source is a clone/staging, never production
+    #[arg(long)]
+    clone_ok: bool,
+    /// Overwrite an existing sites/<name>.env
+    #[arg(long)]
+    force: bool,
 }
 
 #[derive(Subcommand)]
