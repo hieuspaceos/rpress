@@ -90,7 +90,10 @@ pub(crate) fn page(conn: &Connection, templates: &Path, ctx: &PostCtx) -> Result
     let tour_path = format!("{}/voyage/{}/", url_prefix(&ctx.lang), display);
     let canonical = format!("{}{}", ctx.site_url, tour_path);
 
-    let (hreflang_fr, hreflang_es) = translation_urls(conn, ctx.id, &ctx.site_url);
+    let alternates = translation_urls(conn, ctx.id, &ctx.site_url);
+    let hreflang_fr = alternates.iter().find(|(l, _)| l == "fr").map(|(_, u)| u.clone()).unwrap_or_default();
+    let hreflang_es = alternates.iter().find(|(l, _)| l == "es").map(|(_, u)| u.clone()).unwrap_or_default();
+    let hreflang_links = hreflang_links(&alternates);
 
     let jsonld = product_jsonld(&ctx.title, ctx.id, &canonical, &description, &price, &featured_img, &site_name_of(conn));
 
@@ -137,6 +140,7 @@ pub(crate) fn page(conn: &Connection, templates: &Path, ctx: &PostCtx) -> Result
         "canonical": canonical,
         "hreflang_fr": hreflang_fr,
         "hreflang_es": hreflang_es,
+        "hreflang_links": hreflang_links,
         "lang": ctx.lang,
         "site_url": ctx.site_url,
         "id": ctx.id,
@@ -173,21 +177,8 @@ fn esc_attr(s: &str) -> String {
     esc(s).replace('"', "&quot;")
 }
 
-fn url_prefix(lang: &str) -> &'static str {
-    if lang == "es" {
-        "/es"
-    } else {
-        ""
-    }
-}
-
-/// URL for a post given kind/slug/lang — mirrors render.rs page_url.
-fn page_url(site: &str, lang: &str, kind: &str, slug: &str) -> String {
-    let prefix = url_prefix(lang);
-    match kind {
-        "tour" => format!("{site}{prefix}/voyage/{slug}/"),
-        _ => format!("{site}{prefix}/{slug}/"),
-    }
+fn url_prefix(lang: &str) -> String {
+    if lang == "fr" || lang.is_empty() { String::new() } else { format!("/{lang}") }
 }
 
 /// Slug usable in URLs. The DB slug can be degenerate ('', 'x') after late
@@ -254,43 +245,37 @@ fn wp_slugify(s: &str) -> String {
         .join("-")
 }
 
-/// fr/es alternates. Polylang pairs live in post_translations; tour 6416's
-/// ES twin is unpaired in the import but identical menu_order +
-/// featured_media_id exposes it, so fall back to that for tours.
-fn translation_urls(conn: &Connection, id: i64, site: &str) -> (String, String) {
-    let pair: Option<(Option<i64>, Option<i64>)> = conn
-        .query_row(
-            sql!("render__select_fr_post_id_es_post_id"),
-            [id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
+fn translation_urls(conn: &Connection, id: i64, site: &str) -> Vec<(String, String)> {
+    let cfg = crate::lang::config(conn);
+    let group: Option<String> = conn
+        .query_row("SELECT group_id FROM post_translation_members WHERE post_id=?1 LIMIT 1", [id], |r| r.get(0))
         .ok();
+    let Some(group) = group else { return Vec::new(); };
+    let mut stmt = match conn.prepare("SELECT lang, post_id FROM post_translation_members WHERE group_id=?1 ORDER BY lang") {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    stmt.query_map([group], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter_map(|(lang, pid)| {
+            slug_of(conn, pid).map(|(slug, kind)| {
+                let title: String = conn.query_row("SELECT title FROM posts WHERE id=?1", [pid], |r| r.get(0)).unwrap_or_default();
+                let display = if kind == "tour" { display_slug(conn, pid, &slug, &title) } else { slug };
+                (lang.clone(), crate::lang::page_url(&cfg, site, &lang, &kind, &display, "voyage"))
+            })
+        })
+        .collect()
+}
 
-    let mut fr = String::new();
-    let mut es = String::new();
-    let (fr_id, es_id) = pair.unwrap_or((None, None));
-
-    for (pid, lang, out) in [(fr_id, "fr", &mut fr), (es_id, "es", &mut es)] {
-        if let Some(pid) = pid {
-            if let Some((slug, kind)) = slug_of(conn, pid) {
-                let title: String = conn
-                    .query_row("SELECT title FROM posts WHERE id=?1", [pid], |r| r.get(0))
-                    .unwrap_or_default();
-                *out = page_url(site, lang, &kind, &display_slug(conn, pid, &slug, &title));
-            }
-        }
-    }
-    // fallback: unpaired FR tour → ES twin via menu_order + featured image
-    if es.is_empty() {
-        if let Some(fid) = fr_id {
-            if let Ok(slug) =
-                conn.query_row::<String, _, _>(sql!("tour__select_es_twin"), [fid], |r| r.get(0))
-            {
-                es = format!("{site}/es/voyage/{slug}/");
-            }
-        }
-    }
-    (fr, es)
+fn hreflang_links(alternates: &[(String, String)]) -> String {
+    alternates
+        .iter()
+        .map(|(lang, url)| format!("<link rel=\"alternate\" href=\"{}\" hreflang=\"{}\" />", esc_attr(url), esc_attr(lang)))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn slug_of(conn: &Connection, id: i64) -> Option<(String, String)> {

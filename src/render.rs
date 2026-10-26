@@ -95,13 +95,13 @@ const ELEMENT_TYPES: &[&str] = &[
 ];
 
 pub fn run(db: &Path, templates: &Path, slug: &str, out: &Path, site_url: &str) -> Result<()> {
-    // An "es/" prefix asks for the ES copy of a shared slug (or an ES term
-    // archive); everything else renders the FR variant.
-    let (lang, path) = match slug.trim_matches('/').strip_prefix("es/") {
-        Some(rest) => ("es", rest),
-        None => ("fr", slug.trim_matches('/')),
-    };
-    let (html, _status) = render_slug(db, templates, path, lang, "", site_url)?;
+    // A leading configured language prefix (e.g. es/, de/) asks for that
+    // translation; otherwise the primary language is used.
+    let conn = crate::db::conn(db)?;
+    let cfg = crate::lang::config(&conn);
+    let clean = slug.trim_matches('/');
+    let (lang, path) = crate::lang::split_path(&cfg, clean);
+    let (html, _status) = render_slug(db, templates, path, &lang, "", site_url)?;
     if let Some(parent) = out.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -122,6 +122,7 @@ pub fn render_slug(
     site_url: &str,
 ) -> Result<(String, String)> {
     let conn = crate::db::conn(db)?;
+    let lang_cfg = crate::lang::config(&conn);
     let row: Option<(
         i64,
         String,
@@ -153,12 +154,11 @@ pub fn render_slug(
     // post lookup missed → term archives + ES-front aliases.
     let Some((id, lang, title, body_json, seo_title, seo_desc, kind, status)) = row else {
         let clean = slug.trim_matches('/');
-        // "es" / "es/" → the ES front page (post 9761, __trashed slug):
-        // post_translations(fr_front → es) first, else the single trashed
-        // ES page (import drops the empty es member of the pair).
-        if clean == "es" {
-            if let Some(es_id) = es_front_id(&conn) {
-                let h = render_slug_by_id(&conn, db, templates, es_id, site_url)?;
+        // "{lang}" / "{lang}/" → that language's front page.
+        let (alang_s, path) = crate::lang::split_path(&lang_cfg, clean);
+        if path.is_empty() && alang_s != lang_cfg.primary {
+            if let Some(front_id) = front_id_for_lang(&conn, &alang_s) {
+                let h = render_slug_by_id(&conn, db, templates, front_id, site_url)?;
                 return Ok((h, "publish".to_string()));
             }
         }
@@ -168,12 +168,8 @@ pub fn render_slug(
         //   "{cat}[/{sub}…]" (≤4 levels)  → category archive (leaf slug;
         //     this site's categories sit at the path root, no /category/
         //     base — sidebar_post.html shows /le-vietnam/culture-histoire/)
-        // A leading "es/" picks the ES variant of each.
-        let (es, path) = match clean.strip_prefix("es/") {
-            Some(rest) => (true, rest),
-            None => (false, clean),
-        };
-        let alang = if es { "es" } else { "fr" };
+        // A leading configured language prefix picks that variant.
+        let alang = alang_s.as_str();
         let first = path.split('/').next().unwrap_or("");
         let leaf = path.rsplit('/').next().unwrap_or("");
         let term = match first {
@@ -237,6 +233,10 @@ pub fn render_slug(
         anyhow::bail!("slug not found: {slug}");
     };
     let h = render_row(&conn, templates, id, slug, lang, title, body_json, seo_title, seo_desc, kind, site_url)?;
+    // Final-stage origin rewrite: element option values, menus, chrome and
+    // any other imported markup may carry the source domain — normalize it
+    // here so no render path can leak it (filter_content alone missed them).
+    let h = crate::render_post::rewrite_origin(&h, site_url, &conn);
     Ok((h, status))
 }
 
@@ -488,22 +488,22 @@ fn render_row(
         _ => {}
     }
 
-    let (mut hreflang_fr, mut hreflang_es) = translation_urls(conn, id, lang.as_str(), site_url)?;
-    let mut canonical = page_url(site_url, &lang, kind.as_str(), slug);
+    let lang_cfg = crate::lang::config(conn);
+    let mut alternates = translation_urls(conn, id, site_url)?;
+    let mut canonical = crate::lang::page_url(&lang_cfg, site_url, &lang, kind.as_str(), slug, "voyage");
     // Front pages: WP permalinks them at the language root regardless of
-    // the stored slug, and hreflangs pair the two roots (the FR slug is
-    // literally 'homepage', the ES one carries '__trashed').
-    let (fr_front, es_front) = front_ids(conn);
-    if Some(id) == fr_front {
-        canonical = format!("{site_url}/");
-        hreflang_fr = format!("{site_url}/");
-        hreflang_es = format!("{site_url}/es/");
-    } else if Some(id) == es_front {
-        canonical = format!("{site_url}/es/");
-        hreflang_fr = format!("{site_url}/");
-        hreflang_es = format!("{site_url}/es/");
+    // stored slug; generate one alternate root per configured language.
+    if lang_cfg.langs.iter().any(|l| front_id_for_lang(conn, l) == Some(id)) {
+        canonical = crate::lang::page_url(&lang_cfg, site_url, &lang, "page", "", "voyage");
+        alternates = lang_cfg.langs.iter()
+            .filter(|l| front_id_for_lang(conn, l).is_some())
+            .map(|l| (l.clone(), crate::lang::page_url(&lang_cfg, site_url, l, "page", "", "voyage")))
+            .collect();
     }
-    let base = if lang == "es" { "base_es.html" } else { "base_fr.html" };
+    let hreflang_fr = alternates.iter().find(|(l, _)| l == "fr").map(|(_, u)| u.clone()).unwrap_or_default();
+    let hreflang_es = alternates.iter().find(|(l, _)| l == "es").map(|(_, u)| u.clone()).unwrap_or_default();
+    let hreflang_links = hreflang_links(&alternates);
+    let base = crate::lang::template_name(templates, &lang_cfg, &lang);
     // page templates just wrap body; we inject into base content block directly
     let site_name = conn
         .query_row(
@@ -544,6 +544,7 @@ fn render_row(
     ctx.insert("canonical".into(), json!(canonical));
     ctx.insert("hreflang_fr".into(), json!(hreflang_fr));
     ctx.insert("hreflang_es".into(), json!(hreflang_es));
+    ctx.insert("hreflang_links".into(), json!(hreflang_links));
     ctx.insert("lang".into(), json!(lang));
     ctx.insert("title".into(), json!(esc(&title)));
     ctx.insert("site_url".into(), json!(site_url));
@@ -554,7 +555,7 @@ fn render_row(
         _ => Map::new(),
     };
     let html = env
-        .get_template(base)?
+        .get_template(&base)?
         .render(JVal::from_serialize(Value::Object(ctx)))
         .map_err(|e| anyhow::anyhow!("render {base}: {e}"))?;
     Ok(apply_navx(&html, site_url, &navx))
@@ -578,6 +579,11 @@ pub(crate) fn front_ids(conn: &Connection) -> (Option<i64>, Option<i64>) {
 /// ES front post id: post_translations(fr_front → es), else the lone
 /// `__trashed` ES page (Polylang's trashed localized front).
 fn es_front_id(conn: &Connection) -> Option<i64> {
+    front_id_for_lang(conn, "es")
+}
+
+fn front_id_for_lang(conn: &Connection, lang: &str) -> Option<i64> {
+    let cfg = crate::lang::config(conn);
     let fr: Option<i64> = conn
         .query_row(
             sql!("generate__select_cast_value"),
@@ -585,23 +591,14 @@ fn es_front_id(conn: &Connection) -> Option<i64> {
             |r| r.get(0),
         )
         .ok();
-    if let Some(f) = fr {
-        if let Some(e) = conn
-            .query_row(
-                "SELECT es_post_id FROM post_translations WHERE fr_post_id=?1 AND es_post_id IS NOT NULL LIMIT 1",
-                [f],
-                |r| r.get::<_, i64>(0),
-            )
-            .optional()
-            .ok()
-            .flatten()
-        {
-            return Some(e);
-        }
+    if lang == cfg.primary {
+        return fr;
     }
+    // Generic fallback for localized front pages: Polylang often keeps the
+    // localized static front as a publish page whose slug is a trashed artifact.
     conn.query_row(
-        "SELECT id FROM posts WHERE lang='es' AND kind='page' AND slug LIKE '%__trashed%' AND status='publish' LIMIT 1",
-        [],
+        "SELECT id FROM posts WHERE lang=?1 AND kind='page' AND slug LIKE '%__trashed%' AND status='publish' LIMIT 1",
+        [lang],
         |r| r.get::<_, i64>(0),
     )
     .optional()
@@ -648,7 +645,8 @@ pub(crate) fn render_slug_by_id(
     let slug: String = conn
         .query_row("SELECT slug FROM posts WHERE id=?1", [id], |r| r.get(0))
         .unwrap_or_default();
-    render_row(conn, templates, id, &slug, lang, title, body_json, seo_title, seo_desc, kind, site_url)
+    let h = render_row(conn, templates, id, &slug, lang, title, body_json, seo_title, seo_desc, kind, site_url)?;
+    Ok(crate::render_post::rewrite_origin(&h, site_url, conn))
 }
 
 /// Admin draft preview (phase 6.1): render any post — including drafts,
@@ -1997,31 +1995,37 @@ fn render_node(
         .map_err(|e| anyhow::anyhow!("element {typ}: {e}"))
 }
 
-fn translation_urls(conn: &Connection, id: i64, _lang: &str, site: &str) -> Result<(String, String)> {
-    let pair: Option<(Option<i64>, Option<i64>)> = conn
+fn translation_urls(conn: &Connection, id: i64, site: &str) -> Result<Vec<(String, String)>> {
+    let cfg = crate::lang::config(conn);
+    let group: Option<String> = conn
         .query_row(
-            sql!("render__select_fr_post_id_es_post_id"),
+            "SELECT group_id FROM post_translation_members WHERE post_id=?1 LIMIT 1",
             [id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| r.get(0),
         )
-        .ok();
-    let mut fr = String::new();
-    let mut es = String::new();
-    if let Some((f, e)) = pair {
-        if let Some(fid) = f {
-            if let Some((slug, kind)) = slug_of(conn, fid) {
-                fr = page_url(site, "fr", &kind, &slug);
-            }
+        .optional()?;
+    let Some(group) = group else { return Ok(Vec::new()); };
+    let mut stmt = conn.prepare(
+        "SELECT lang, post_id FROM post_translation_members WHERE group_id=?1 ORDER BY lang",
+    )?;
+    let rows = stmt
+        .query_map([group], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let mut out = Vec::new();
+    for (lang, pid) in rows {
+        if let Some((slug, kind)) = slug_of(conn, pid) {
+            out.push((lang.clone(), crate::lang::page_url(&cfg, site, &lang, &kind, &slug, "voyage")));
         }
-        if let Some(eid) = e {
-            if let Some((slug, kind)) = slug_of(conn, eid) {
-                es = page_url(site, "es", &kind, &slug);
-            }
-        }
-    } else {
-        // unpaired: live HTML omits hreflang entirely (avis-des-clients)
     }
-    Ok((fr, es))
+    Ok(out)
+}
+
+fn hreflang_links(alternates: &[(String, String)]) -> String {
+    alternates
+        .iter()
+        .map(|(lang, url)| format!("<link rel=\"alternate\" href=\"{}\" hreflang=\"{}\" />", esc_attr(url), esc_attr(lang)))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn slug_of(conn: &Connection, id: i64) -> Option<(String, String)> {
@@ -2821,7 +2825,20 @@ pub(crate) fn chrome_vars(
     m.insert("page_title_html".into(), json!(page_title_html));
     // hooks filled by other render paths/phases; defined so the base
     // template can reference them unconditionally.
-    m.insert("head_css_extra".into(), json!(""));
+    // settings.custom_css = WP "Additional CSS" carried by the importer —
+    // emitted inline like wp_custom_css_cb does.
+    let custom_css: String = conn
+        .query_row("SELECT value FROM settings WHERE key='custom_css'", [], |r| r.get(0))
+        .unwrap_or_default();
+    let custom_css_tag = if custom_css.trim().is_empty() {
+        String::new()
+    } else {
+        format!(
+            "<style id='wp-custom-css' type='text/css'>{}</style>",
+            custom_css.replace("</style", "<\\/style")
+        )
+    };
+    m.insert("head_css_extra".into(), json!(custom_css_tag));
     m.insert("head_css_eztoc".into(), json!(""));
     m.insert("head_css_wpdiscuz".into(), json!(""));
     m.insert("foot_scripts_eztoc".into(), json!(""));

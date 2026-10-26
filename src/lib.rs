@@ -5,6 +5,7 @@ pub mod forms_markup;
 pub mod generate;
 pub mod import;
 pub mod intake;
+pub mod lang;
 pub mod php_serialize;
 pub mod render;
 pub mod render_archive;

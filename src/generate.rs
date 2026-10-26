@@ -52,6 +52,7 @@ pub fn run(db: &Path, templates: &Path, out: &Path, site_url: &str) -> Result<()
     let mut mod_stmt = conn
         .prepare("SELECT modified_at FROM posts WHERE id=?1")?;
 
+    let lang_cfg = crate::lang::config(&conn);
     let mut raw_redirects: Vec<(String, String)> = Vec::new(); // raw slug → canonical (tours)
     for (id, slug, lang, kind) in &rows {
         // Tours write at the canonical display_slug path — the same value
@@ -64,7 +65,7 @@ pub fn run(db: &Path, templates: &Path, out: &Path, site_url: &str) -> Result<()
                 .unwrap_or_default();
             let display = crate::render_tour::display_slug(&conn, *id, slug, &title);
             if display != *slug {
-                let prefix = if lang == "es" { "/es" } else { "" };
+                let prefix = crate::lang::url_prefix(&lang_cfg, lang);
                 raw_redirects.push((
                     format!("{prefix}/voyage/{slug}/"),
                     format!("{site_url}{prefix}/voyage/{display}/", site_url = site_url.trim_end_matches('/')),
@@ -72,7 +73,7 @@ pub fn run(db: &Path, templates: &Path, out: &Path, site_url: &str) -> Result<()
                 wslug = display;
             }
         }
-        let rel = rel_path(*id, front, lang, kind, &wslug);
+        let rel = rel_path_with_cfg(&lang_cfg, *id, front, lang, kind, &wslug);
         let dest = out.join(&rel);
         match render::render_slug(db, templates, slug, lang, kind, site_url) {
             Ok((html, _status)) => {
@@ -102,24 +103,20 @@ pub fn run(db: &Path, templates: &Path, out: &Path, site_url: &str) -> Result<()
         }
     }
 
-    // ES front page (post 9761, `__trashed` slug) — filtered out of the
-    // posts loop above; resolved via post_translations/fr fallback.
-    {
-        let dest = out.join("es/index.html");
-        match render::render_slug(db, templates, "es", "es", "", site_url) {
+    // Localized front pages for every non-primary language. The primary
+    // front is emitted by the posts loop as index.html.
+    for lang in lang_cfg.langs.iter().filter(|l| *l != &lang_cfg.primary) {
+        let rel = PathBuf::from(crate::lang::rel_prefix(&lang_cfg, lang)).join("index.html");
+        match render::render_slug(db, templates, lang, lang, "", site_url) {
             Ok((html, _status)) => {
-                atomic_write(&dest, html)?;
+                atomic_write(&out.join(&rel), html)?;
                 written += 1;
                 let lastmod: Option<String> = conn
-                    .query_row(
-                        "SELECT modified_at FROM posts WHERE slug='es' OR id=9761 LIMIT 1",
-                        [],
-                        |r| r.get(0),
-                    )
+                    .query_row("SELECT MAX(modified_at) FROM posts WHERE lang=?1 AND kind='page'", [lang], |r| r.get(0))
                     .ok();
-                urls.push((format!("{}/es/", site_url.trim_end_matches('/')), "page".into(), lastmod));
+                urls.push((format!("{}{}", site_url.trim_end_matches('/'), crate::lang::page_path(&lang_cfg, lang, "page", "", "voyage")), "page".into(), lastmod));
             }
-            Err(e) => eprintln!("skip es front: {e:#}"),
+            Err(e) => eprintln!("skip {lang} front: {e:#}"),
         }
     }
 
@@ -187,8 +184,8 @@ pub fn run(db: &Path, templates: &Path, out: &Path, site_url: &str) -> Result<()
                     });
                 }
                 for lang in langs {
-                    let es = lang == "es";
-                    let prefix = if es { "es/" } else { "" };
+                    let prefix = crate::lang::rel_prefix(&lang_cfg, &lang);
+                    let prefix = if prefix.is_empty() { String::new() } else { format!("{prefix}/") };
                     let path = if tax_l == "category" {
                         format!("{prefix}{}", crate::render_post::cat_path(tslug))
                     } else {
@@ -197,14 +194,13 @@ pub fn run(db: &Path, templates: &Path, out: &Path, site_url: &str) -> Result<()
                     emit(&tax_l, tslug, &lang, &path)?;
                 }
             } else if crate::render_archive::is_taxonomy(&tax_l) {
-                let es = matches!(tax_l.as_str(), "region-es" | "perfil" | "duracion" | "estilo");
-                let lang = if es { "es" } else { "fr" };
-                let path = if es {
-                    format!("es/{tax_l}/{tslug}")
-                } else {
-                    format!("{tax_l}/{tslug}")
-                };
-                emit(&tax_l, tslug, lang, &path)?;
+                let langs = term_langs(tax, tslug);
+                let lang = langs.first().cloned().unwrap_or_else(|| {
+                    if matches!(tax_l.as_str(), "region-es" | "perfil" | "duracion" | "estilo") { "es".into() } else { lang_cfg.primary.clone() }
+                });
+                let prefix = crate::lang::rel_prefix(&lang_cfg, &lang);
+                let path = if prefix.is_empty() { format!("{tax_l}/{tslug}") } else { format!("{prefix}/{tax_l}/{tslug}") };
+                emit(&tax_l, tslug, &lang, &path)?;
             }
         }
     }
@@ -238,22 +234,15 @@ pub fn run(db: &Path, templates: &Path, out: &Path, site_url: &str) -> Result<()
     Ok(())
 }
 
-pub(crate) fn rel_path(id: i64, front: i64, lang: &str, kind: &str, slug: &str) -> PathBuf {
-    let es = lang == "es";
+pub(crate) fn rel_path_with_cfg(cfg: &crate::lang::LangConfig, id: i64, front: i64, lang: &str, kind: &str, slug: &str) -> PathBuf {
     if id == front {
-        return if es {
-            PathBuf::from("es/index.html")
-        } else {
-            PathBuf::from("index.html")
-        };
+        let lp = crate::lang::rel_prefix(cfg, lang);
+        return if lp.is_empty() { PathBuf::from("index.html") } else { PathBuf::from(lp).join("index.html") };
     }
     let mut p = PathBuf::new();
-    if es {
-        p.push("es");
-    }
-    if kind == "tour" {
-        p.push("voyage");
-    }
+    let lp = crate::lang::rel_prefix(cfg, lang);
+    if !lp.is_empty() { p.push(lp); }
+    if kind == "tour" { p.push("voyage"); }
     p.push(slug);
     p.push("index.html");
     p
@@ -280,7 +269,8 @@ fn post_out_rel(conn: &Connection, post_id: i64) -> Result<PathBuf> {
     } else {
         slug
     };
-    Ok(rel_path(post_id, front, &lang, &kind, &wslug))
+    let cfg = crate::lang::config(conn);
+    Ok(rel_path_with_cfg(&cfg, post_id, front, &lang, &kind, &wslug))
 }
 
 /// Remove a still-existing post's rendered file — call BEFORE hard-deleting
@@ -337,9 +327,10 @@ fn bare_ctx(
 ) -> Result<serde_json::Map<String, serde_json::Value>> {
     use serde_json::json;
     let mut m = serde_json::Map::new();
-    let es = lang == "es";
-    m.insert("html_lang".into(), json!(if es { "es-ES" } else { "fr-FR" }));
-    m.insert("og_locale".into(), json!(if es { "es_ES" } else { "fr_FR" }));
+    let html_lang = match lang { "es" => "es-ES", "fr" => "fr-FR", other => other };
+    let og_locale = match lang { "es" => "es_ES", "fr" => "fr_FR", other => other };
+    m.insert("html_lang".into(), json!(html_lang));
+    m.insert("og_locale".into(), json!(og_locale));
     m.insert("html_prefix".into(), json!("prefix=\"og: https://ogp.me/ns#\" class=\"no-js\""));
     m.insert("kind".into(), json!("page"));
     m.insert("body_class".into(), json!("error404 wp-theme-traveltour wp-child-theme-traveltour-child"));
@@ -366,6 +357,7 @@ fn bare_ctx(
     m.insert("hreflang_es".into(), json!(""));
     m.insert("flag_fr_url".into(), json!(site_url));
     m.insert("flag_es_url".into(), json!(format!("{}/es/", site_url.trim_end_matches('/'))));
+    m.insert("hreflang_links".into(), json!(""));
     m.insert("navx".into(), serde_json::Value::Object(serde_json::Map::new()));
     m.insert("page_title_html".into(), json!(""));
     m.insert("head_css_extra".into(), json!(""));
@@ -379,7 +371,7 @@ fn bare_ctx(
     m.insert("site_url".into(), json!(site_url));
     // Footer sidebars — same registry the page chrome uses.
     for n in 1..=4 {
-        let sidebar = format!("footer-{n}-{}", if es { "es" } else { "fr" });
+        let sidebar = format!("footer-{n}-{lang}");
         let html = crate::widgets::render_sidebar(conn, &sidebar, site_url, lang, "")?;
         m.insert(format!("footer_{n}"), serde_json::json!(html));
     }
@@ -425,7 +417,10 @@ pub(crate) fn write_search(out: &Path, templates: &Path, conn: &Connection, site
         && out.join("pagefind").join("pagefind.js").is_file();
     let env = render::load_env(templates)?;
     let site = site_url.trim_end_matches('/');
-    for (lang, dir) in [("fr", "recherche"), ("es", "es/recherche")] {
+    let lang_cfg = crate::lang::config(conn);
+    for lang in &lang_cfg.langs {
+        let lp = crate::lang::rel_prefix(&lang_cfg, lang);
+        let dir = if lp.is_empty() { "recherche".to_string() } else { format!("{lp}/recherche") };
         let mut ctx = bare_ctx(
             conn,
             site_url,
@@ -454,7 +449,10 @@ pub(crate) fn write_feeds(out: &Path, conn: &Connection, site: &str) -> Result<(
             |r| r.get(0),
         )
         .unwrap_or(0);
-    for (lang, path) in [("fr", "feed/index.xml"), ("es", "es/feed/index.xml")] {
+    let lang_cfg = crate::lang::config(conn);
+    for lang in &lang_cfg.langs {
+        let lp = crate::lang::rel_prefix(&lang_cfg, lang);
+        let path = if lp.is_empty() { "feed/index.xml".to_string() } else { format!("{lp}/feed/index.xml") };
         let dest = out.join(path);
         if let Some(p) = dest.parent() {
             fs::create_dir_all(p)?;
@@ -467,7 +465,7 @@ pub(crate) fn write_feeds(out: &Path, conn: &Connection, site: &str) -> Result<(
              WHERE status='publish' AND kind='post' AND lang=?1
              ORDER BY published_at DESC LIMIT 20",
         )?;
-        let rows = stmt.query_map([lang], |r| {
+        let rows = stmt.query_map([lang.as_str()], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
@@ -478,7 +476,7 @@ pub(crate) fn write_feeds(out: &Path, conn: &Connection, site: &str) -> Result<(
         })?;
         for row in rows {
             let (title, slug, date, excerpt, body) = row?;
-            let prefix = if lang == "es" { "/es" } else { "" };
+            let prefix = crate::lang::url_prefix(&lang_cfg, lang);
             let link = format!("{site}{prefix}/{slug}/");
             let pub_date = rfc822(&date);
             let mut item = format!(
@@ -494,11 +492,7 @@ pub(crate) fn write_feeds(out: &Path, conn: &Connection, site: &str) -> Result<(
             items.push_str(&item);
             items.push_str("</item>\n");
         }
-        let channel_link = if lang == "es" {
-            format!("{site}/es")
-        } else {
-            site.to_string()
-        };
+        let channel_link = format!("{}{}", site, crate::lang::page_path(&lang_cfg, lang, "page", "", "voyage").trim_end_matches('/'));
         let channel_title = conn
             .query_row(
                 "SELECT value FROM settings WHERE key='site_name' LIMIT 1",
@@ -634,7 +628,8 @@ pub(crate) fn write_llms_txt(out: &Path, conn: &Connection, site: &str, tour_bas
     body.push_str(&format!("# {site_name}\n\n"));
     body.push_str("## Pages\n\n");
     for (title, slug, lang, kind) in &rows {
-        let prefix = if lang == "es" { "/es" } else { "" };
+        let lang_cfg = crate::lang::config(conn);
+        let prefix = crate::lang::url_prefix(&lang_cfg, lang);
         let dir = if kind == "tour" { format!("/{tour_base}") } else { String::new() };
         let html = format!("{site}{prefix}{dir}/{slug}/");
         let md = format!("{site}{prefix}{dir}/{slug}/index.md");

@@ -252,7 +252,10 @@ pub(crate) fn page(conn: &Connection, templates: &Path, ctx: &PostCtx) -> Result
 
     // --- seo / translations ---------------------------------------------------
     let canonical = post_url.clone();
-    let (hreflang_fr, hreflang_es) = translation_urls(conn, ctx.id, site);
+    let alternates = translation_urls(conn, ctx.id, site);
+    let hreflang_fr = alternates.iter().find(|(l, _)| l == "fr").map(|(_, u)| u.clone()).unwrap_or_default();
+    let hreflang_es = alternates.iter().find(|(l, _)| l == "es").map(|(_, u)| u.clone()).unwrap_or_default();
+    let hreflang_links = hreflang_links(&alternates);
     let seo_title = seo_title
         .filter(|s| !s.is_empty())
         .map(|t| crate::db::resolve_seo(&t, &ctx.title, &site_name))
@@ -296,6 +299,7 @@ pub(crate) fn page(conn: &Connection, templates: &Path, ctx: &PostCtx) -> Result
         "canonical": canonical,
         "hreflang_fr": hreflang_fr,
         "hreflang_es": hreflang_es,
+        "hreflang_links": hreflang_links,
         "lang": ctx.lang,
         "site_url": site,
         "id": ctx.id,
@@ -409,8 +413,8 @@ fn inject_post_assets(html: &str, site: &str, post_id: i64) -> String {
     out
 }
 
-fn url_prefix(lang: &str) -> &'static str {
-    if lang == "es" { "/es" } else { "" }
+fn url_prefix(lang: &str) -> String {
+    if lang == "fr" || lang.is_empty() { String::new() } else { format!("/{lang}") }
 }
 
 /// `2025-08-21 11:38:47` → (21, "Août", 2025, /2025/08/21/, "août 21, 2025")
@@ -902,38 +906,35 @@ fn esc_attr(s: &str) -> String {
     esc(s).replace('"', "&quot;").replace('\'', "&#039;")
 }
 
-/// fr/es alternates via post_translations.
-fn translation_urls(conn: &Connection, id: i64, site: &str) -> (String, String) {
-    let pair: Option<(Option<i64>, Option<i64>)> = conn
-        .query_row(
-            sql!("render__select_fr_post_id_es_post_id"),
-            [id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
+fn translation_urls(conn: &Connection, id: i64, site: &str) -> Vec<(String, String)> {
+    let cfg = crate::lang::config(conn);
+    let group: Option<String> = conn
+        .query_row("SELECT group_id FROM post_translation_members WHERE post_id=?1 LIMIT 1", [id], |r| r.get(0))
         .ok();
-    let (fr_id, es_id) = pair.unwrap_or((None, None));
-    let mut fr = String::new();
-    let mut es = String::new();
-    for (pid, lang, out) in [(fr_id, "fr", &mut fr), (es_id, "es", &mut es)] {
-        if let Some(pid) = pid {
-            if let Ok((slug, kind)) = conn.query_row(
-                sql!("render__select_slug_kind"),
-                [pid],
-                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
-            ) {
-                *out = page_url(site, lang, &kind, &slug);
-            }
-        }
-    }
-    (fr, es)
+    let Some(group) = group else { return Vec::new(); };
+    let mut stmt = match conn.prepare("SELECT lang, post_id FROM post_translation_members WHERE group_id=?1 ORDER BY lang") {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    stmt.query_map([group], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter_map(|(lang, pid)| {
+            conn.query_row(sql!("render__select_slug_kind"), [pid], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+                .ok()
+                .map(|(slug, kind)| (lang.clone(), crate::lang::page_url(&cfg, site, &lang, &kind, &slug, "voyage")))
+        })
+        .collect()
 }
 
-fn page_url(site: &str, lang: &str, kind: &str, slug: &str) -> String {
-    let prefix = if lang == "es" { "/es" } else { "" };
-    match kind {
-        "tour" => format!("{site}{prefix}/voyage/{slug}/"),
-        _ => format!("{site}{prefix}/{slug}/"),
-    }
+fn hreflang_links(alternates: &[(String, String)]) -> String {
+    alternates
+        .iter()
+        .map(|(lang, url)| format!("<link rel=\"alternate\" href=\"{}\" hreflang=\"{}\" />", esc_attr(url), esc_attr(lang)))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /* ================= the_content equivalent ================= */
@@ -953,13 +954,16 @@ fn filter_content(raw: &str, site: &str, post_id: i64, _media: &std::collections
 /// Rewrite the imported site origin to the configured one. The source
 /// domain lives in `settings.legacy_origin` (set at import time); an empty
 /// value means "no rewrite" so rpress ships domain-free.
-fn rewrite_origin(raw: &str, site: &str, conn: &Connection) -> String {
+pub(crate) fn rewrite_origin(raw: &str, site: &str, conn: &Connection) -> String {
     let s = raw.replace("{{ site_url }}", site);
     let origin = crate::intake::setting(conn, "legacy_origin", "");
     if origin.is_empty() {
         s
     } else {
-        s.replace(origin.trim_end_matches('/'), site.trim_end_matches('/'))
+        let site = site.trim_end_matches('/');
+        let origin = origin.trim_end_matches('/');
+        s.replace(origin, site)
+            .replace(&origin.replacen("https://", "http://", 1), site)
     }
 }
 

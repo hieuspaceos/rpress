@@ -116,9 +116,7 @@ pub(crate) const SIDEBARS: &[Sidebar] = &[
 /// `resolve_id`. Custom sidebars are queried by their own id (no remap).
 fn resolve_id(sidebar_id: &str, lang: &str) -> String {
     match sidebar_id {
-        "sidebar-post" | "sidebar-archive" => {
-            format!("{sidebar_id}-{}", if lang == "es" { "es" } else { "fr" })
-        }
+        "sidebar-post" | "sidebar-archive" => format!("{sidebar_id}-{lang}"),
         other => other.to_string(),
     }
 }
@@ -523,6 +521,23 @@ fn rows(conn: &Connection, sidebar_id: &str) -> Result<Vec<(String, String, Stri
     Ok(out)
 }
 
+fn fallback_sidebar_id(conn: &Connection, sid: &str, lang: &str) -> Result<Option<String>> {
+    if lang == "fr" || lang == "es" {
+        return Ok(None);
+    }
+    let cfg = crate::lang::config(conn);
+    let candidates = [
+        sid.strip_suffix(&format!("-{lang}")).map(|base| format!("{base}-{}", cfg.primary)),
+        sid.strip_suffix(&format!("-{lang}")).map(|base| format!("{base}-fr")),
+    ];
+    for candidate in candidates.into_iter().flatten() {
+        if !rows(conn, &candidate)?.is_empty() {
+            return Ok(Some(candidate));
+        }
+    }
+    Ok(None)
+}
+
 /// Render a frozen fragment: the stored HTML is a minijinja template whose
 /// `{{ site_url }}`/`{{ lang }}` resolve against the page context. A single
 /// AutoEscape::None environment — `{{ x }}` and `{{ x|safe }}` are the same.
@@ -554,13 +569,20 @@ pub(crate) fn render_sidebar(
     current_slug: &str,
 ) -> Result<String> {
     ensure(conn)?;
-    let sid = resolve_id(sidebar_id, lang);
+    let mut sid = resolve_id(sidebar_id, lang);
+    let mut widget_rows = rows(conn, &sid)?;
+    if widget_rows.is_empty() {
+        if let Some(fallback) = fallback_sidebar_id(conn, &sid, lang)? {
+            sid = fallback;
+            widget_rows = rows(conn, &sid)?;
+        }
+    }
     let sidebar = SIDEBARS.iter().find(|s| s.id == sid);
     let mut out = String::new();
     if let Some(s) = sidebar {
         out.push_str(s.before);
     }
-    for (wid, typ, title, settings) in rows(conn, &sid)? {
+    for (wid, typ, title, settings) in widget_rows {
         // Malformed settings_json must surface, not silently blank the
         // sidebar (a corrupted row is a bug to fix, not content to drop).
         let s: Value = serde_json::from_str(&settings)

@@ -9,7 +9,7 @@
 });
 jQuery("#map").mouseleave(function() {
   jQuery("#map iframe").css("pointer-events", "none"); 
-});</script>{% if hreflang_fr %}<link rel="alternate" href="{{ hreflang_fr }}" hreflang="fr" />{% endif %}
+});</script>{{ hreflang_links|safe }}
 
 <!-- Optimisation des moteurs de recherche par Rank Math - https://rankmath.com/ -->
 <title>{{ seo_title }}</title>
@@ -67,6 +67,7 @@ jQuery("#map").mouseleave(function() {
 
 <link rel='stylesheet' id='chaty-front-css-css' href='{{ site_url }}/wp-content/plugins/chaty/dist/css/style.css?ver=3.6.31723438833' media='all' />
 {{ head_css_wpdiscuz|safe }}
+{{ head_css_extra|safe }}
 <link rel='stylesheet' id='tourmaster-custom-style-css' href='{{ site_url }}/wp-content/uploads/tourmaster-style-custom.css?1774338224&#038;ver=7.1.3' media='all' />
 
 

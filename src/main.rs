@@ -3,6 +3,7 @@ mod db;
 mod generate;
 mod import;
 mod intake;
+mod lang;
 mod forms_markup;
 mod php_serialize;
 mod render;

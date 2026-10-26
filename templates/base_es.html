@@ -9,8 +9,7 @@
 });
 jQuery("#map").mouseleave(function() {
   jQuery("#map iframe").css("pointer-events", "none"); 
-});</script>{% if hreflang_fr %}<link rel="alternate" href="{{ hreflang_fr }}" hreflang="fr" />{% endif %}
-{% if hreflang_es %}<link rel="alternate" href="{{ hreflang_es }}" hreflang="es" />{% endif %}
+});</script>{{ hreflang_links|safe }}
 
 <!-- Optimización para motores de búsqueda de Rank Math - https://rankmath.com/ -->
 <title>{{ seo_title }}</title>
@@ -66,6 +65,7 @@ jQuery("#map").mouseleave(function() {
 <link rel='stylesheet' id='traveltour-child-theme-style-css' href='{{ site_url }}/wp-content/themes/traveltour-child/style.css?ver=7.1.3' media='all' />
 
 <link rel='stylesheet' id='chaty-front-css-css' href='{{ site_url }}/wp-content/plugins/chaty/dist/css/style.css?ver=3.6.31723438833' media='all' />
+{{ head_css_extra|safe }}
 <link rel='stylesheet' id='tourmaster-custom-style-css' href='{{ site_url }}/wp-content/uploads/tourmaster-style-custom.css?1774338224&#038;ver=7.1.3' media='all' />
 
 

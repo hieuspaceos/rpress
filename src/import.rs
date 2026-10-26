@@ -7,7 +7,7 @@ use crate::sqldump::rows as dump_rows;
 use anyhow::{Context, Result};
 use rusqlite::params;
 use serde_json::{json, Map, Value};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
@@ -129,9 +129,24 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
                 if let (Some(k), Some(mv)) =
                     (v[1].to_string_lossy(), v[2].to_string_lossy())
                 {
+                    // Carry every option the runtime reads so a migrated site
+                    // keeps its source site's moderation/media/feed config
+                    // instead of falling back to built-in defaults.
                     if matches!(
                         k.as_str(),
                         "page_on_front" | "show_on_front" | "siteurl" | "tourmaster_general"
+                            | "blogname" | "rss_use_excerpt"
+                            | "require_name_email" | "comment_moderation"
+                            | "comment_max_links" | "comment_previously_approved"
+                            | "default_comment_status" | "moderation_keys"
+                            | "disallowed_keys" | "blacklist_keys"
+                            | "close_comments_for_old_posts"
+                            | "show_comments_cookies_opt_in" | "thread_comments"
+                            | "thumbnail_size_w" | "thumbnail_size_h" | "thumbnail_crop"
+                            | "medium_size_w" | "medium_size_h"
+                            | "medium_large_size_w" | "medium_large_size_h"
+                            | "large_size_w" | "large_size_h" | "uploads_use_yearmonth"
+                            | "gdlr-core-page-builder-view-mode"
                     ) {
                         options.insert(k, mv);
                     }
@@ -197,18 +212,22 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
 
     // language map: post_id -> lang; translation pairs: serialized descriptions
     let mut post_lang: HashMap<i64, String> = HashMap::new();
+    let mut languages: BTreeSet<String> = BTreeSet::new();
     for (obj, tt_id) in &rels {
         if let Some((_, tax, _)) = ttax.get(tt_id) {
             if tax == "language" {
                 if let Some((_, slug)) = ttax.get(tt_id).and_then(|(t, _, _)| terms.get(t)) {
+                    languages.insert(slug.clone());
                     post_lang.insert(*obj, slug.clone());
                 }
             }
         }
     }
-    // post_translations: description = {lang: object_id}; a group may be
-    // fr-only. Emit a row for every member (fr,es may be NULL for unpaired).
+    // post_translations: description = {lang: object_id}. Keep the legacy
+    // fr/es pair table for old admin screens, and also populate the generic
+    // post_translation_members table for N-language render/hreflang.
     let mut trans_rows: Vec<(Option<i64>, Option<i64>)> = Vec::new();
+    let mut trans_groups: Vec<(String, Vec<(String, i64)>)> = Vec::new();
     let mut term_trans_pairs: Vec<(i64, i64)> = Vec::new();
     for (_tt, (term_id, tax, desc)) in &ttax {
         if tax == "post_translations" && desc.starts_with("a:") {
@@ -216,8 +235,15 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
                 Ok(Value::Object(m)) => {
                     let fr = m.get("fr").and_then(|v| v.as_i64());
                     let es = m.get("es").and_then(|v| v.as_i64());
+                    let members: Vec<(String, i64)> = m
+                        .iter()
+                        .filter_map(|(lang, v)| v.as_i64().map(|id| (lang.clone(), id)))
+                        .collect();
                     if fr.is_some() || es.is_some() {
                         trans_rows.push((fr, es));
+                    }
+                    if !members.is_empty() {
+                        trans_groups.push((term_id.to_string(), members));
                     } else {
                         rep.log(format!("translation term {} empty group", term_id));
                     }
@@ -278,6 +304,7 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
     let mut stmt_trans = tx.prepare(
         sql!("import__insert_or_ignore_11"),
     )?;
+    let mut stmt_trans_member = tx.prepare(sql!("import__insert_or_ignore_translation_member"))?;
     let mut stmt_ttrans = tx.prepare(
         sql!("import__insert_or_ignore_12"),
     )?;
@@ -296,7 +323,11 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
                 } else if p.post_type == "revision" {
                     // dropped by design (schema exists; plan keeps revisions
                     // table for CMS-created revisions only)
-                } else {
+                } else if p.post_type == "custom_css" && p.status == "publish" {
+                    // WP Customizer "Additional CSS" — post_content is the
+                    // site's hand-written stylesheet. Renderer emits it as
+                    // an inline <style> in <head>, same as wp_custom_css_cb.
+                    stmt_set.execute(params!["custom_css", p.content])?;
                     rep.skipped += 1;
                 }
                 continue;
@@ -382,6 +413,18 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
             stmt_trans.execute(params![fi, ei])?;
         } else {
             rep.log(format!("translation group {:?}/{:?} no imported members", f, e));
+        }
+    }
+    for (group_id, members) in &trans_groups {
+        let mut kept = 0;
+        for (lang, id) in members {
+            if all_post_ids.contains(id) && wp_to_cms.contains_key(id) {
+                stmt_trans_member.execute(params![group_id, lang, id])?;
+                kept += 1;
+            }
+        }
+        if kept == 0 {
+            rep.log(format!("translation group {group_id} no generic imported members"));
         }
     }
     for (f, e) in &term_trans_pairs {
@@ -511,15 +554,29 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
         ])?;
     }
 
+    if !languages.is_empty() {
+        let langs = languages.iter().cloned().collect::<Vec<_>>().join(",");
+        let primary = if languages.contains("fr") { "fr".to_string() } else { languages.iter().next().cloned().unwrap_or_else(|| "fr".into()) };
+        stmt_set.execute(params!["languages", langs])?;
+        stmt_set.execute(params!["primary_lang", primary])?;
+    }
+
     for (k, v) in &options {
-        // WP stores it as `siteurl`; our key is `site_url`.
-        let k = if k == "siteurl" { "site_url" } else { k.as_str() };
+        // Rename WP option names to the keys this codebase reads.
+        let k = match k.as_str() {
+            "siteurl" => "site_url",
+            "blogname" => "site_name",
+            "blacklist_keys" => "disallowed_keys",
+            "close_comments_for_old_posts" => "close_comments",
+            "show_comments_cookies_opt_in" => "comment_cookies",
+            other => other,
+        };
         stmt_set.execute(params![k, v])?;
     }
 
     drop((
         stmt_post, stmt_meta, stmt_media, stmt_pt, stmt_comment, stmt_ra, stmt_redir, stmt_menu,
-        stmt_mi, stmt_trans, stmt_ttrans, stmt_set,
+        stmt_mi, stmt_trans, stmt_trans_member, stmt_ttrans, stmt_set,
     ));
     tx.commit()?;
 

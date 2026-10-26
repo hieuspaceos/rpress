@@ -63,6 +63,16 @@ CREATE TABLE IF NOT EXISTS post_translations(
 CREATE UNIQUE INDEX IF NOT EXISTS idx_trans_pair ON post_translations(fr_post_id, es_post_id);
 CREATE INDEX IF NOT EXISTS idx_trans_es ON post_translations(es_post_id);
 
+CREATE TABLE IF NOT EXISTS post_translation_members(
+  group_id TEXT NOT NULL,
+  lang TEXT NOT NULL,
+  post_id INT NOT NULL,
+  PRIMARY KEY(group_id, lang),
+  UNIQUE(post_id)
+);
+CREATE INDEX IF NOT EXISTS idx_post_translation_members_group ON post_translation_members(group_id);
+CREATE INDEX IF NOT EXISTS idx_post_translation_members_lang ON post_translation_members(lang);
+
 CREATE TABLE IF NOT EXISTS term_translations(
   fr_term_id INTEGER,
   es_term_id INTEGER,

@@ -373,24 +373,20 @@ async fn public_page(State(app): State<App>, headers: HeaderMap, ConnectInfo(pee
         }
     }
     // URL normalization before the slug lookup:
-    //   "es/{slug}"        → lang="es", lookup "{slug}"
+    //   "{lang}/{slug}"    → lang from settings.languages, lookup "{slug}"
     //   "{tour_base}/{sl}" → kind="tour", lookup "{sl}"
     // `clean` still drives the cache path so the write-back lands where the
     // next request will look.
-    let (lang, kind, lookup): (&str, &str, &str) = {
-        let (l, rest) = match clean.strip_prefix("es/") {
-            Some(r) => ("es", r),
-            None => ("", clean),
-        };
-        let tb = format!("{}/", sc.tour_base);
-        let (k, sl) = match rest.strip_prefix(tb.as_str()) {
-            Some(s) => ("tour", s),
-            None => ("", rest),
-        };
-        (l, k, sl)
+    let conn = match crate::db::conn(&sc.db) { Ok(c) => c, Err(_) => return not_found(sc) };
+    let lang_cfg = crate::lang::config(&conn);
+    let (lang_s, rest) = crate::lang::split_path(&lang_cfg, clean);
+    let tb = format!("{}/", sc.tour_base);
+    let (kind, lookup) = match rest.strip_prefix(tb.as_str()) {
+        Some(s) => ("tour", s),
+        None => ("", rest),
     };
     let base = site_url(sc);
-    match crate::render::render_slug(&sc.db, &sc.templates, lookup, lang, kind, &base) {
+    match crate::render::render_slug(&sc.db, &sc.templates, lookup, &lang_s, kind, &base) {
         Ok((h, status)) => {
             if status == "publish" {
                 write_cache(sc, &format!("{clean}/index.html"), &h);
@@ -401,23 +397,18 @@ async fn public_page(State(app): State<App>, headers: HeaderMap, ConnectInfo(pee
     }
 }
 
-/// `.md` lookup: `es/{slug}` → ES post, `{tour_base}/{slug}` → tour, else
-/// post/page. Mirrors the normalization in `public_page`.
+/// `.md` lookup: `{lang}/{slug}` → translated post, `{tour_base}/{slug}`
+/// → tour, else post/page. Mirrors the normalization in `public_page`.
 fn md_for_slug(sc: &SiteCtx, clean: &str) -> Option<String> {
-    let (lang, kind, slug): (&str, &str, &str) = {
-        let (l, rest) = match clean.strip_prefix("es/") {
-            Some(r) => ("es", r),
-            None => ("", clean),
-        };
-        let tb = format!("{}/", sc.tour_base);
-        let (k, sl) = match rest.strip_prefix(tb.as_str()) {
-            Some(s) => ("tour", s),
-            None => ("", rest),
-        };
-        (l, k, sl)
-    };
     let conn = crate::db::conn(&sc.db).ok()?;
-    crate::render::post_markdown(&conn, slug.trim_matches('/'), lang, kind, &site_url(sc))
+    let cfg = crate::lang::config(&conn);
+    let (lang, rest) = crate::lang::split_path(&cfg, clean);
+    let tb = format!("{}/", sc.tour_base);
+    let (kind, slug) = match rest.strip_prefix(tb.as_str()) {
+        Some(s) => ("tour", s),
+        None => ("", rest),
+    };
+    crate::render::post_markdown(&conn, slug.trim_matches('/'), &lang, kind, &site_url(sc))
 }
 
 /// WP-scanner paths that can never be a permalink on this CMS — checked
@@ -467,6 +458,7 @@ fn read_out(sc: &SiteCtx, rel: &str) -> Option<Vec<u8>> {
     // inside the cache.
     let base = if rel.starts_with("wp-content/plugins")
         || rel.starts_with("wp-content/themes")
+        || rel.starts_with("wp-includes/")
         || matches!(rel, "front.css" | "nav.js" | "llms.txt")
     {
         &sc.www

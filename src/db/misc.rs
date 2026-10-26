@@ -30,7 +30,11 @@ pub fn served_upload_mime(filename: &str) -> (&'static str, bool) {
         Some("ttf") => ("font/ttf", false),
         Some("otf") => ("font/otf", false),
         Some("eot") => ("application/vnd.ms-fontobject", false),
-        Some("svg" | "xml" | "html" | "htm" | "js" | "mjs" | "css") => {
+        // WP writes generated theme/plugin CSS into uploads/ (e.g.
+        // traveltour-style-custom.css). CSS is not scriptable on a modern
+        // browser, so it serves inline like the WP host does.
+        Some("css") => ("text/css", false),
+        Some("svg" | "xml" | "html" | "htm" | "js" | "mjs") => {
             ("application/octet-stream", true)
         }
         _ => ("application/octet-stream", true),

@@ -6,5 +6,10 @@ out-static/
 *.db-wal
 *.db-shm
 www/wp-content/uploads/
+# site-instance artifacts (per-workspace data, materialized by the E2E workflow)
+cache
+www/wp-content
+www/llms.txt
+work/
 out/
 .DS_Store

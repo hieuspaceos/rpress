@@ -439,10 +439,8 @@ fn resolve_page(c: &Connection, page: &str) -> Result<i64> {
     // a slug, so scope the lookup or a Spanish comment would land on the FR
     // twin. No prefix → fr.
     let clean = page.trim().trim_matches('/');
-    let (lang, rest) = match clean.strip_prefix("es/") {
-        Some(r) => ("es", r),
-        None => ("fr", clean),
-    };
+    let cfg = crate::lang::config(c);
+    let (lang, rest) = crate::lang::split_path(&cfg, clean);
     let slug = rest.rsplit('/').next().unwrap_or(rest);
     let scoped = c.query_row(
         sql!("intake__select_id_from_9"),

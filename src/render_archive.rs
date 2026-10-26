@@ -274,15 +274,8 @@ pub(crate) fn page(
 ) -> Result<String> {
     let site_url = ctx.site_url.trim_end_matches('/').to_string();
     let is_post_tax = term.taxonomy == "category" || term.taxonomy == "post_tag";
-    let es = if is_post_tax {
-        ctx.lang == "es"
-    } else {
-        matches!(
-            term.taxonomy.as_str(),
-            "region-es" | "perfil" | "duracion" | "estilo"
-        )
-    };
-    let lang = if es { "es" } else { "fr" };
+    let lang = ctx.lang.as_str();
+    let es = lang == "es" || (!is_post_tax && matches!(term.taxonomy.as_str(), "region-es" | "perfil" | "duracion" | "estilo"));
     let media = media_map(conn)?;
     let meta1 = |id: i64, key: &str| -> String {
         conn.query_row(
@@ -293,7 +286,8 @@ pub(crate) fn page(
         .unwrap_or_default()
     };
 
-    let prefix = if es { "/es" } else { "" };
+    let lang_cfg = crate::lang::config(conn);
+    let prefix = crate::lang::url_prefix(&lang_cfg, lang);
     let term_url_path = |tax: &str, slug: &str, prefix: &str| -> String {
         match tax {
             "category" => format!("{prefix}/{}/", crate::render_post::cat_path(slug)),
@@ -301,7 +295,7 @@ pub(crate) fn page(
             t => format!("{prefix}/{}/{}/", t.to_lowercase(), slug),
         }
     };
-    let term_path = term_url_path(&term.taxonomy, &term.slug, prefix);
+    let term_path = term_url_path(&term.taxonomy, &term.slug, &prefix);
     let canonical = format!("{site_url}{term_path}");
 
     // fr/es alternate via term_translations (the twin keeps its own
@@ -317,8 +311,9 @@ pub(crate) fn page(
     {
         let twin_es = matches!(ttax.as_str(), "region-es" | "perfil" | "duracion" | "estilo")
             || (is_post_tax && !es);
-        let twin_prefix = if twin_es { "/es" } else { "" };
-        let twin_url = format!("{site_url}{}", term_url_path(&ttax, &tslug, twin_prefix));
+        let twin_lang = if twin_es { "es" } else { &lang_cfg.primary };
+        let twin_prefix = crate::lang::url_prefix(&lang_cfg, twin_lang);
+        let twin_url = format!("{site_url}{}", term_url_path(&ttax, &tslug, &twin_prefix));
         if es {
             hreflang_fr = twin_url;
             hreflang_es = canonical.clone();
@@ -327,6 +322,16 @@ pub(crate) fn page(
             hreflang_es = twin_url;
         }
     }
+
+    let hreflang_links = [
+        ("fr", hreflang_fr.as_str()),
+        ("es", hreflang_es.as_str()),
+    ]
+    .into_iter()
+    .filter(|(_, u)| !u.is_empty())
+    .map(|(l, u)| format!("<link rel=\"alternate\" href=\"{}\" hreflang=\"{}\" />", esc_attr(u), esc_attr(l)))
+    .collect::<Vec<_>>()
+    .join("\n");
 
     // ---- cards: tours carry tourmaster data; posts use the blog grid ----
     let mut cards: Vec<Value> = Vec::new();
@@ -540,6 +545,7 @@ pub(crate) fn page(
         "canonical": canonical,
         "hreflang_fr": hreflang_fr,
         "hreflang_es": hreflang_es,
+        "hreflang_links": hreflang_links,
         "lang": lang,
         "site_url": &site_url,
         "title": esc(&term.name),

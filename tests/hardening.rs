@@ -16,7 +16,7 @@ fn temp_dir(name: &str) -> PathBuf {
 
 #[test]
 fn scriptable_legacy_uploads_force_download() {
-    for name in ["x.svg", "x.xml", "x.html", "x.htm", "x.js", "x.mjs", "x.css", "x.unknown"] {
+    for name in ["x.svg", "x.xml", "x.html", "x.htm", "x.js", "x.mjs", "x.unknown"] {
         let (mime, attachment) = served_upload_mime(name);
         assert_eq!(mime, "application/octet-stream", "{name}");
         assert!(attachment, "{name}");
@@ -33,6 +33,9 @@ fn safe_uploads_keep_inline_media_types() {
         ("x.gif", "image/gif"),
         ("x.pdf", "application/pdf"),
         ("x.woff2", "font/woff2"),
+        // WP writes theme-generated stylesheets into uploads/; they must
+        // serve inline or the public site loses its custom CSS.
+        ("x.css", "text/css"),
     ] {
         let (mime, attachment) = served_upload_mime(name);
         assert_eq!(mime, want, "{name}");
