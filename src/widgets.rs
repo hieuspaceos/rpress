@@ -246,12 +246,12 @@ pub(crate) fn is_const_sidebar(id: &str) -> bool {
 }
 
 /// One seeded widget instance.
-struct Seed {
-    sidebar: &'static str,
-    id: &'static str,
-    typ: &'static str,
-    title: &'static str,
-    settings: &'static str,
+pub(crate) struct Seed {
+    pub(crate) sidebar: &'static str,
+    pub(crate) id: &'static str,
+    pub(crate) typ: &'static str,
+    pub(crate) title: &'static str,
+    pub(crate) settings: &'static str,
 }
 
 /// Verbatim extraction of the pre-registry sources:

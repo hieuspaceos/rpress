@@ -76,6 +76,51 @@ pub(crate) struct KindDef {
     pub(crate) editor: Option<&'static EditorHooks>,
 }
 
+
+/// `kind → url-base prefix` resolved once per entry point (generate,
+/// render_slug, emit_site_files, admin serve). Replaces the threaded
+/// `tour_base: &str` — one string per `KindDef.url_base_key`, resolved
+/// here so downstream fns only ever see the kind they are rendering.
+#[allow(dead_code)] // wired by phase-03 threading below
+pub(crate) type KindBases = std::collections::HashMap<&'static str, String>;
+
+/// Build the map from a getter over `KindDef.url_base_key`. The legacy
+/// `TOUR_BASE`/`--tour-base` value is passed in by the caller today; when
+/// a second base-bearing kind lands the getter reads per-key settings.
+#[allow(dead_code)]
+pub(crate) fn resolve_bases(legacy_tour_base: &str) -> KindBases {
+    let mut m = KindBases::new();
+    for def in kind_defs() {
+        if let Some(_key) = def.url_base_key {
+            m.insert(def.kind, legacy_tour_base.to_string());
+        }
+    }
+    m
+}
+
+/// Resolved base for `kind`; `None` → root-served kind.
+#[allow(dead_code)]
+pub(crate) fn base_for<'a>(bases: &'a KindBases, kind: &str) -> Option<&'a str> {
+    bases.get(kind).map(|s| s.as_str())
+}
+
+/// Render-side context handed to adapter `render()`: the post row plus
+/// its already-rendered page-builder body. Moved here (was
+/// `render_tour::PostCtx`) because `render_archive` and the archive-card
+/// helpers share the shape; `tour_base` resolves through `KindBases`.
+#[allow(dead_code)] // populated by phase-03 render dispatch
+pub(crate) struct RenderCtx {
+    pub slug: String,
+    pub lang: String,
+    pub title: String,
+    pub id: i64,
+    pub site_url: String,
+    pub body_html: String,
+    pub body_html_rendered: String,
+    pub kind: String,
+    /// Public URL segment for the owning kind ("" for root kinds).
+    pub kind_base: String,
+}
 /// Request lifetime for screen handlers.
 pub(crate) type ScreenFuture<'a> = Pin<Box<dyn Future<Output = Response> + Send + 'a>>;
 
@@ -105,9 +150,15 @@ pub(crate) struct ImportHooks {
     /// Claim a wp `post_type` before the core `kind_of` match runs;
     /// `Some(kind)` takes over the row, `None` falls through to core.
     pub(crate) claim_type: fn(&str) -> Option<&'static str>,
+    /// `wp_options` name prefixes this plugin owns (e.g. `"tourmaster_"`)
+    /// — core whitelists them into `settings` under the plugin namespace.
+    pub(crate) option_prefixes: &'static [&'static str],
     /// After the posts row is imported: write plugin tables/meta.
     /// Runs inside the import transaction.
     pub(crate) post_imported: fn(&Connection, i64) -> Result<()>,
+    /// After the whole import: promotion/denormalization (e.g.
+    /// post_meta → `tours` sync). Runs once per import.
+    pub(crate) after_import: fn(&Connection) -> Result<()>,
 }
 
 /// Where the plugin's code actually runs. A site using only `Rust`/`Data`
@@ -164,8 +215,49 @@ pub(crate) trait PluginAdapter: Sync {
     fn import_hooks(&self) -> Option<&'static ImportHooks> {
         None
     }
-    /// Optional static render for a post of this adapter's kind.
-    fn render(&self, _conn: &Connection, _post: &PostForm) -> Option<String> {
+    /// Full single-page render for a post of this adapter's kind —
+    /// replaces the `kind == "tour"` dispatch arm in `render_slug`.
+    /// `ctx` carries the rendered body + resolved `kind_base`.
+    /// `None` → caller falls through to the bare-body path.
+    fn render(&self, _conn: &Connection, _templates: &Path, _ctx: &RenderCtx) -> Result<Option<String>> {
+        Ok(None)
+    }
+    /// `(key, value)` pairs merged into the site's shared template data
+    /// (`site_data`): adapter-owned feeds like `"tours"` or
+    /// `"testimonials"`. Runs once per `(conn, lang)` per render.
+    fn site_data_feeds(&self, _conn: &Connection, _lang: &str) -> Vec<(String, serde_json::Value)> {
+        Vec::new()
+    }
+    /// Widget type names + admin labels this adapter registers
+    /// (`("tour_list","Tour List")`); core merges them into WIDGET_TYPES.
+    fn widget_types(&self) -> &'static [(&'static str, &'static str)] {
+        &[]
+    }
+    /// Admin field specs for a registered widget type; `None` → core
+    /// `widget_fields` lookup only.
+    fn widget_fields(&self, _typ: &str) -> Option<&'static [crate::widgets::FieldSpec]> {
+        None
+    }
+    /// Sidebar regions the adapter registers (`sidebar-tour`). Core
+    /// merges them with the const `SIDEBARS` list.
+    fn sidebars(&self) -> &'static [crate::widgets::Sidebar] {
+        &[]
+    }
+    /// Seed widget rows shipped with the plugin (JSON embedded at build
+    /// time); core's seed pass merges them when creating a fresh site.
+    fn seeds(&self) -> &'static [crate::widgets::Seed] {
+        &[]
+    }
+    /// Public path segment for an owned taxonomy archive
+    /// (`tour_category → "tour-category"`). `None` → core default
+    /// (taxonomy name verbatim).
+    fn taxonomy_base(&self, _tax: &str) -> Option<&'static str> {
+        None
+    }
+    /// URL segment the canonical archive page for `tax` lives under,
+    /// expressed the same way as `taxonomy_base` for callers that need
+    /// the owning plugin to name its tax bases.
+    fn archive_term_url(&self, _lang_cfg: &crate::lang::LangConfig, _tax: &str, _lang: &str, _slug: &str) -> Option<String> {
         None
     }
     /// Which backend the plugin runs on.
