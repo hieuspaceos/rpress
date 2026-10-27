@@ -213,6 +213,13 @@ pub(crate) trait PluginAdapter: Sync {
     fn migrate(&self, _db: &Path) -> Result<()> {
         Ok(())
     }
+    /// Legacy bare `settings` keys this plugin owns (written by pre-seam
+    /// imports). `migrate_all` copies each to `plugin:<slug>:<key>` via an
+    /// atomic `INSERT OR IGNORE` — the legacy row is kept so a rollback
+    /// loses nothing; dual-read prefers the namespaced copy.
+    fn legacy_option_keys(&self) -> &'static [&'static str] {
+        &[]
+    }
     /// Copy plugin-owned rows when `posts` row `old_id` clones to
     /// `new_id`. Runs inside the clone transaction; a no-op default is
     /// fine — post_meta is already copied by the caller.
@@ -397,11 +404,20 @@ pub(crate) fn kind_defs() -> Vec<&'static KindDef> {
 }
 
 /// Run every adapter's `migrate()` at boot — each applies only its own
-/// tables/promotions, idempotently.
+/// tables/promotions, idempotently — then fold each adapter's declared
+/// `legacy_option_keys` into the `plugin:<slug>:` namespace. The fold is
+/// `INSERT OR IGNORE` + `SELECT`-copy: legacy rows survive (zero data
+/// loss on rollback), already-migrated keys are skipped, and a key that
+/// was *partially* namespaced by an earlier run is untouched.
 pub(crate) fn migrate_all(db: &Path) {
     for adapter in ADAPTERS {
         if let Err(e) = adapter.migrate(db) {
             eprintln!("plugin migrate {}: {e:#}", adapter.slug());
+        }
+        if !adapter.legacy_option_keys().is_empty() {
+            if let Err(e) = crate::db::misc::migrate_plugin_keys(db, adapter.slug(), adapter.legacy_option_keys()) {
+                eprintln!("plugin key migrate {}: {e:#}", adapter.slug());
+            }
         }
     }
 }

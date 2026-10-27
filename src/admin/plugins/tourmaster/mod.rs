@@ -97,6 +97,11 @@ impl PluginAdapter for Tourmaster {
         }
         Ok(())
     }
+    fn legacy_option_keys(&self) -> &'static [&'static str] {
+        // Bare keys written by pre-seam imports; post_meta `tourmaster-*`
+        // keys are plugin WIRE FORMAT — never folded (see phase-05).
+        &["tourmaster_general", "tour_custom_taxs"]
+    }
     fn clone_post(&self, tx: &Connection, new_id: i64, old_id: i64) -> Result<()> {
         tx.execute(sql!("posts__insert_into_tours"), params![new_id, old_id])
             .map_err(|e| anyhow::anyhow!("clone tours {new_id}<={old_id}: {e}"))?;

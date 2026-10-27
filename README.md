@@ -179,6 +179,23 @@ cp sites/_template.env sites/mysite.env   # or let `site init` write it
 and rewrites plain-text URL columns (`menu_items.url`,
 `redirects.new_url`).
 
+### Plugin settings & migration (operator notes)
+
+- Plugin-registered adapters (e.g. `tourmaster`, `theme-traveltour`)
+  namespace their `settings` rows as `plugin:<slug>:<key>`. Pre-seam bare
+  keys (`tourmaster_general`, `tour_custom_taxs`) are **folded once at
+  boot** (`migrate_all`): an `INSERT OR IGNORE` copy — the legacy row is
+  kept, already-namespaced rows are never overwritten, re-boots are
+  no-ops. Reads prefer the namespaced key and fall back to the bare one,
+  so sites work before, during, and after the fold.
+- `post_meta` `tourmaster-*` keys are the plugin's wire format — they
+  are *not* namespaced and never will be (the adapter round-trips the
+  same keys the WP plugin wrote).
+- `TOUR_BASE` / `--tour-base` are permanent env/CLI names — deploy
+  emits them unchanged; they resolve into the tour kind's URL base via
+  `KindBases`.
+
+
 ## Layout
 
 ```

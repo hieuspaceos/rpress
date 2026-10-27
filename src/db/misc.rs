@@ -139,6 +139,27 @@ pub fn plugin_setting_json_put_map(db: &Path, slug: &str, key: &str, value: &std
     setting_put(db, &plugin_setting_key(slug, key), &serde_json::to_string(value)?)
 }
 
+
+/// One idempotent settings-key fold for an adapter's `legacy_option_keys`:
+/// copies each bare `key` to `plugin:<slug>:<key>` when the namespaced row
+/// doesn't exist yet. Legacy rows are never deleted — the dual-read
+/// helpers prefer the namespaced copy, and a rollback reverts cleanly.
+/// Skips keys already `plugin:`-prefixed (partial earlier runs).
+pub fn migrate_plugin_keys(db: &Path, slug: &str, keys: &[&str]) -> Result<()> {
+    let c = crate::db::conn(db)?;
+    let tx = c.unchecked_transaction()?;
+    for key in keys {
+        if key.starts_with("plugin:") {
+            continue;
+        }
+        tx.execute(
+            "INSERT OR IGNORE INTO settings(key, value)
+             SELECT ?1, value FROM settings WHERE key = ?2",
+            rusqlite::params![plugin_setting_key(slug, key), key],
+        )?;
+    }
+    Ok(tx.commit()?)
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -168,6 +189,48 @@ mod tests {
         c.execute("INSERT INTO settings(key,value) VALUES('tourmaster_general','a:1:{}')", []).unwrap();
         assert_eq!(plugin_setting_raw_conn(&c, "tourmaster", "tourmaster_general").as_deref(), Some("a:1:{}"));
         assert!(plugin_setting_raw_conn(&c, "tourmaster", "missing").is_none());
+    }
+
+    #[test]
+    fn migrate_plugin_keys_fold() {
+        let dir = std::env::temp_dir().join(format!("rpress-mig-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("t.db");
+        let c = rusqlite::Connection::open(&db).unwrap();
+        c.execute("CREATE TABLE settings(key TEXT PRIMARY KEY, value TEXT)", []).unwrap();
+        c.execute("INSERT INTO settings VALUES('tourmaster_general','a:1:{}')", []).unwrap();
+        // A partially-namespaced key and an unrelated key must survive.
+        c.execute("INSERT INTO settings VALUES('plugin:tourmaster:tour_custom_taxs','{\"a\":\"b\"}')", []).unwrap();
+        c.execute("INSERT INTO settings VALUES('site_url','http://x')", []).unwrap();
+        c.execute("INSERT INTO settings VALUES('plugin:other:x','1')", []).unwrap();
+        drop(c);
+
+        migrate_plugin_keys(&db, "tourmaster", &["tourmaster_general", "tour_custom_taxs"]).unwrap();
+        let c = rusqlite::Connection::open(&db).unwrap();
+        let n: i64 = c.query_row("SELECT COUNT(*) FROM settings", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 5); // 4 old + 1 folded copy (taxs legacy row absent → nothing to fold)
+        // Legacy row kept; namespaced copy identical.
+        assert_eq!(
+            c.query_row::<String, _, _>("SELECT value FROM settings WHERE key='tourmaster_general'", [], |r| r.get(0)).unwrap(),
+            "a:1:{}"
+        );
+        assert_eq!(
+            c.query_row::<String, _, _>("SELECT value FROM settings WHERE key='plugin:tourmaster:tourmaster_general'", [], |r| r.get(0)).unwrap(),
+            "a:1:{}"
+        );
+        // Existing namespaced row never overwritten.
+        assert_eq!(
+            c.query_row::<String, _, _>("SELECT value FROM settings WHERE key='plugin:tourmaster:tour_custom_taxs'", [], |r| r.get(0)).unwrap(),
+            "{\"a\":\"b\"}"
+        );
+        // Idempotent second run.
+        drop(c);
+        migrate_plugin_keys(&db, "tourmaster", &["tourmaster_general"]).unwrap();
+        let c = rusqlite::Connection::open(&db).unwrap();
+        let n2: i64 = c.query_row("SELECT COUNT(*) FROM settings", [], |r| r.get(0)).unwrap();
+        assert_eq!(n2, 5);
+        drop(c);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

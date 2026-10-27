@@ -523,6 +523,10 @@ fn generate_phase(c: &Ctx) -> Result<PhaseOut> {
 
 fn check(c: &Ctx) -> Result<PhaseOut> {
     let db = conn(&c.db)?;
+    // Belt-and-braces migration path: deploy-only pipelines never open
+    // admin, so the plugin fold (tours DDL, namespaced settings keys,
+    // taxonomy_map seed) must also run on `site build` boot. Idempotent.
+    crate::admin::plugins::migrate_all(&c.db);
     let front: i64 = db
         .query_row(sql!("settings__select_int"), params!["page_on_front"], |r| r.get(0))
         .unwrap_or(0);

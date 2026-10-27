@@ -1,7 +1,7 @@
 ---
 phase: 5
 title: "Back-compat & migration for existing sites"
-status: pending
+status: done
 priority: P1
 effort: "1d"
 dependencies: [2, 3, 4]
@@ -97,22 +97,19 @@ grep -rn 'TOUR_BASE' src/site_deploy.rs src/site.rs   # unchanged emission
 ```
 
 Production-DB checklist (run on a copy):
-- [ ] `kind='tour'` posts listed + editable in `/admin/tours`
-- [ ] `tours` row data renders on public pages (build + spot-check)
-- [ ] `tourmaster_general` search-page URL honored
-- [ ] `gdlr-core-*` skins/templates load in page builder
-- [ ] `sidebar-tour` widgets render; recent-tours cards populated
-- [ ] custom taxonomies (`tourmaster_custom_taxonomy`) editable
-- [ ] `TOUR_BASE` env still emitted by deploy
-- [ ] Second boot: migration is a no-op (idempotent)
-
-## Todos
-
-- [ ] `legacy_option_keys` + boot migration implemented
-- [ ] Dual-read verified on real DB copy
-- [ ] Migration idempotency test (boot twice, diff settings)
-- [ ] TOUR_BASE deploy-path regression verified
-- [ ] Operator-facing doc written
+- [x] `kind='tour'` posts listed + editable in `/admin/tours`
+- [x] `tours` row data renders on public pages (build + spot-check)
+- [x] `tourmaster_general` search-page URL honored
+- [x] `gdlr-core-*` skins/templates load in page builder
+- [x] `sidebar-tour` widgets render; recent-tours cards populated
+- [x] custom taxonomies (`tourmaster_custom_taxonomy`) editable
+- [x] `TOUR_BASE` env still emitted by deploy
+- [x] Second boot: migration is a no-op (idempotent)
+- [x] `legacy_option_keys` + boot migration implemented
+- [x] Dual-read verified on real DB copy
+- [x] Migration idempotency test (boot twice, diff settings)
+- [x] TOUR_BASE deploy-path regression verified
+- [x] Operator-facing doc written
 
 ## Risks
 
