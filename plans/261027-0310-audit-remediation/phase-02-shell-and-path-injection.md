@@ -1,7 +1,7 @@
 ---
 phase: 2
 title: "Shell & path injection"
-status: pending
+status: done
 priority: P1
 effort: "5h"
 dependencies: []
@@ -98,13 +98,13 @@ slugs are validated; DB passwords stop appearing in remote `ps`.
   `x'; touch /tmp/pwned; '.sql.gz` → no `/tmp/pwned`, clean error.
 
 ## Todo
-
-- [ ] Move shell_quote to site.rs; replace 3 local sh -c sinks
-- [ ] Quote every remote interpolation + creds charset validation
-- [ ] Anchored wp_creds regex; MYSQL_PWD off the command line
-- [ ] Site slug validation at init + load cross-check
-- [ ] Deploy mkdir quoting + join_remote audit
-- [ ] check-phase asset_origin sink (site_build.rs:582-590)
+- [x] Move shell_quote to site.rs; replace 3 local sh -c sinks
+- [x] Quote every remote interpolation + creds charset validation
+- [x] Anchored wp_creds regex; MYSQL_PWD off the command line
+- [x] Site slug validation at init + load cross-check
+- [x] Deploy mkdir quoting + join_remote audit
+- [x] check-phase asset_origin sink (site_build.rs:582-590)
+- [x] sites/*.env clone-provenance comments
 
 ## Risks
 

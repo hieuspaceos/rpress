@@ -143,7 +143,9 @@ impl Dest {
             Dest::Ssh { target, base } => {
                 let dst = join_remote(base, rel);
                 ssh_mkdir(target, &dst, src.is_dir())?;
-                c.args(["-e", "ssh -o BatchMode=yes -o ConnectTimeout=15"])
+                // --protect-args: the {target}:{dst} string is expanded by
+                // the remote shell — send the path verbatim, no glob/subshell
+                c.args(["-e", "ssh -o BatchMode=yes -o ConnectTimeout=15", "--protect-args"])
                     .arg(&from)
                     .arg(format!("{target}:{dst}"));
             }
@@ -153,6 +155,7 @@ impl Dest {
                 c.args([
                     "-e",
                     &format!("ssh -p {port} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o NumberOfPasswordPrompts=1"),
+                    "--protect-args",
                 ])
                 .env("SSH_ASKPASS", askpass)
                 .env("SSH_ASKPASS_REQUIRE", "force")
@@ -179,7 +182,9 @@ fn join_remote(base: &str, rel: &str) -> String {
 
 fn ssh_mkdir(target: &str, dst: &str, is_dir: bool) -> Result<()> {
     let dir = if is_dir { dst.to_string() } else { dst.rsplit_once('/').map(|(d, _)| d.to_string()).unwrap_or_else(|| ".".into()) };
-    let o = site::ssh(target, &format!("mkdir -p '{dir}'"))?;
+    // --dest is user/env-controlled: the dir must be quoted before it goes
+    // into the remote shell string
+    let o = site::ssh(target, &format!("mkdir -p {}", site::shell_quote(&dir)))?;
     if !o.ok {
         bail!("ssh mkdir {dir}: {}", o.stderr.trim());
     }
@@ -195,7 +200,7 @@ fn vps_mkdir(userip: &str, port: &str, askpass: &Path, dst: &str, is_dir: bool) 
         "-o", "UserKnownHostsFile=/dev/null",
         "-o", "NumberOfPasswordPrompts=1",
         userip,
-        &format!("mkdir -p '{dir}'"),
+        &format!("mkdir -p {}", site::shell_quote(&dir)),
     ])
     .env("SSH_ASKPASS", askpass)
     .env("SSH_ASKPASS_REQUIRE", "force")

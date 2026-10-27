@@ -17,6 +17,24 @@ pub fn env_path(root: &Path, site: &str) -> PathBuf {
     root.join("sites").join(format!("{site}.env"))
 }
 
+/// POSIX single-quote a string for embedding inside remote/local shell
+/// commands — `'a'\''b'` style. Every attacker-influenced value that must
+/// reach a shell string (wp-config creds, remote paths, dest dirs) goes
+/// through this; anything reachable argv-first skips the shell entirely.
+pub(crate) fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// `^[a-z0-9][a-z0-9-]*$` — the slug doubles as a filename under
+/// `sites/` + `work/`, so path-traversal shapes (`../`, `.`, `/`) must
+/// never pass.
+pub(crate) fn valid_slug(site: &str) -> bool {
+    let mut it = site.chars();
+    matches!(it.next(), Some(c) if c.is_ascii_lowercase() || c.is_ascii_digit())
+        && it.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
+
 #[derive(Default, Debug)]
 pub struct SiteEnv {
     pub site: String,
@@ -41,6 +59,9 @@ pub struct SiteEnv {
 
 impl SiteEnv {
     pub fn load(root: &Path, site: &str) -> Result<Self> {
+        if !valid_slug(site) {
+            bail!("invalid site slug {site:?} — want [a-z0-9][a-z0-9-]*");
+        }
         let path = env_path(root, site);
         let text = std::fs::read_to_string(&path)
             .with_context(|| format!("site env not found: {}", path.display()))?;
@@ -59,8 +80,17 @@ impl SiteEnv {
         }
         let get = |k: &str| kv.get(k).cloned().unwrap_or_default();
         let opt = |k: &str| kv.get(k).filter(|v| !v.is_empty()).cloned();
+        // SITE= inside the file must match the filename stem — otherwise
+        // work/<SITE>/ would resolve somewhere the slug never pointed.
+        let site_in_file = get("SITE");
+        if site_in_file != site {
+            bail!(
+                "{} declares SITE={site_in_file} but lives at sites/{site}.env — rename the file or fix SITE=",
+                path.display()
+            );
+        }
         Ok(Self {
-            site: get("SITE"),
+            site: site_in_file,
             name: get("NAME"),
             host: get("HOST"),
             bind: get("BIND"),
@@ -78,6 +108,9 @@ impl SiteEnv {
     }
 
     pub fn save(&self, root: &Path) -> Result<PathBuf> {
+        if !valid_slug(&self.site) {
+            bail!("invalid site slug {:?} — want [a-z0-9][a-z0-9-]*", self.site);
+        }
         let dir = root.join("sites");
         std::fs::create_dir_all(&dir)?;
         let path = env_path(root, &self.site);
@@ -297,4 +330,54 @@ pub fn ssh(target: &str, remote: &str) -> Result<Out> {
         target,
         remote,
     ]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shell_quote_round_trip() {
+        // plain values pass through as 'value'
+        assert_eq!(shell_quote("/var/www/site"), "'/var/www/site'");
+        // embedded quotes use the POSIX '"'"' idiom — round-trips under sh
+        assert_eq!(shell_quote("x';id;'"), "'x'\\'';id;'\\'''");
+        assert_eq!(shell_quote("it's"), "'it'\\''s'");
+        // metachars are inert inside single quotes
+        assert_eq!(shell_quote("a; b$(c)`d`e&f|g>h<i\n"), "'a; b$(c)`d`e&f|g>h<i\n'");
+        assert_eq!(shell_quote(""), "''");
+    }
+
+    #[test]
+    fn shell_quote_survives_sh() {
+        // real round-trip: the quoted string must arrive at argv verbatim
+        for raw in ["x';id;'", "a b", "$(touch /tmp/x)", "a\\b'c\"d", "*~?[]{}", "\t"] {
+            let o = run(Command::new("sh").args(["-c", &format!("printf %s {}", shell_quote(raw))])).unwrap();
+            assert!(o.ok);
+            assert_eq!(o.stdout, raw, "raw={raw:?}");
+        }
+    }
+
+    #[test]
+    fn slug_accept_reject() {
+        for ok in ["dmc", "blueskies", "aucoeur-test", "x", "a1-b2", "0start"] {
+            assert!(valid_slug(ok), "{ok}");
+        }
+        for bad in ["", "-lead", "A", "a_b", "a.b", "..", "../etc", "a/b", "a b", "a;b", "a'b"] {
+            assert!(!valid_slug(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn load_rejects_traversal_and_mismatch() {
+        let root = std::env::temp_dir().join(format!("rpress-site-test-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("sites")).unwrap();
+        // slug rejected before touching the filesystem
+        assert!(SiteEnv::load(&root, "../etc").is_err());
+        assert!(SiteEnv::load(&root, "Bad Slug").is_err());
+        // filename stem vs SITE= mismatch is a hard error
+        std::fs::write(root.join("sites/ok.env"), "SITE=other\nBIND=127.0.0.1:1\n").unwrap();
+        assert!(SiteEnv::load(&root, "ok").is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

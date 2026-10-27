@@ -7,7 +7,7 @@
 //! `--json` prints a machine-readable report on stdout for agents.
 
 use crate::db::conn;
-use crate::site::{self, Remote, SiteEnv};
+use crate::site::{self, shell_quote, Remote, SiteEnv};
 use crate::{auth, generate, import, verify};
 // lib.rs brings sql! in via #[macro_use]; the bin target does not — this
 // import is required there and merely redundant here.
@@ -319,6 +319,9 @@ fn rsync_pull(remote: &Remote, remote_path: &str, dest: &Path) -> Result<()> {
             let o = site::run(Command::new("rsync").args([
                 "-az",
                 "--timeout=120",
+                // env-controlled remote path must not be re-expanded by the
+                // remote shell; old rsync without -s fails → stream fallback
+                "--protect-args",
                 "-e",
                 "ssh -o BatchMode=yes -o ConnectTimeout=15",
                 &format!("{target}:{remote_path}"),
@@ -416,9 +419,7 @@ fn stream_pipeline(remote: &Remote, remote_cmd: &str, local_sh: &str) -> Result<
     Ok(())
 }
 
-fn shell_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
-}
+
 
 fn one_line(s: &str) -> String {
     s.lines().next().unwrap_or("").trim().to_string()
@@ -580,15 +581,17 @@ fn check(c: &Ctx) -> Result<PhaseOut> {
         .query_row(sql!("render__select_value_from_settings"), params!["asset_origin"], |r| r.get(0))
         .unwrap_or_default();
     if !origin.is_empty() && origin != c.env.local_url {
-        let o = site::run(Command::new("sh").args([
-            "-c",
-            &format!(
-                "grep -rl '{}/' '{}' --include='*.html' 2>/dev/null | head -3 | wc -l",
-                origin,
-                c.cache.display()
-            ),
+        // argv grep — asset_origin is imported (attacker-influenced) data and
+        // must never sit inside an `sh -c` string. `-l` lists matching files;
+        // the needle/`--include` go as plain args so no quoting is involved.
+        let o = site::run(Command::new("grep").args([
+            "-rl",
+            &format!("{origin}/"),
+            "--include=*.html",
+            &c.cache.display().to_string(),
         ]))?;
-        let n: usize = o.stdout.trim().parse().unwrap_or(0);
+        // grep exits 1 on zero matches — count listed files Rust-side
+        let n = o.stdout.lines().take(3).count();
         if n > 0 {
             warns.push(format!("{n}+ pages still link {origin} (content-level refs)"));
         }

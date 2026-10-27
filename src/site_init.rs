@@ -9,6 +9,7 @@
 
 use crate::site::{self, SiteEnv};
 use anyhow::{bail, Context, Result};
+use std::io::{BufRead, BufReader, Read};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -34,6 +35,9 @@ pub struct InitArgs {
 pub fn run(a: InitArgs) -> Result<()> {
     let root = std::env::current_dir()?;
     let site = site::need(a.site.clone(), "site", "Site name (slug)", None)?;
+    if !site::valid_slug(&site) {
+        bail!("invalid site slug {site:?} — want [a-z0-9][a-z0-9-]*");
+    }
     let env_file = site::env_path(&root, &site);
     if env_file.exists() && !a.force {
         if site::tty() {
@@ -211,17 +215,8 @@ fn ssh_flow(a: &InitArgs, root: &Path, env: &mut SiteEnv, probed_url: &mut Optio
 
     // siteurl from the live DB (best effort — user can override anyway)
     if creds.has_mysql {
-        if let Ok(lines) = remote.lines(
-            &format!(
-                "MYSQL_PWD='{}' mysql -B -N -h'{}' -u'{}' -e \"SELECT option_value FROM {}options WHERE option_name='siteurl'\" '{}'",
-                creds.db_pass.replace('\'', "'\\''"),
-                creds.db_host,
-                creds.db_user,
-                creds.prefix,
-                creds.db_name
-            ),
-        ) {
-            *probed_url = lines.into_iter().next();
+        if let Some(u) = probe_siteurl(&remote, &creds) {
+            *probed_url = Some(u);
         }
     }
 
@@ -234,31 +229,89 @@ fn ssh_flow(a: &InitArgs, root: &Path, env: &mut SiteEnv, probed_url: &mut Optio
     Ok(())
 }
 
+/// Whole-expression quoted literal? `'x'` or `"x"` — anything else
+/// (concat `'a'.'b'`, constants, calls) is None, never a partial match.
+fn php_str_literal(expr: &str) -> Option<String> {
+    regex::Regex::new(r#"^'([^']*)'$|^"([^"]*)"$"#)
+        .unwrap()
+        .captures(expr)
+        .map(|c| {
+            c.get(1)
+                .or_else(|| c.get(2))
+                .unwrap()
+                .as_str()
+                .to_string()
+        })
+}
+
+/// wp-config-derived strings are attacker-influenced data. Every value that
+/// reaches a remote shell string is shell-quoted AND charset-checked — a
+/// credential outside `[A-Za-z0-9_.$-]` is a config bug or an attack, never
+/// a legitimate WordPress value. `extra` widens the set for DB_HOST, where
+/// `host:port` and unix-socket paths are real.
+fn check_cred(what: &str, v: &str, extra: &[u8]) -> Result<()> {
+    let ok = !v.is_empty()
+        && v.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || extra.contains(&b));
+    if !ok {
+        bail!(
+            "wp-config.php {what} value {v:?} contains characters outside [A-Za-z0-9{}] — refusing to use it in remote commands",
+            String::from_utf8_lossy(extra)
+        );
+    }
+    Ok(())
+}
+
+/// Escape a value for a double-quoted my.cnf option-file string — `\\` and
+/// `\"` are the only metacharacters mysql parses inside double quotes there.
+fn my_cnf_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
 fn wp_creds(remote: &site::Remote, wp_root: &str) -> Result<WpCreds> {
+    let q = site::shell_quote(&format!("{wp_root}/wp-config.php"));
     let o = remote.exec(
         &format!(
-            "grep -E 'DB_NAME|DB_USER|DB_PASSWORD|DB_HOST|table_prefix' '{wp_root}/wp-config.php'; for c in wp mysqldump mysql; do command -v $c >/dev/null && echo HAVE_$c; done"
+            "grep -E 'DB_NAME|DB_USER|DB_PASSWORD|DB_HOST|table_prefix' {q}; for c in wp mysqldump mysql; do command -v $c >/dev/null && echo HAVE_$c; done"
         ),
     )?;
     if !o.ok {
         bail!("cannot read {wp_root}/wp-config.php: {}", o.stderr.trim());
     }
-    let val = |key: &str| -> String {
-        let re = regex::Regex::new(&format!(r#"{key}'?\s*,\s*'([^']*)'"#)).unwrap();
-        re.captures(&o.stdout)
-            .map(|c| c[1].to_string())
-            .unwrap_or_default()
+    // define('KEY', <expr>) — capture the WHOLE expression so trailing
+    // concatenation/constants fail loudly instead of partially matching.
+    // The key itself must be a quoted token — `XDB_NAME`/`DB_NAMEX`
+    // defines must not shadow the real constants.
+    let def = |key: &str| -> Result<Option<String>> {
+        let re = regex::Regex::new(&format!(r#"['\"]{key}['\"]\s*,\s*(.+?)\s*\)"#)).unwrap();
+        match re.captures(&o.stdout) {
+            None => Ok(None),
+            Some(cap) => php_str_literal(cap[1].trim()).map(Some).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "wp-config.php {key} is not a simple quoted literal ({} — concat/constant?) — fix wp-config or pass values manually",
+                    cap[1].trim()
+                )
+            }),
+        }
     };
-    let prefix = regex::Regex::new(r#"table_prefix\s*=\s*'([^']*)'"#)
+    // $table_prefix = <expr>;  — same whole-literal rule
+    let prefix = match regex::Regex::new(r#"\$table_prefix\s*=\s*(.+?)\s*;"#)
         .unwrap()
         .captures(&o.stdout)
-        .map(|c| c[1].to_string())
-        .unwrap_or_else(|| "wp_".into());
-    let c = WpCreds {
-        db_name: val("DB_NAME"),
-        db_user: val("DB_USER"),
-        db_pass: val("DB_PASSWORD"),
-        db_host: if val("DB_HOST").is_empty() { "localhost".into() } else { val("DB_HOST") },
+    {
+        None => "wp_".into(),
+        Some(cap) => php_str_literal(cap[1].trim()).with_context(|| {
+            format!(
+                "wp-config.php $table_prefix is not a quoted literal ({}) — fix wp-config",
+                cap[1].trim()
+            )
+        })?,
+    };
+    let mut c = WpCreds {
+        db_name: def("DB_NAME")?.unwrap_or_default(),
+        db_user: def("DB_USER")?.unwrap_or_default(),
+        db_pass: def("DB_PASSWORD")?.unwrap_or_default(),
+        db_host: def("DB_HOST")?.unwrap_or_default(),
         prefix,
         has_wp: o.stdout.contains("HAVE_wp"),
         has_mysqldump: o.stdout.contains("HAVE_mysqldump"),
@@ -267,30 +320,126 @@ fn wp_creds(remote: &site::Remote, wp_root: &str) -> Result<WpCreds> {
     if c.db_name.is_empty() {
         bail!("wp-config.php has no DB_NAME — not a WordPress root?");
     }
+    if c.db_host.is_empty() {
+        c.db_host = "localhost".into();
+    }
+    check_cred("DB_NAME", &c.db_name, b"._$-")?;
+    check_cred("DB_USER", &c.db_user, b"._$-")?;
+    // host:port and socket paths are legal DB_HOSTs — allow : and /
+    check_cred("DB_HOST", &c.db_host, b"._$/:-")?;
+    check_cred("table_prefix", &c.prefix, b"._$-")?;
+    if c.db_pass.contains(['\n', '\r']) {
+        bail!("DB_PASSWORD contains a newline — cannot be carried in a my.cnf handoff");
+    }
     Ok(c)
+}
+
+/// Write a temp `[client]` defaults file on the remote holding the DB
+/// password. A quoted heredoc feeds `cat` — the password bytes ride inside
+/// the ssh command payload (a `cat` that exists for milliseconds), never on
+/// the mysql/mysqldump process line where `ps` would expose them for the
+/// whole query/export duration.
+fn remote_my_cnf(remote: &site::Remote, c: &WpCreds) -> Result<String> {
+    let body = format!(
+        "[client]\nuser={}\npassword=\"{}\"\nhost={}\n",
+        c.db_user,
+        my_cnf_escape(&c.db_pass),
+        c.db_host
+    );
+    let cmd = format!(
+        "f=$(mktemp /tmp/rpress-my.XXXXXX.cnf) && chmod 600 \"$f\" && cat >\"$f\" <<'RPRESS_CNF'\n{body}RPRESS_CNF\nprintf %s \"$f\""
+    );
+    remote
+        .lines(&cmd)?
+        .into_iter()
+        .next()
+        .context("no defaults-file path back from mktemp")
+}
+
+/// Run `body` on the remote while `cnf` exists, then remove the defaults
+/// file — pass or fail — before returning.
+fn run_my_cnf(remote: &site::Remote, cnf: &str, body: &str) -> Result<site::Out> {
+    let cmd = format!("{{ {body}; rc=$?; rm -f {}; exit $rc; }}", site::shell_quote(cnf));
+    match remote.exec(&cmd) {
+        Ok(o) => Ok(o),
+        Err(e) => {
+            let _ = remote.exec(&format!("rm -f {}", site::shell_quote(cnf)));
+            Err(e)
+        }
+    }
+}
+
+/// Best-effort siteurl probe through the defaults-file path — `MYSQL_PWD`
+/// never appears in the remote command line.
+fn probe_siteurl(remote: &site::Remote, c: &WpCreds) -> Option<String> {
+    let cnf = remote_my_cnf(remote, c).ok()?;
+    let sql = format!(
+        "SELECT option_value FROM {}options WHERE option_name='siteurl'",
+        c.prefix
+    );
+    let o = run_my_cnf(
+        remote,
+        &cnf,
+        &format!(
+            "mysql --defaults-extra-file={} -B -N -h{} -u{} -e {} {}",
+            site::shell_quote(&cnf),
+            site::shell_quote(&c.db_host),
+            site::shell_quote(&c.db_user),
+            site::shell_quote(&sql),
+            site::shell_quote(&c.db_name)
+        ),
+    )
+    .ok()?;
+    if !o.ok {
+        return None;
+    }
+    o.stdout
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .map(str::to_string)
 }
 
 fn export_dump(remote: &site::Remote, wp_root: &str, c: &WpCreds) -> Result<String> {
     eprintln!("exporting dump on host …");
-    let path = format!("~/rpress-{}-{}.sql", c.db_name, epoch());
-    let cmd = if c.has_wp {
-        format!("wp --path='{wp_root}' db export '{path}' --allow-root")
+    // resolve $HOME first — a quoted path gets no ~ expansion from the shell
+    let home = remote
+        .lines("printf %s \"$HOME\"")?
+        .into_iter()
+        .next()
+        .context("cannot resolve remote $HOME")?;
+    let path = format!("{home}/rpress-{}-{}.sql", c.db_name, epoch());
+    if c.has_wp {
+        let cmd = format!(
+            "wp --path={} db export {} --allow-root",
+            site::shell_quote(wp_root),
+            site::shell_quote(&path)
+        );
+        let o = remote.exec(&cmd)?;
+        if !o.ok {
+            bail!("remote dump export failed: {}", o.stderr.trim());
+        }
     } else {
-        format!(
-            "MYSQL_PWD='{}' mysqldump -h'{}' -u'{}' '{}' > '{path}'",
-            c.db_pass.replace('\'', "'\\''"),
-            c.db_host,
-            c.db_user,
-            c.db_name
-        )
-    };
-    let o = remote.exec(&cmd)?;
-    if !o.ok {
-        bail!("remote dump export failed: {}", o.stderr.trim());
+        if !c.has_mysqldump {
+            bail!("no wp-cli or mysqldump on host — create the dump manually and pass --dump-remote");
+        }
+        let cnf = remote_my_cnf(remote, c)?;
+        let o = run_my_cnf(
+            remote,
+            &cnf,
+            &format!(
+                "mysqldump --defaults-extra-file={} {} > {}",
+                site::shell_quote(&cnf),
+                site::shell_quote(&c.db_name),
+                site::shell_quote(&path)
+            ),
+        )?;
+        if !o.ok {
+            bail!("remote dump export failed: {}", o.stderr.trim());
+        }
     }
-    // expand ~ on the remote side
-    let abs = remote.lines(&format!("ls {}", path.replace('~', "$HOME")))?;
-    Ok(abs.into_iter().next().unwrap_or_else(|| path.replace('~', "/root")))
+    let abs = remote.lines(&format!("ls {}", site::shell_quote(&path)))?;
+    Ok(abs.into_iter().next().unwrap_or(path))
 }
 
 fn epoch() -> u64 {
@@ -412,15 +561,33 @@ fn human(n: u64) -> String {
     }
 }
 
+/// `zcat <path> | head -c <n>` without a shell: spawn zcat, read at most `n`
+/// bytes, then kill the child — dropping a pipe mid-write only yields the
+/// silent SIGPIPE for zcat, and `head`'s early-exit semantics stay intact.
+fn gz_head(path: &Path, n: u64) -> Result<Vec<u8>> {
+    let mut child = Command::new("zcat")
+        .arg(path)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .with_context(|| format!("spawn zcat {}", path.display()))?;
+    let mut buf = Vec::new();
+    let res = child
+        .stdout
+        .take()
+        .context("zcat stdout")?
+        .take(n)
+        .read_to_end(&mut buf);
+    let _ = child.kill();
+    let _ = child.wait();
+    res.with_context(|| format!("zcat {}", path.display()))?;
+    Ok(buf)
+}
+
 fn check_dump(dump: &Path) -> Result<()> {
-    use std::io::Read;
     let head: Vec<u8> = if dump.extension().map(|e| e == "gz").unwrap_or(false) {
         // only the first 256KB — never decompress the whole dump into RAM
-        let o = site::run(Command::new("sh").args([
-            "-c",
-            &format!("zcat '{}' | head -c 262144", dump.display()),
-        ]))?;
-        o.stdout.into_bytes()
+        gz_head(dump, 256 * 1024)?
     } else {
         let mut buf = vec![0u8; 256 * 1024];
         let n = std::fs::File::open(dump)
@@ -439,21 +606,48 @@ fn check_dump(dump: &Path) -> Result<()> {
 fn detect_siteurl(dump: &Path) -> Option<String> {
     let re = regex::Regex::new(r#"'siteurl',\s*'((?:[^'\\]|\\.)*)'"#).ok()?;
     let grab = |text: &str| re.captures(text).map(|c| c[1].to_string());
-    if dump.extension().map(|e| e == "gz").unwrap_or(false) {
-        let o = site::run(Command::new("sh").args(["-c", &format!("zcat '{}' | grep -m1 siteurl", dump.display())])).ok()?;
-        grab(&o.stdout)
+    // stream until first hit — dumps are big, never read them whole.
+    // For .gz the producer is a zcat child (argv-passed path — no shell,
+    // no interpolation) we kill on the first match or at the line cap.
+    let mut child;
+    let gz = dump.extension().map(|e| e == "gz").unwrap_or(false);
+    let reader: Box<dyn BufRead> = if gz {
+        let mut ch = Command::new("zcat")
+            .arg(dump)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .ok()?;
+        let out = ch.stdout.take()?;
+        child = Some(ch);
+        Box::new(BufReader::new(out))
     } else {
-        // stream until first hit — dumps are big, don't read them whole
-        use std::io::{BufRead, BufReader};
-        let f = std::fs::File::open(dump).ok()?;
-        for line in BufReader::new(f).lines().take(5000) {
-            let line = line.ok()?;
-            if let Some(u) = grab(&line) {
-                return Some(u);
+        child = None;
+        Box::new(BufReader::new(std::fs::File::open(dump).ok()?))
+    };
+    // plain files cap at 5000 lines; the gz scan (old `grep -m1`) runs to
+    // first match or stream end — a late siteurl must still be found.
+    // The child is killed+reaped on every exit path.
+    let cap = if gz { usize::MAX } else { 5000 };
+    let mut found = None;
+    for line in reader.lines().take(cap) {
+        match line {
+            Ok(line) => {
+                if let Some(u) = grab(&line) {
+                    found = Some(u);
+                    break;
+                }
             }
+            // non-UTF8 line (latin1 dumps) — skip it, don't give up the scan
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidData => continue,
+            Err(_) => break,
         }
-        None
     }
+    if let Some(ch) = &mut child {
+        let _ = ch.kill();
+        let _ = ch.wait();
+    }
+    found
 }
 
 // ---------- archive source ----------
@@ -486,11 +680,10 @@ fn archive_flow(
         site::run(Command::new("tar").arg("xf").arg(&backup).arg("-C").arg(&dest))?.ok
     } else if name.ends_with(".sql.gz") {
         let out = dest.join("dump.sql");
-        let o = site::run(Command::new("sh").args([
-            "-c",
-            &format!("gunzip -c '{}' > '{}'", backup.display(), out.display()),
-        ]))?;
-        o.ok
+        let f = std::fs::File::create(&out)
+            .with_context(|| format!("create {}", out.display()))?;
+        // `gunzip -c` straight into the file — argv only, no shell
+        site::run(Command::new("gunzip").args(["-c"]).arg(&backup).stdout(std::process::Stdio::from(f)))?.ok
     } else if name.ends_with(".sql") {
         env.dump_local = Some(backup.clone());
         true
@@ -520,4 +713,88 @@ fn archive_flow(
         eprintln!("WARN no wp-content dir inside archive — assets will be missing");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn php_str_literal_parses_both_quote_styles() {
+        assert_eq!(php_str_literal("'wp_'").as_deref(), Some("wp_"));
+        assert_eq!(php_str_literal("\"dbname\"").as_deref(), Some("dbname"));
+        assert_eq!(php_str_literal("''").as_deref(), Some(""));
+        // whole-value anchor: trailing expressions never partially match
+        assert_eq!(php_str_literal("'a'.'b'"), None);
+        assert_eq!(php_str_literal("'a' . 'b'"), None);
+        assert_eq!(php_str_literal("DB_EXTRA"), None);
+        assert_eq!(php_str_literal("getenv('DB')"), None);
+        assert_eq!(php_str_literal("'a'; echo"), None);
+    }
+
+    /// Same regex pair wp_creds uses against grepped wp-config lines.
+    fn wp_define(text: &str, key: &str) -> Result<Option<String>> {
+        let re = regex::Regex::new(&format!(r#"['\"]{key}['\"]\s*,\s*(.+?)\s*\)"#)).unwrap();
+        match re.captures(text) {
+            None => Ok(None),
+            Some(cap) => php_str_literal(cap[1].trim())
+                .map(Some)
+                .ok_or_else(|| anyhow::anyhow!("{key} not literal: {}", cap[1].trim())),
+        }
+    }
+
+    #[test]
+    fn wp_define_accepts_single_and_double_quotes() {
+        let cfg = "define( 'DB_NAME', 'wordpress' );\ndefine('DB_USER', \"wp_user\");\n";
+        assert_eq!(wp_define(cfg, "DB_NAME").unwrap().as_deref(), Some("wordpress"));
+        assert_eq!(wp_define(cfg, "DB_USER").unwrap().as_deref(), Some("wp_user"));
+        assert_eq!(wp_define(cfg, "DB_HOST").unwrap(), None);
+    }
+
+    #[test]
+    fn wp_define_ignores_lookalike_keys() {
+        // key must be a quoted token — XDB_NAME / DB_NAMEX must not shadow
+        let cfg = "define('XDB_NAME', 'evil');\ndefine('DB_NAMEX', 'evil2');\ndefine('DB_NAME', 'real_db');\n";
+        assert_eq!(wp_define(cfg, "DB_NAME").unwrap().as_deref(), Some("real_db"));
+        // and when only lookalikes exist, the key is absent, not "evil"
+        assert_eq!(wp_define("define('XDB_NAME', 'evil');", "DB_NAME").unwrap(), None);
+    }
+
+    #[test]
+    fn wp_define_rejects_trailing_expression() {
+        for cfg in [
+            "define('DB_NAME', 'base' . '_db');",
+            "define('DB_NAME', SOME_CONST);",
+            "define('DB_NAME', 'x'); define('DB_USER', 'u'); //'junk');", // greedy tail must not steal
+        ] {
+            // either an error or a clean parse — never a partial prefix match
+            match wp_define(cfg, "DB_NAME") {
+                Ok(Some(v)) => assert!(v == "x" || v == "wordpress" || v.contains('b'), "v={v}"),
+                Ok(None) | Err(_) => {}
+            }
+        }
+        // the dangerous shapes must error outright
+        assert!(wp_define("define('DB_NAME', 'a'.'b');", "DB_NAME").is_err());
+        assert!(wp_define("define('DB_NAME', CONST_EXPR);", "DB_NAME").is_err());
+    }
+
+    #[test]
+    fn cred_charset_validation() {
+        check_cred("DB_USER", "wp_user-1.x", b"._$-").unwrap();
+        check_cred("table_prefix", "wp_$", b"._$-").unwrap();
+        for bad in ["root';id;#", "a|b", "a`b`", "a b", "a\nb"] {
+            assert!(check_cred("DB_USER", bad, b"._$-").is_err(), "{bad}");
+        }
+        // DB_HOST's wider set still keeps shell metachars out
+        check_cred("DB_HOST", "localhost:3306", b"._$/:-").unwrap();
+        check_cred("DB_HOST", "/run/mysqld.sock", b"._$/:-").unwrap();
+        assert!(check_cred("DB_HOST", "h';rm -rf /;'", b"._$/:-").is_err());
+    }
+
+    #[test]
+    fn my_cnf_escapes_quotes_and_backslashes() {
+        assert_eq!(my_cnf_escape("plain"), "plain");
+        assert_eq!(my_cnf_escape("p\"w"), "p\\\"w");
+        assert_eq!(my_cnf_escape("a\\b"), "a\\\\b");
+    }
 }
