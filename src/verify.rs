@@ -50,7 +50,7 @@ pub fn verify_refs(db: &Path, templates: &Path, site_url: &str, tour_base: &str)
             continue;
         };
         let ours = match crate::render::render_slug(db, templates, slug, lang, kind, site_url, tour_base) {
-            Ok((h, _)) => h,
+            Ok((h, _, _)) => h,
             Err(e) => {
                 println!("{label:<10} render error: {e}");
                 all_ok = false;

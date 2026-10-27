@@ -168,7 +168,7 @@ fn tour_base_honored_in_urls() {
     let www = dir.join("www");
 
     // Rendered page: canonical + hreflang carry /tours/.
-    let (html, status) = rpress::render::render_slug(
+    let (html, status, _canonical) = rpress::render::render_slug(
         &db, &templates(), "du-nord", "fr", "tour", "http://127.0.0.1", "tours",
     )
     .unwrap();

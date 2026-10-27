@@ -606,9 +606,46 @@ pub(crate) async fn bulk_posts(State(app): State<App>, headers: HeaderMap, Form(
     Redirect::to(back).into_response()
 }
 
+/// Doomed-artifact snapshot taken BEFORE a save commits — both mappings
+/// a post-commit cleanup needs:
+///   - `terms`  the pre-save (taxonomy, slug) set — regen can't see the
+///     replaced assignment afterwards, so archives the post just LEFT
+///     would stay stale without it;
+///   - `files`  the old URL's variant set — `post_out_rel` needs the
+///     pre-commit slug/lang/kind row.
+/// `slug/lang/kind` ride along so callers only remove files when the
+/// permalink actually moved.
+struct PreSave {
+    slug: String,
+    lang: String,
+    kind: String,
+    terms: Vec<(String, String)>,
+    files: Vec<PathBuf>,
+}
+
+fn snapshot_before_save(sc: &SiteCtx, id: i64) -> Option<PreSave> {
+    let conn = crate::db::conn(&sc.db).ok()?;
+    let (slug, lang, kind): (String, String, String) = conn
+        .query_row("SELECT slug, lang, kind FROM posts WHERE id=?1", [id], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })
+        .ok()?;
+    let terms = crud::terms_for(&sc.db, id)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(t, s, _)| (t, s))
+        .collect();
+    let files = generate::file_variants_for(&conn, id, &sc.tour_base).unwrap_or_default();
+    Some(PreSave { slug, lang, kind, terms, files })
+}
+
 /// `POST /admin/posts/empty?kind=post` — Empty Trash on the Trash view
 /// (mirrors `comments_empty` at comments.rs). Hard-deletes every trashed
 /// post of `kind`; dependent terms/meta/tours/comments go with it.
+/// Ordering (audit, phase 5): snapshot every doomed file path FIRST —
+/// `post_out_rel` needs the DB row — then the transactional delete, then
+/// file removal with real error propagation + one retry; if files still
+/// remain, bust the cache dir rather than leave stale pages serving.
 pub(crate) async fn posts_empty(
     State(app): State<App>,
     headers: HeaderMap,
@@ -627,14 +664,58 @@ pub(crate) async fn posts_empty(
         .map(|s| s.as_str())
         .unwrap_or("post");
     let kind = spec_for_kind(kind).kind;
-    // Resolve doomed rows BEFORE the hard delete — regen_post/remove_file_for
-    // need the DB row to map id → out path.
-    if let Ok(ids) = crud::ids_matching(&sc.db, "SELECT id FROM posts WHERE status='trash' AND kind=?1", [kind]) {
-        for id in ids {
-            let _ = generate::remove_file_for(&sc.db, &sc.out, id, &sc.tour_base);
+    // 1. Snapshot doomed id → file-variant paths while the rows exist.
+    // A snapshot failure means files would be orphaned silently — fail
+    // loudly and skip the delete rather than strand stale pages.
+    let mut doomed: Vec<PathBuf> = Vec::new();
+    let ids = match crud::ids_matching(&sc.db, "SELECT id FROM posts WHERE status='trash' AND kind=?1", [kind]) {
+        Ok(ids) => ids,
+        Err(e) => {
+            eprintln!("empty_trash: list doomed ids: {e:#}");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+    match crate::db::conn(&sc.db) {
+        Ok(conn) => {
+            for id in ids {
+                match generate::file_variants_for(&conn, id, &sc.tour_base) {
+                    Ok(v) => doomed.extend(v.into_iter().map(|r| sc.out.join(r))),
+                    Err(e) => eprintln!("empty_trash: resolve post {id}: {e:#}"),
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("empty_trash: snapshot conn: {e:#}");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
     }
-    let _ = crud::empty_trash(&sc.db, kind);
+    // 2. The hard delete — propagate the error, don't swallow it.
+    if let Err(e) = crud::empty_trash(&sc.db, kind) {
+        eprintln!("empty_trash: {e:#}");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+    // 3. Remove the files; retry failures once, then bust the cache dir —
+    // a served stale file is worse than a cold cache.
+    doomed.sort();
+    doomed.dedup();
+    let mut remaining: Vec<PathBuf> = Vec::new();
+    for p in &doomed {
+        if p.is_file() {
+            if let Err(e) = std::fs::remove_file(p) {
+                eprintln!("empty_trash: remove {}: {e}", p.display());
+                remaining.push(p.clone());
+            }
+        }
+    }
+    for p in std::mem::take(&mut remaining) {
+        if p.is_file() && std::fs::remove_file(&p).is_err() {
+            remaining.push(p);
+        }
+    }
+    if !remaining.is_empty() {
+        eprintln!("empty_trash: {} file(s) survived removal — busting cache", remaining.len());
+        admin::bust_cache(&sc);
+    }
     Redirect::to(&format!("/admin/{}?status=trash", spec_for_kind(kind).section)).into_response()
 }
 
@@ -674,23 +755,26 @@ pub(crate) async fn quick_edit(State(app): State<App>, headers: HeaderMap, Form(
         _ => "draft",
     };
     let lang = if matches!(f.lang.as_str(), "fr" | "es") { f.lang.as_str() } else { "" };
-    let old_rel = crate::db::conn(&sc.db).ok().and_then(|c| {
-        c.query_row("SELECT slug, lang, kind FROM posts WHERE id=?1", [f.id], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
-        }).ok()
-    });
+    // Snapshot old path + term set BEFORE commit (see PreSave).
+    let pre = snapshot_before_save(&sc, f.id);
     match crud::quick_update(&sc.db, f.id, &f.title, &f.slug, status, lang, &cats, &tags) {
         Ok(()) => {
-            if let Some((oslug, olang, okind)) = old_rel {
-                let pre = if olang == "es" { "es/" } else { "" };
-                let rel = if okind == "tour" {
-                    format!("{pre}{}/{oslug}/index.html", sc.tour_base)
-                } else {
-                    format!("{pre}{oslug}/index.html")
-                };
-                let _ = std::fs::remove_file(sc.out.join(&rel));
+            // Post-commit: retire every variant of the OLD path — a slug
+            // rename must kill the old URL's file and its alias copies
+            // (index.md, {dir}.html, lang-prefixed), not just index.html.
+            if let Some(p) = &pre {
+                let eff_lang = if lang.is_empty() { p.lang.as_str() } else { lang };
+                if f.slug != p.slug || eff_lang != p.lang {
+                    for v in &p.files {
+                        let _ = std::fs::remove_file(sc.out.join(v));
+                    }
+                }
             }
-            admin::regen_posts(&sc, &[f.id]);
+            let extra: Vec<(i64, String, String)> = pre
+                .as_ref()
+                .map(|p| p.terms.iter().map(|(t, s)| (f.id, t.clone(), s.clone())).collect())
+                .unwrap_or_default();
+            admin::regen_posts_with_terms(&sc, &[f.id], &extra);
             Redirect::to("/admin/posts").into_response()
         }
         Err(_) => StatusCode::BAD_REQUEST.into_response(),
@@ -1356,15 +1440,10 @@ pub(crate) async fn save_post(State(app): State<App>, headers: HeaderMap, Form(f
     if !rm_raw.is_empty() && serde_json::from_str::<serde_json::Value>(rm_raw).is_err() {
         return (StatusCode::BAD_REQUEST, "invalid rank_math payload").into_response();
     }
-    // Capture the old output path BEFORE the save so a slug change can
-    // delete the stale file at the old URL.
-    let old_rel = f.id.and_then(|id| {
-        crate::db::conn(&sc.db).ok().and_then(|c| {
-            c.query_row("SELECT slug, lang, kind FROM posts WHERE id=?1", [id], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
-            }).ok()
-        })
-    });
+    // Capture the old output path + term set BEFORE the save so a slug /
+    // lang / kind change can delete the stale file at the old URL and
+    // invalidate the archives the post is leaving.
+    let pre = f.id.and_then(|id| snapshot_before_save(&sc, id));
     match crud::save_post(&sc.db, &f) {
         Ok(id) => {
             // nav-menus.php auto-add: a brand-new top-level page joins every
@@ -1373,22 +1452,21 @@ pub(crate) async fn save_post(State(app): State<App>, headers: HeaderMap, Form(f
                 let _ = crud::menus::auto_add_page(&sc.db, id);
             }
             // Write-back: the post file must hold the just-saved version;
-            // a slug change deletes the old URL's file too.
-            if let Some((oslug, olang, okind)) = old_rel {
-                if oslug != f.slug || olang != f.lang || okind != f.kind {
-                    let pre = if olang == "es" { "es/" } else { "" };
-                    let rel = if okind == "tour" {
-                        format!("{pre}{}/{oslug}/index.html", sc.tour_base)
-                    } else {
-                        format!("{pre}{oslug}/index.html")
-                    };
-                    let dest = sc.out.join(&rel);
-                    if dest.exists() {
-                        let _ = std::fs::remove_file(&dest);
+            // a slug/lang/kind change kills the old URL's whole variant
+            // set (index.md, {dir}.html, per-lang copies), not just its
+            // index.html.
+            if let Some(p) = &pre {
+                if f.slug != p.slug || f.lang != p.lang || f.kind != p.kind {
+                    for v in &p.files {
+                        let _ = std::fs::remove_file(sc.out.join(v));
                     }
                 }
             }
-            admin::regen_posts(&sc, &[id]);
+            let extra: Vec<(i64, String, String)> = pre
+                .as_ref()
+                .map(|p| p.terms.iter().map(|(t, s)| (id, t.clone(), s.clone())).collect())
+                .unwrap_or_default();
+            admin::regen_posts_with_terms(&sc, &[id], &extra);
             Redirect::to(&format!("/admin/edit/{id}")).into_response()
         }
         Err(e) => (StatusCode::BAD_REQUEST, format!("{e}")).into_response(),

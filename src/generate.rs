@@ -97,7 +97,7 @@ pub fn run(db: &Path, templates: &Path, out: &Path, site_url: &str, tour_base: &
             match harvest_page(&legacy_origin, &path, site_url) {
                 Ok(h) => {
                     harvested += 1;
-                    Some(Ok((h, "harvested".to_string())))
+                    Some(Ok((h, "harvested".to_string(), String::new())))
                 }
                 Err(e) => {
                     harvest_failed += 1;
@@ -109,7 +109,7 @@ pub fn run(db: &Path, templates: &Path, out: &Path, site_url: &str, tour_base: &
             None
         };
         match rendered.unwrap_or_else(|| render::render_slug(db, templates, slug, lang, kind, site_url, tour_base)) {
-            Ok((html, _status)) => {
+            Ok((html, _status, _canonical)) => {
                 atomic_write(&dest, html)?;
                 // sibling index.md — the markdown content-negotiation target
                 // (/slug/index.md + Accept header). Only for post/tour/page.
@@ -141,7 +141,7 @@ pub fn run(db: &Path, templates: &Path, out: &Path, site_url: &str, tour_base: &
     for lang in lang_cfg.langs.iter().filter(|l| *l != &lang_cfg.primary) {
         let rel = PathBuf::from(crate::lang::rel_prefix(&lang_cfg, lang)).join("index.html");
         match render::render_slug(db, templates, lang, lang, "", site_url, tour_base) {
-            Ok((html, _status)) => {
+            Ok((html, _status, _canonical)) => {
                 atomic_write(&out.join(&rel), html)?;
                 written += 1;
                 let lastmod: Option<String> = conn
@@ -171,6 +171,8 @@ pub fn run(db: &Path, templates: &Path, out: &Path, site_url: &str, tour_base: &
 
     // Taxonomy archives: tour taxonomies at {tax}/{slug}/ (+es/), post
     // categories at their nested WP path, post tags at etiquette/{slug}/.
+    // term_out_paths owns the mapping — invalidate_dependents consumes
+    // the same paths so a post edit deletes exactly what generate wrote.
     {
         let mut tstmt = conn.prepare(sql!("archive__select_term_paths"))?;
         let terms: Vec<(String, String)> = tstmt
@@ -185,29 +187,12 @@ pub fn run(db: &Path, templates: &Path, out: &Path, site_url: &str, tour_base: &
             )
             .ok()
             .flatten();
-        // term → languages of the posts carrying it (shared taxonomies like
-        // category/post_tag serve both).
-        let term_langs = |tax: &str, slug: &str| -> Vec<String> {
-            conn.prepare(
-                "SELECT DISTINCT p.lang FROM posts p JOIN post_terms pt \
-                 ON pt.post_id=p.id WHERE pt.taxonomy=?1 COLLATE NOCASE \
-                 AND pt.slug=?2 AND p.status='publish'",
-            )
-            .and_then(|mut s| {
-                let langs = s
-                    .query_map(rusqlite::params![tax, slug], |r| r.get::<_, String>(0))?
-                    .flatten()
-                    .collect::<Vec<_>>();
-                Ok(langs)
-            })
-            .unwrap_or_default()
-        };
         let mut emit = |_tax: &str, _slug: &str, lang: &str, path: &str| -> Result<()> {
             let rel = PathBuf::from(format!("{path}/index.html"));
             let dest = out.join(&rel);
             let render_slug_arg = path.trim_matches('/');
             match render::render_slug(db, templates, render_slug_arg, lang, "archive", site_url, tour_base) {
-                Ok((html, _status)) => {
+                Ok((html, _status, _canonical)) => {
                     atomic_write(&dest, html)?;
                     written += 1;
                     let loc_path = rel.to_string_lossy().replace("index.html", "");
@@ -222,34 +207,8 @@ pub fn run(db: &Path, templates: &Path, out: &Path, site_url: &str, tour_base: &
             Ok(())
         };
         for (tax, tslug) in &terms {
-            let tax_l = tax.to_lowercase();
-            if tax_l == "category" || tax_l == "post_tag" {
-                let mut langs = term_langs(tax, tslug);
-                if langs.is_empty() {
-                    langs.push(if crate::render_post::cat_path_is_es(tslug) {
-                        "es".into()
-                    } else {
-                        "fr".into()
-                    });
-                }
-                for lang in langs {
-                    let prefix = crate::lang::rel_prefix(&lang_cfg, &lang);
-                    let prefix = if prefix.is_empty() { String::new() } else { format!("{prefix}/") };
-                    let path = if tax_l == "category" {
-                        format!("{prefix}{}", crate::render_post::cat_path(tslug))
-                    } else {
-                        format!("{prefix}etiquette/{tslug}")
-                    };
-                    emit(&tax_l, tslug, &lang, &path)?;
-                }
-            } else if crate::render_archive::is_taxonomy(&conn, &tax_l) {
-                let langs = term_langs(tax, tslug);
-                let lang = langs.first().cloned().unwrap_or_else(|| {
-                    if matches!(tax_l.as_str(), "region-es" | "perfil" | "duracion" | "estilo") { "es".into() } else { lang_cfg.primary.clone() }
-                });
-                let prefix = crate::lang::rel_prefix(&lang_cfg, &lang);
-                let path = if prefix.is_empty() { format!("{tax_l}/{tslug}") } else { format!("{prefix}/{tax_l}/{tslug}") };
-                emit(&tax_l, tslug, &lang, &path)?;
+            for (lang, dir) in term_out_paths(&conn, &lang_cfg, tax, tslug) {
+                emit(tax, tslug, &lang, &dir.to_string_lossy())?;
             }
         }
     }
@@ -325,16 +284,244 @@ fn post_out_rel(conn: &Connection, post_id: i64, tour_base: &str) -> Result<Path
     Ok(rel_path_with_cfg(&cfg, post_id, front, &lang, &kind, &wslug, tour_base))
 }
 
-/// Remove a still-existing post's rendered file — call BEFORE hard-deleting
-/// the row (regen_post can't resolve a deleted id). Trashes a page that was
-/// never rendered is a harmless no-op.
+/// Every `(lang, dir)` a term archive renders at — THE shared mapping
+/// `generate::run` emits and `invalidate_dependents` deletes from
+/// (phase 5): category paths come from the frozen `CAT_TREE`
+/// (`render_post::cat_path`, nested, site-specific debt — a theme swap
+/// must update the map), post tags sit at `etiquette/{slug}`, and other
+/// routable taxonomies at `{tax}/{slug}`; non-primary languages carry
+/// their rel prefix. ES detection uses `cat_path_is_es`/`ES_ROOTS` plus
+/// the `-es` taxonomies list, matching the dispatch this replaces.
+/// Languages come from the posts carrying the term (`term_langs`);
+/// termless posts still resolve through the CAT_TREE/-es heuristics.
+/// Returns (lang, archive directory) pairs — `dir/index.html` is the file.
+pub(crate) fn term_out_paths(
+    conn: &Connection,
+    lang_cfg: &crate::lang::LangConfig,
+    tax: &str,
+    slug: &str,
+) -> Vec<(String, PathBuf)> {
+    // term → languages of the published posts carrying it (shared
+    // taxonomies like category/post_tag serve both).
+    let term_langs = |tax: &str, slug: &str| -> Vec<String> {
+        conn.prepare(
+            "SELECT DISTINCT p.lang FROM posts p JOIN post_terms pt \
+             ON pt.post_id=p.id WHERE pt.taxonomy=?1 COLLATE NOCASE \
+             AND pt.slug=?2 AND p.status='publish'",
+        )
+        .and_then(|mut s| {
+            let langs = s
+                .query_map(rusqlite::params![tax, slug], |r| r.get::<_, String>(0))?
+                .flatten()
+                .collect::<Vec<_>>();
+            Ok(langs)
+        })
+        .unwrap_or_default()
+    };
+    let mut out: Vec<(String, PathBuf)> = Vec::new();
+    let tax_l = tax.to_lowercase();
+    if tax_l == "category" || tax_l == "post_tag" {
+        let mut langs = term_langs(tax, slug);
+        if langs.is_empty() {
+            langs.push(if crate::render_post::cat_path_is_es(slug) {
+                "es".into()
+            } else {
+                "fr".into()
+            });
+        }
+        for lang in langs {
+            let prefix = crate::lang::rel_prefix(lang_cfg, &lang);
+            let prefix = if prefix.is_empty() { String::new() } else { format!("{prefix}/") };
+            let path = if tax_l == "category" {
+                format!("{prefix}{}", crate::render_post::cat_path(slug))
+            } else {
+                format!("{prefix}etiquette/{slug}")
+            };
+            out.push((lang, PathBuf::from(path)));
+        }
+    } else if crate::render_archive::is_taxonomy(conn, &tax_l) {
+        let langs = term_langs(tax, slug);
+        let lang = langs.first().cloned().unwrap_or_else(|| {
+            if matches!(tax_l.as_str(), "region-es" | "perfil" | "duracion" | "estilo") { "es".into() } else { lang_cfg.primary.clone() }
+        });
+        let prefix = crate::lang::rel_prefix(lang_cfg, &lang);
+        let path = if prefix.is_empty() { format!("{tax_l}/{slug}") } else { format!("{prefix}/{tax_l}/{slug}") };
+        out.push((lang, PathBuf::from(path)));
+    }
+    out
+}
+
+/// Every cache-file rel a post can occupy under `out/` — the removal set
+/// for unpublish/trash/delete and the invalidation set for saves. Covers
+/// the write-back contract enumerated on `public_page`: canonical
+/// `{base}/index.html` + `index.md`, legacy `{base}.html` flat aliases,
+/// and `/{lang}/` copies under EVERY configured prefix — the literal
+/// primary-prefix dir (swept at boot but recreatable by races) plus any
+/// cross-lang alias written before the phase-1 canonical redirects.
+pub(crate) fn post_file_variants(
+    cfg: &crate::lang::LangConfig,
+    rel: &Path,
+    post_lang: &str,
+) -> Vec<PathBuf> {
+    // Page dir = the rendered file's parent (`index.html` → "").
+    let base = rel.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+    let mut variants = Vec::new();
+    let mut push3 = |dir: &Path| {
+        variants.push(dir.join("index.html"));
+        variants.push(dir.join("index.md"));
+        // flat {dir}.html legacy alias — only for real dirs (the front
+        // page's empty base would yield ".html").
+        if !dir.as_os_str().is_empty() {
+            let mut flat = dir.to_path_buf();
+            flat.set_extension("html");
+            variants.push(flat);
+        }
+    };
+    // Canonical copy (rel already carries the post's own lang prefix).
+    push3(&base);
+    // Unprefixed base: the alias dir under which every language copy sits
+    // (same as `base` minus its leading own-lang component).
+    let own_prefix = crate::lang::rel_prefix(cfg, post_lang);
+    let unprefixed = if !own_prefix.is_empty() {
+        base.strip_prefix(&own_prefix).map(|p| p.to_path_buf()).unwrap_or_else(|_| base.clone())
+    } else {
+        base.clone()
+    };
+    for l in &cfg.langs {
+        // Skip the copy the canonical branch already produced (own prefix
+        // on the unprefixed base == base itself).
+        if l == post_lang && !own_prefix.is_empty() {
+            continue;
+        }
+        push3(&PathBuf::from(l).join(&unprefixed));
+    }
+    variants.sort();
+    variants.dedup();
+    variants
+}
+
+/// Lazily invalidate every artifact a post mutation can stale (phase 5,
+/// H4/H5): the post's own file variants, each term archive the post
+/// carries (nested categories via term_out_paths), every localized
+/// homepage index.html, per-lang feeds and all sitemap*.xml. DELETE only
+/// — the lazy write-back cache re-renders on the next request; rendering
+/// here would re-cache before dependent rows (terms, menus) settle.
+/// `extra_terms` = (taxonomy, slug) pairs the post carried BEFORE the
+/// mutation — a category/tag reassignment must invalidate the OLD
+/// archives too; current post_terms alone can't see them.
+/// Returns files removed; failures are logged, never fatal — the
+/// post-regen second sweep in `regen_posts` retries stragglers.
+pub fn invalidate_dependents(
+    conn: &Connection,
+    out: &Path,
+    post_id: i64,
+    tour_base: &str,
+    extra_terms: &[(String, String)],
+) -> usize {
+    let mut removed = 0usize;
+    let mut del = |p: PathBuf| {
+        if p.is_file() {
+            match fs::remove_file(&p) {
+                Ok(()) => removed += 1,
+                Err(e) => eprintln!("invalidate {}: {e}", p.display()),
+            }
+        }
+    };
+    let lang_cfg = crate::lang::config(conn);
+    // The post's own variants (canonical + alias copies).
+    if let Ok(rel) = post_out_rel(conn, post_id, tour_base) {
+        let post_lang: String = conn
+            .query_row("SELECT lang FROM posts WHERE id=?1", [post_id], |r| r.get(0))
+            .unwrap_or_default();
+        for v in post_file_variants(&lang_cfg, &rel, &post_lang) {
+            del(out.join(&v));
+        }
+    }
+    // Term archives for every term the post carries now + carried before.
+    let mut terms: Vec<(String, String)> = extra_terms.to_vec();
+    if let Ok(mut s) = conn.prepare(
+        "SELECT DISTINCT taxonomy, slug FROM post_terms WHERE post_id=?1",
+    ) {
+        if let Ok(rows) = s.query_map([post_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        }) {
+            terms.extend(rows.flatten());
+        }
+    }
+    terms.sort();
+    terms.dedup();
+    for (tax, tslug) in &terms {
+        for (_lang, dir) in term_out_paths(conn, &lang_cfg, tax, tslug) {
+            del(out.join(&dir).join("index.html"));
+        }
+    }
+    // Homepages (primary + every localized front).
+    for lang in &lang_cfg.langs {
+        let lp = crate::lang::rel_prefix(&lang_cfg, lang);
+        let rel = if lp.is_empty() {
+            PathBuf::from("index.html")
+        } else {
+            PathBuf::from(lp).join("index.html")
+        };
+        del(out.join(&rel));
+    }
+    // Feeds: {prefix}/feed/index.xml per language.
+    for lang in &lang_cfg.langs {
+        let lp = crate::lang::rel_prefix(&lang_cfg, lang);
+        let rel = if lp.is_empty() {
+            PathBuf::from("feed/index.xml")
+        } else {
+            PathBuf::from(format!("{lp}/feed/index.xml"))
+        };
+        del(out.join(&rel));
+    }
+    // Sitemaps: sitemap.xml + sitemap-{kind}.xml siblings.
+    if let Ok(rd) = fs::read_dir(out) {
+        for e in rd.flatten() {
+            let name = e.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with("sitemap") && name.ends_with(".xml") {
+                del(e.path());
+            }
+        }
+    }
+    removed
+}
+
+/// The variant file set for a post id (same enumeration as
+/// `post_file_variants`); callers that need the PATHS rather than the
+/// removal itself — e.g. `posts_empty`, which must snapshot the doomed
+/// files before the hard delete removes the row `post_out_rel` reads.
+pub fn file_variants_for(conn: &Connection, post_id: i64, tour_base: &str) -> Result<Vec<PathBuf>> {
+    let rel = post_out_rel(conn, post_id, tour_base)?;
+    let lang_cfg = crate::lang::config(conn);
+    let post_lang: String = conn
+        .query_row("SELECT lang FROM posts WHERE id=?1", [post_id], |r| r.get(0))
+        .unwrap_or_default();
+    Ok(post_file_variants(&lang_cfg, &rel, &post_lang))
+}
+
+/// Delete the file set `post_file_variants` enumerates — shared by
+/// `remove_file_for` and `regen_post`'s non-publish branch.
+fn remove_post_files(conn: &Connection, out: &Path, post_id: i64, tour_base: &str) -> Result<usize> {
+    let mut removed = 0usize;
+    for v in file_variants_for(conn, post_id, tour_base)? {
+        let p = out.join(&v);
+        if p.is_file() {
+            fs::remove_file(&p).with_context(|| format!("remove {}", p.display()))?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
+/// Remove a still-existing post's rendered files — call BEFORE hard-
+/// deleting the row (post_out_rel can't resolve a deleted id). Removes
+/// the full variant set: index.html + index.md + {dir}.html + lang
+/// copies. Trashing a page that was never rendered is a harmless no-op.
 pub fn remove_file_for(db: &Path, out: &Path, post_id: i64, tour_base: &str) -> Result<()> {
     let conn = crate::db::conn(db)?;
-    let rel = post_out_rel(&conn, post_id, tour_base)?;
-    let dest = out.join(&rel);
-    if dest.exists() {
-        fs::remove_file(&dest)?;
-    }
+    remove_post_files(&conn, out, post_id, tour_base)?;
     Ok(())
 }
 
@@ -356,8 +543,10 @@ pub(crate) fn cdata(s: &str) -> String {
 
 
 /// Single-file regenerate for one post id — comment moderation, scheduled
-/// flips and small fixes shouldn't pay for a full site build. Non-publish
-/// ids delete their rendered file instead (trash/draft URLs must die).
+/// flips and small fixes shouldn't pay for a full site build. Publish
+/// rewrites index.html AND its index.md sibling (the two files a lazy
+/// miss serves); non-publish removes the ENTIRE variant set — trash/
+/// draft URLs and every alias copy must die, not just the canonical file.
 
 pub fn regen_post(db: &Path, templates: &Path, out: &Path, post_id: i64, tour_base: &str) -> Result<()> {
     let conn = crate::db::conn(db)?;
@@ -367,10 +556,8 @@ pub fn regen_post(db: &Path, templates: &Path, out: &Path, post_id: i64, tour_ba
     let rel = post_out_rel(&conn, post_id, tour_base)?;
     let dest = out.join(&rel);
     if status != "publish" {
-        // Draft/trash: the rendered file must go, not just stay stale.
-        if dest.exists() {
-            fs::remove_file(&dest)?;
-        }
+        // Draft/trash: every rendered variant must go, not just stay stale.
+        remove_post_files(&conn, out, post_id, tour_base)?;
         return Ok(());
     }
     let site_url: String = conn
@@ -380,8 +567,13 @@ pub fn regen_post(db: &Path, templates: &Path, out: &Path, post_id: i64, tour_ba
         .query_row("SELECT slug, lang, kind FROM posts WHERE id=?1", [post_id], |r| {
             Ok((r.get(0)?, r.get(1)?, r.get(2)?))
         })?;
-    let (html, _status) = render::render_slug(db, templates, &slug, &lang, &kind, &site_url, tour_base)?;
+    let (html, _status, _canonical) = render::render_slug(db, templates, &slug, &lang, &kind, &site_url, tour_base)?;
     atomic_write(&dest, html)?;
+    // index.md sibling — the markdown negotiation target. A stale .md
+    // diverging from the .html was H5; regen keeps them in lock-step.
+    if let Some(md) = render::post_markdown(&conn, &slug, &lang, &kind, &site_url, tour_base) {
+        atomic_write(&dest.with_file_name("index.md"), md)?;
+    }
     Ok(())
 }
 

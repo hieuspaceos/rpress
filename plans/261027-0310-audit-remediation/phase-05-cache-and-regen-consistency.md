@@ -1,8 +1,7 @@
 ---
 phase: 5
 title: "Cache & regen consistency"
-status: pending
-priority: P2
+status: done
 effort: "6h"
 dependencies: [4]
 ---
@@ -115,12 +114,12 @@ whole-cache busts.
 
 ## Todo
 
-- [ ] term_out_paths shared helper (CAT_TREE/etiquette/ES_ROOTS aware)
-- [ ] invalidate_dependents inside regen_posts funnel (covers contact.rs)
-- [ ] regen_post + remove_file_for full removal set (md + alias variants)
-- [ ] write_cache unique tmp + canonical-rel gate + 301 aliases
-- [ ] bust ext list; empty_trash ordering; restore_revision/media ordering
-- [ ] Post-commit invalidation + post-regen sweep + window doc
+- [x] term_out_paths shared helper (CAT_TREE/etiquette/ES_ROOTS aware)
+- [x] invalidate_dependents inside regen_posts funnel (covers contact.rs)
+- [x] regen_post + remove_file_for full removal set (md + alias variants)
+- [x] write_cache unique tmp + canonical-rel gate + 301 aliases
+- [x] bust ext list; empty_trash ordering; restore_revision/media ordering
+- [x] Post-commit invalidation + post-regen sweep + window doc
 
 ## Risks
 

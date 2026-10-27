@@ -1066,24 +1066,74 @@ fn safe_back(page: Option<&str>) -> String {
 }
 
 /// Re-render the given posts' files in the background — the
-/// approve→republish hook (phase 4.4). Cheap (one file per post) and runs
-/// off the request thread.
+/// approve→republish hook (phase 4.4). This is THE regen funnel: every
+/// mutation path (post save, quick/bulk edit, trash/restore, comment
+/// transitions, contact/review submits) funnels through here, so
+/// dependent-artifact invalidation lives inside it — callers get term
+/// archives, homepage, feeds and sitemap invalidation by construction.
+/// Cheap (one file per post) and runs off the request thread.
+///
+/// Ordering: callers invoke regen_posts AFTER their DB writes commit, and
+/// this runs on a blocking task — invalidation therefore never races an
+/// open transaction. Residual delete-vs-late-write window: a request that
+/// started rendering before the first sweep can re-cache stale output
+/// after the delete. The post-regen second sweep below shrinks that
+/// window to ≈ one render's duration; closing it fully needs a per-path
+/// render lock — deliberately deferred (audit phase 5).
 pub(crate) fn regen_posts(sc: &SiteCtx, ids: &[i64]) {
+    regen_posts_with_terms(sc, ids, &[]);
+}
+
+/// `regen_posts` for save paths that REPLACE a post's term assignments
+/// (quick edit, full save): `extra_terms` carries the pre-commit
+/// (taxonomy, slug) snapshot per affected post so archives the post just
+/// LEFT get invalidated too — current post_terms only sees the new set.
+pub(crate) fn regen_posts_with_terms(sc: &SiteCtx, ids: &[i64], extra_terms: &[(i64, String, String)]) {
     let mut ids: Vec<i64> = ids.iter().copied().filter(|i| *i > 0).collect();
     ids.sort_unstable();
     ids.dedup();
     if ids.is_empty() {
         return;
     }
+    let mut terms_by_post: HashMap<i64, Vec<(String, String)>> = HashMap::new();
+    for (pid, tax, slug) in extra_terms {
+        terms_by_post
+            .entry(*pid)
+            .or_default()
+            .push((tax.clone(), slug.clone()));
+    }
     let db = sc.db.clone();
     let templates = sc.templates.clone();
     let out = sc.out.clone();
     let tour_base = sc.tour_base.clone();
     tokio::task::spawn_blocking(move || {
-        for id in ids {
-            if let Err(e) = generate::regen_post(&db, &templates, &out, id, &tour_base) {
+        let conn = match crate::db::conn(&db) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("regen conn: {e:#}");
+                return;
+            }
+        };
+        for id in &ids {
+            let extra = terms_by_post.get(id).cloned().unwrap_or_default();
+            generate::invalidate_dependents(&conn, &out, *id, &tour_base, &extra);
+            if let Err(e) = generate::regen_post(&db, &templates, &out, *id, &tour_base) {
                 eprintln!("regen post {id}: {e:#}");
             }
+        }
+        // Second sweep: delete anything a racing in-flight miss re-cached
+        // during the regen above (see the residual-window note).
+        for id in &ids {
+            let extra = terms_by_post.get(id).cloned().unwrap_or_default();
+            generate::invalidate_dependents(&conn, &out, *id, &tour_base, &extra);
+        }
+        // Re-emit the site files the sweep invalidated — feeds and
+        // sitemap*.xml have no lazy re-render path (pure file reads), so
+        // deleting them without a rewrite would 404 them until the next
+        // rebuild. Pure SQL→string, cheap.
+        let base = crate::db::setting_value(&db, "site_url", "/");
+        if let Err(e) = crate::sitefx::emit_site_files(&db, &templates, &out, &base, &tour_base) {
+            eprintln!("emit_site_files: {e:#}");
         }
     });
 }
@@ -1111,8 +1161,13 @@ pub(crate) fn bust_cache_dir(dir: &std::path::Path) {
                 sweep(&p);
                 let _ = std::fs::remove_dir(&p); // only removes when empty
             } else {
+                // Cache files + atomic-write tmp orphans: write_cache's
+                // "{stem}.{pid}.{n}.tmp" and generate::atomic_write's
+                // "tmp-{pid}-{stamp}" suffixes must not survive a bust.
                 let ext = p.extension().and_then(|x| x.to_str()).unwrap_or("");
-                if matches!(ext, "html" | "htm" | "md" | "xml" | "txt" | "json") {
+                if matches!(ext, "html" | "htm" | "md" | "xml" | "txt" | "json" | "tmp")
+                    || name.contains(".tmp-")
+                {
                     let _ = std::fs::remove_file(&p);
                 }
             }

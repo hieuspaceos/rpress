@@ -2,7 +2,7 @@ use anyhow::Result;
 use rusqlite::params;
 use std::fs;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const UPLOAD_LIMIT_BYTES: usize = 25 * 1024 * 1024;
@@ -290,15 +290,21 @@ pub fn save_upload(db: &Path, uploads: &Path, filename: &str, bytes: &[u8], alt:
 /// refreshes mime + dimensions, drops stale sizes_json. First edit copies the
 /// on-disk original to `media/{id}_original.{ext}` under uploads and records
 /// it in `backup_path` so Restore Original can bring it back.
+/// Ordering (audit): sizes are computed from the NEW bytes BEFORE the main
+/// file is written and stale derived files are unlinked, so a mid-flight
+/// failure can never leave the row pointing at size files that no longer
+/// match the on-disk original.
 pub fn media_replace_upload(db: &Path, uploads: &Path, id: i64, bytes: &[u8]) -> Result<()> {
     if bytes.len() > UPLOAD_LIMIT_BYTES {
         anyhow::bail!("max {UPLOAD_LIMIT_DISPLAY}");
     }
     let c = crate::db::conn(db)?;
-    let row: Option<(String, Option<String>)> = c
-        .query_row("SELECT path, backup_path FROM media WHERE id=?1", [id], |r| Ok((r.get(0)?, r.get(1)?)))
+    let row: Option<(String, Option<String>, String)> = c
+        .query_row("SELECT path, backup_path, COALESCE(sizes_json,'') FROM media WHERE id=?1", [id], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })
         .ok();
-    let Some((path, backup)) = row else { anyhow::bail!("media {id} not found") };
+    let Some((path, backup, old_sizes_json)) = row else { anyhow::bail!("media {id} not found") };
     if path.contains("..") || path.starts_with('/') {
         anyhow::bail!("bad path");
     }
@@ -322,14 +328,41 @@ pub fn media_replace_upload(db: &Path, uploads: &Path, id: i64, bytes: &[u8]) ->
     // Trust the blob, not the extension: the editor can emit PNG for a
     // .webp source; mime must describe the stored bytes.
     let mime = mime_from_bytes(bytes).unwrap_or_else(|| mime_of(&path).to_string());
-    fs::write(uploads.join(&path), bytes)?;
     let (w, h) = image_dims(bytes);
-    // Regenerate the configured sizes from the new bytes (WP
-    // wp_update_attachment_metadata on image edit); failure falls back to
-    // the bare "full" descriptor so delete/grid code keeps working.
-    let sizes = write_image_sizes(db, uploads, &path).unwrap_or_else(|_| {
-        format!(r#"{{"full":{{"filesize":{},"height":{},"width":{},"mime-type":"{}"}}}}"#, bytes.len(), h.map(|v| v.to_string()).unwrap_or("null".into()), w.map(|v| v.to_string()).unwrap_or("null".into()), mime)
+    // Regenerate the configured sizes from the new bytes BEFORE the main
+    // file lands — decode/resize/encode all happens against `bytes`, and
+    // the derived writes commit only after the main write succeeds, so a
+    // mid-flight failure never swaps in half-updated derived files (WP
+    // wp_update_attachment_metadata on image edit; failure falls back to
+    // the bare "full" descriptor so delete/grid code keeps working).
+    let (sizes, pending) = plan_image_sizes(db, uploads, &path, bytes).unwrap_or_else(|_| {
+        (format!(r#"{{"full":{{"filesize":{},"height":{},"width":{},"mime-type":"{}"}}}}"#, bytes.len(), h.map(|v| v.to_string()).unwrap_or("null".into()), w.map(|v| v.to_string()).unwrap_or("null".into()), mime), Vec::new())
     });
+    fs::write(uploads.join(&path), bytes)?;
+    for (dest, bytes) in &pending {
+        fs::write(dest, bytes)?;
+    }
+    // Unlink stale derived files the new sizes_json no longer references
+    // (dimension/format changes rename the size files; orphans would serve
+    // stale pixels under a forgotten name).
+    let new_files: std::collections::HashSet<String> = serde_json::from_str::<serde_json::Value>(&sizes)
+        .ok()
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default()
+        .values()
+        .filter_map(|s| s.get("file").and_then(|f| f.as_str()).map(String::from))
+        .collect();
+    if let Ok(serde_json::Value::Object(old)) = serde_json::from_str::<serde_json::Value>(&old_sizes_json) {
+        for f in old.values().filter_map(|s| s.get("file").and_then(|f| f.as_str())) {
+            if !new_files.contains(f) && !f.contains("..") && !f.starts_with('/') {
+                let rel = match path.rsplit_once('/') {
+                    Some((d, _)) => format!("{d}/{f}"),
+                    None => f.to_string(),
+                };
+                let _ = fs::remove_file(uploads.join(rel));
+            }
+        }
+    }
     c.execute(
         "UPDATE media SET w=?2, h=?3, mime=?4, sizes_json=?5 WHERE id=?1",
         params![id, w, h, mime, sizes],
@@ -677,6 +710,21 @@ pub fn now_sql() -> String {
 /// Failures (undecodable upload, encoder gap like AVIF) return the map
 /// built so far — an attachment with partial/no sizes is still valid.
 pub fn write_image_sizes(db: &Path, uploads: &Path, path: &str) -> Result<String> {
+    let bytes = fs::read(uploads.join(path))?;
+    let (sizes, pending) = plan_image_sizes(db, uploads, path, &bytes)?;
+    // Existing-file path (upload/regenerate): write immediately.
+    for (dest, bytes) in pending {
+        fs::write(&dest, &bytes)?;
+    }
+    Ok(sizes)
+}
+
+/// Compute the WP size set for `bytes` as `path`'s attachment: returns the
+/// sizes_json map plus the pending `(dest, encoded bytes)` writes.
+/// `media_replace_upload` needs the decode/resize done BEFORE the main
+/// file is swapped (audit ordering): plan from the new bytes, write the
+/// main file, then commit the pending size writes.
+fn plan_image_sizes(db: &Path, uploads: &Path, path: &str, bytes: &[u8]) -> Result<(String, Vec<(PathBuf, Vec<u8>)>)> {
     let geti = |k: &str, d: u32| -> u32 {
         crate::db::comments::setting_get(db, k)
             .and_then(|v| v.trim().parse().ok())
@@ -689,8 +737,7 @@ pub fn write_image_sizes(db: &Path, uploads: &Path, path: &str) -> Result<String
         ("medium_large", geti("medium_large_size_w", 768), geti("medium_large_size_h", 0), false),
         ("large", geti("large_size_w", 1024), geti("large_size_h", 1024), false),
     ];
-    let bytes = fs::read(uploads.join(path))?;
-    let img = image::load_from_memory(&bytes)?;
+    let img = image::load_from_memory(bytes)?;
     let (sw, sh) = (img.width(), img.height());
     let (dir, stem) = path
         .rsplit_once('/')
@@ -704,8 +751,9 @@ pub fn write_image_sizes(db: &Path, uploads: &Path, path: &str) -> Result<String
         "webp" => Some(image::ImageFormat::WebP),
         _ => None,
     };
-    let Some(format) = format else { return Ok("{}".into()) };
+    let Some(format) = format else { return Ok(("{}".into(), Vec::new())) };
     let mut sizes = serde_json::Map::new();
+    let mut pending: Vec<(PathBuf, Vec<u8>)> = Vec::new();
     for (name, tw, th, crop) in specs {
         if tw == 0 && th == 0 {
             continue;
@@ -739,13 +787,14 @@ pub fn write_image_sizes(db: &Path, uploads: &Path, path: &str) -> Result<String
         if sub.write_to(&mut buf, format).is_err() {
             continue;
         }
-        fs::write(&dest, buf.into_inner())?;
+        let bytes = buf.into_inner();
         sizes.insert(
             name.to_string(),
-            serde_json::json!({"file": file, "width": dw, "height": dh, "mime-type": mime_of(&file), "filesize": dest.metadata().map(|m| m.len()).unwrap_or(0)}),
+            serde_json::json!({"file": file, "width": dw, "height": dh, "mime-type": mime_of(&file), "filesize": bytes.len()}),
         );
+        pending.push((dest, bytes));
     }
-    Ok(serde_json::Value::Object(sizes).to_string())
+    Ok((serde_json::Value::Object(sizes).to_string(), pending))
 }
 
 /// Rebuild sizes_json (+ the size files) for every local image attachment —

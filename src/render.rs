@@ -101,7 +101,7 @@ pub fn run(db: &Path, templates: &Path, slug: &str, out: &Path, site_url: &str, 
     let cfg = crate::lang::config(&conn);
     let clean = slug.trim_matches('/');
     let (lang, path) = crate::lang::split_path(&cfg, clean);
-    let (html, _status) = render_slug(db, templates, path, &lang, "", site_url, tour_base)?;
+    let (html, _status, _canonical) = render_slug(db, templates, path, &lang, "", site_url, tour_base)?;
     if let Some(parent) = out.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -123,7 +123,7 @@ pub fn render_slug(
     kind: &str,
     site_url: &str,
     tour_base: &str,
-) -> Result<(String, String)> {
+) -> Result<(String, String, String)> {
     let conn = crate::db::conn(db)?;
     let lang_cfg = crate::lang::config(&conn);
     let row: Option<(
@@ -161,7 +161,9 @@ pub fn render_slug(
         let (alang_s, path) = crate::lang::split_path(&lang_cfg, clean);
         if path.is_empty() && alang_s != lang_cfg.primary {
             if let Some(front_id) = front_id_for_lang(&conn, &alang_s) {
-                return render_slug_by_id_public(&conn, templates, front_id, site_url, tour_base);
+                let (h, s) = render_slug_by_id_public(&conn, templates, front_id, site_url, tour_base)?;
+                let canonical = crate::lang::page_path(&lang_cfg, &alang_s, "page", "", tour_base);
+                return Ok((h, s, canonical));
             }
         }
         // Term/archive permalinks (the posts.slug lookup already missed):
@@ -183,6 +185,7 @@ pub fn render_slug(
             _ => None,
         };
         if let Some(term) = term {
+            let canonical = term_canonical_path(&lang_cfg, &term, alang);
             let ctx = crate::render_tour::PostCtx {
                 slug: slug.to_string(),
                 lang: alang.to_string(),
@@ -195,12 +198,13 @@ pub fn render_slug(
                 tour_base: tour_base.to_string(),
             };
             let h = crate::render_archive::page(&conn, templates, &ctx, &term)?;
-            return Ok((h, "publish".to_string()));
+            return Ok((h, "publish".to_string(), canonical));
         }
         // Category archives can be nested or single-segment; resolve the
         // leaf slug once post and old-slug lookups have missed.
         if !leaf.is_empty() {
             if let Some(term) = crate::render_archive::term_by_path(&conn, "category", leaf) {
+                let canonical = term_canonical_path(&lang_cfg, &term, alang);
                 let ctx = crate::render_tour::PostCtx {
                     slug: slug.to_string(),
                     lang: alang.to_string(),
@@ -213,7 +217,7 @@ pub fn render_slug(
                     tour_base: tour_base.to_string(),
                 };
                 let h = crate::render_archive::page(&conn, templates, &ctx, &term)?;
-                return Ok((h, "publish".to_string()));
+                return Ok((h, "publish".to_string(), canonical));
             }
         }
         // canonical slug of a post whose stored slug is degenerate
@@ -230,7 +234,10 @@ pub fn render_slug(
                 )
                 .optional()
             {
-                return render_slug_by_id_public(&conn, templates, pid, site_url, tour_base);
+                let (h, s) = render_slug_by_id_public(&conn, templates, pid, site_url, tour_base)?;
+                let canonical = post_canonical_path(&conn, pid, tour_base)
+                    .unwrap_or_else(|| format!("/{leaf}/"));
+                return Ok((h, s, canonical));
             }
         }
         anyhow::bail!("slug not found: {slug}");
@@ -240,7 +247,55 @@ pub fn render_slug(
     // any other imported markup may carry the source domain — normalize it
     // here so no render path can leak it (filter_content alone missed them).
     let h = crate::render_post::rewrite_origin(&h, site_url, &conn);
-    Ok((h, status))
+    let canonical = post_canonical_path(&conn, id, tour_base)
+        .unwrap_or_else(|| format!("/{}/", slug.trim_matches('/')));
+    Ok((h, status, canonical))
+}
+
+/// Canonical permalink path (leading+trailing `/`, no host) for a post id:
+/// front pages resolve to their language root (`/` or `/{lang}/`), tours
+/// to `/{lang-prefix}{tour_base}/{display_slug}/`. Drives the public_page
+/// canonical-rel gate (M22): writes only land under this path, everything
+/// else 301s here.
+pub(crate) fn post_canonical_path(conn: &Connection, id: i64, tour_base: &str) -> Option<String> {
+    let (slug, lang, kind, title): (String, String, String, String) = conn
+        .query_row(
+            "SELECT slug, lang, kind, title FROM posts WHERE id=?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .ok()?;
+    let cfg = crate::lang::config(conn);
+    if cfg.langs.iter().any(|l| front_id_for_lang(conn, l) == Some(id)) {
+        return Some(crate::lang::page_path(&cfg, &lang, "page", "", tour_base));
+    }
+    let wslug = if kind == "tour" {
+        crate::render_tour::display_slug(conn, id, &slug, &title)
+    } else {
+        slug
+    };
+    Some(crate::lang::page_path(&cfg, &lang, &kind, &wslug, tour_base))
+}
+
+/// Canonical archive path for a resolved term under request language
+/// `lang` — mirrors the emit mapping in `generate::term_out_paths`
+/// (categories nest via cat_path, post_tag at etiquette/, other
+/// taxonomies at {tax}/{slug}, lang rel-prefix). Using the term's own
+/// taxonomy (not the request segment) keeps `/category/x/` → `/x/`.
+fn term_canonical_path(
+    cfg: &crate::lang::LangConfig,
+    term: &crate::render_archive::Term,
+    lang: &str,
+) -> String {
+    let t = term.taxonomy.to_lowercase();
+    let base = if t == "category" {
+        crate::render_post::cat_path(&term.slug)
+    } else if t == "post_tag" {
+        format!("etiquette/{}", term.slug)
+    } else {
+        format!("{t}/{}", term.slug)
+    };
+    format!("{}/{base}/", crate::lang::url_prefix(cfg, lang))
 }
 
 
@@ -2593,9 +2648,17 @@ fn extract_attr(attrs: &str, name: &str) -> Option<String> {
 /// Markdown page for one published post (`.md` sibling of the HTML page).
 /// Front-matter + converted body; links/images keep absolute site URLs.
 pub fn post_markdown(conn: &Connection, slug: &str, lang: &str, kind: &str, site_url: &str, tour_base: &str) -> Option<String> {
-    let (title, body_html, excerpt, published_at, kind, slug, body_json): (String, String, String, String, String, String, String) = conn
-        .query_row(sql!("render__select_markdown"), rusqlite::params![slug, lang, kind], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?))
+    post_markdown_id(conn, slug, lang, kind, site_url, tour_base).map(|(_id, md)| md)
+}
+
+/// `post_markdown` plus the resolved post id — the public_page canonical
+/// gate needs the id to compare request path vs canonical permalink (a
+/// `.md` on an alias URL 301s to the canonical `.md` instead of caching
+/// under the alias).
+pub(crate) fn post_markdown_id(conn: &Connection, slug: &str, lang: &str, kind: &str, site_url: &str, tour_base: &str) -> Option<(i64, String)> {
+    let (id, title, body_html, excerpt, published_at, kind, slug, body_json): (i64, String, String, String, String, String, String, String) = conn
+        .query_row(sql!("render__select_markdown_id"), rusqlite::params![slug, lang, kind], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?))
         })
         .ok()?;
     // tours carry the page-builder tree in body_json (body_html is NULL):
@@ -2617,7 +2680,7 @@ pub fn post_markdown(conn: &Connection, slug: &str, lang: &str, kind: &str, site
     }
     md.push_str(&html_to_markdown(&body_html));
     md.push('\n');
-    Some(md)
+    Some((id, md))
 }
 
 /// Collect every text-ish leaf out of a page-builder body_json tree —

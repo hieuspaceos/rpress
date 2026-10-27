@@ -57,7 +57,7 @@ fn collect_urls(conn: &Connection, site: &str, tour_base: &str) -> Result<Vec<(S
         urls.push((format!("{}{}", site, crate::lang::page_path(&lang_cfg, lang, "page", "", tour_base)), "page".into(), lastmod));
     }
 
-    // Taxonomy archives — same set generate emitted.
+    // Taxonomy archives — same set generate emitted, same shared mapping.
     {
         let mut tstmt = conn.prepare(crate::sql!("archive__select_term_paths"))?;
         let terms: Vec<(String, String)> = tstmt
@@ -72,55 +72,10 @@ fn collect_urls(conn: &Connection, site: &str, tour_base: &str) -> Result<Vec<(S
             )
             .ok()
             .flatten();
-        let term_langs = |tax: &str, slug: &str| -> Vec<String> {
-            conn.prepare(
-                "SELECT DISTINCT p.lang FROM posts p JOIN post_terms pt \
-                 ON pt.post_id=p.id WHERE pt.taxonomy=?1 COLLATE NOCASE \
-                 AND pt.slug=?2 AND p.status='publish'",
-            )
-            .and_then(|mut s| {
-                let langs = s
-                    .query_map(rusqlite::params![tax, slug], |r| r.get::<_, String>(0))?
-                    .flatten()
-                    .collect::<Vec<_>>();
-                Ok(langs)
-            })
-            .unwrap_or_default()
-        };
         for (tax, tslug) in &terms {
-            let tax_l = tax.to_lowercase();
-            if tax_l == "category" || tax_l == "post_tag" {
-                let mut langs = term_langs(&tax_l, tslug);
-                if langs.is_empty() {
-                    langs.push(if crate::render_post::cat_path_is_es(tslug) {
-                        "es".into()
-                    } else {
-                        "fr".into()
-                    });
-                }
-                for lang in langs {
-                    let prefix = crate::lang::rel_prefix(&lang_cfg, &lang);
-                    let prefix = if prefix.is_empty() { String::new() } else { format!("{prefix}/") };
-                    let path = if tax_l == "category" {
-                        format!("{prefix}{}", crate::render_post::cat_path(tslug))
-                    } else {
-                        format!("{prefix}etiquette/{tslug}")
-                    };
-                    urls.push((
-                        format!("{site}/{path}/"),
-                        "archive".into(),
-                        archive_lastmod.clone(),
-                    ));
-                }
-            } else if crate::render_archive::is_taxonomy(conn, &tax_l) {
-                let langs = term_langs(tax, tslug);
-                let lang = langs.first().cloned().unwrap_or_else(|| {
-                    if matches!(tax_l.as_str(), "region-es" | "perfil" | "duracion" | "estilo") { "es".into() } else { lang_cfg.primary.clone() }
-                });
-                let prefix = crate::lang::rel_prefix(&lang_cfg, &lang);
-                let path = if prefix.is_empty() { format!("{tax_l}/{tslug}") } else { format!("{prefix}/{tax_l}/{tslug}") };
+            for (_lang, dir) in crate::generate::term_out_paths(conn, &lang_cfg, tax, tslug) {
                 urls.push((
-                    format!("{site}/{path}/"),
+                    format!("{site}/{}/", dir.to_string_lossy()),
                     "archive".into(),
                     archive_lastmod.clone(),
                 ));

@@ -1436,15 +1436,27 @@ pub fn revision_count(db: &Path, post_id: i64) -> i64 {
 /// snapshot the current row as a new revision first, then copy the
 /// revision's title/excerpt/body back. Terms, metas, slug, status are
 /// untouched — matching WP, which restores title+content+excerpt only.
+/// The revision SELECT runs inside the transaction on ONE connection —
+/// the old two-connection read-then-write could restore a revision row
+/// already deleted between the SELECT and the UPDATE (audit TOCTOU).
 pub fn restore_revision(db: &Path, rid: i64) -> Result<i64> {
-    let Some((post_id, _saved, title, excerpt, body)) = revision_get(db, rid)? else {
+    let c = crate::db::conn(db)?;
+    let tx = c.unchecked_transaction()?;
+    let row = tx
+        .query_row(sql!("revisions__get"), [rid], |r| {
+            Ok((
+                r.get::<_, i64>(1)?,
+                r.get::<_, String>(3).unwrap_or_default(),
+            ))
+        })
+        .optional()?;
+    let Some((post_id, blob)) = row else {
         anyhow::bail!("revision {rid} not found")
     };
+    let (title, excerpt, body) = revision_parts(&blob);
     if body.is_empty() {
         anyhow::bail!("revision {rid} has no body");
     }
-    let c = crate::db::conn(db)?;
-    let tx = c.unchecked_transaction()?;
     tx.execute(sql!("posts__insert_into_revisions"), [post_id])?;
     tx.execute(
         "UPDATE posts SET title=COALESCE(NULLIF(?2,''), title), \

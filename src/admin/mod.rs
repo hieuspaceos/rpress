@@ -353,17 +353,31 @@ async fn public_page(State(app): State<App>, headers: HeaderMap, ConnectInfo(pee
     {
         return not_found(sc);
     }
-
-    // .md → the markdown sibling; a .html suffix maps the same way so a
-    // permalink URL + ".md" resolves the post (WP-style content negotiation).
-    let (mut md_path, mut html_path): (Option<String>, Option<String>) = (None, None);
+    // ".html" permalink aliases are never canonical (M22): real static
+    // .html files under the known static subtrees (.well-known ACME,
+    // wp-includes, wp-content plugin assets) still serve verbatim; every
+    // other .html request 301s to the bare path instead of serving a post
+    // or cached alias under the .html URL. ".md" → the sibling below.
+    let mut md_path: Option<String> = None;
     let clean_owned;
     if let Some(stripped) = clean.strip_suffix(".md") {
         clean_owned = stripped.trim_end_matches('/').to_string();
         md_path = Some(format!("{clean_owned}/index.md"));
     } else if let Some(stripped) = clean.strip_suffix(".html") {
-        clean_owned = stripped.trim_end_matches('/').to_string();
-        html_path = Some(format!("{clean_owned}.html"));
+        let bare = stripped.trim_end_matches('/');
+        let static_subtree = bare.starts_with(".well-known/")
+            || bare.starts_with("wp-includes/")
+            || bare.starts_with("wp-content/");
+        if static_subtree {
+            let rel = format!("{bare}.html");
+            if let Some(b) = read_out(sc, &rel) {
+                let mime = public_mime(&rel).to_string();
+                return ([(header::CONTENT_TYPE, mime), (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string())], b)
+                    .into_response();
+            }
+        }
+        let target = if bare.is_empty() { "/".to_string() } else { format!("/{bare}/") };
+        return moved_permanently(&target);
     } else {
         clean_owned = clean.to_string();
     }
@@ -381,7 +395,6 @@ async fn public_page(State(app): State<App>, headers: HeaderMap, ConnectInfo(pee
     if wants_md && md_path.is_none() {
         candidates.push(format!("{clean}/index.md"));
     }
-    if let Some(p) = &html_path { candidates.push(p.clone()); }
     candidates.push(format!("{clean}.html"));
     candidates.push(format!("{clean}/index.html"));
     // index.md only for explicit .md URL or the Accept-negotiated push
@@ -404,9 +417,9 @@ async fn public_page(State(app): State<App>, headers: HeaderMap, ConnectInfo(pee
     // Primary-lang prefix (`/fr/<slug>` on an fr-primary site): duplicate of
     // the canonical URL — 301 before any lookup. Pre-existing `{out}/fr/`
     // alias files are swept at serve() boot, so this is only reached on a
-    // genuine miss. The .md/.html suffix (already stripped) rides along.
+    // genuine miss. The .md suffix (already stripped) rides along.
     if let Some(rest) = crate::lang::primary_alias(&lang_cfg, clean) {
-        let suffix = if md_path.is_some() { ".md" } else if html_path.is_some() { ".html" } else { "" };
+        let suffix = if md_path.is_some() { ".md" } else { "" };
         return moved_permanently(&format!("/{rest}{suffix}"));
     }
     // Junk-prefix block: WP-scanner paths that can never resolve to a post.
@@ -431,9 +444,21 @@ async fn public_page(State(app): State<App>, headers: HeaderMap, ConnectInfo(pee
         }
     }
     // ".md" miss → generate the markdown for this slug on demand (post only;
-    // archives/front return 404). Write-back so the next hit is static.
+    // archives/front return 404). ".html" alias requests reach the render
+    // below but ride the same canonical-rel gate — they 301 to the
+    // canonical permalink instead of serving+caching under the alias (M22).
     if md_path.is_some() {
-        if let Some(md) = md_for_slug(sc, clean) {
+        if let Some((md_id, md)) = md_for_slug(sc, clean) {
+            // Canonical-rel gate (M22): a .md request on a non-canonical
+            // alias 301s to the canonical .md instead of writing a stale
+            // alias copy.
+            let canonical = crate::render::post_canonical_path(&conn, md_id, &sc.tour_base);
+            let req = format!("/{}/", clean.trim_matches('/'));
+            if let Some(c) = canonical {
+                if c != req {
+                    return moved_permanently(&format!("{}.md", c.trim_end_matches('/')));
+                }
+            }
             write_cache(sc, &format!("{clean}/index.md"), &md);
             return ([(header::CONTENT_TYPE, "text/markdown; charset=utf-8".to_string()),
                      (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string())], md).into_response();
@@ -474,11 +499,20 @@ async fn public_page(State(app): State<App>, headers: HeaderMap, ConnectInfo(pee
     };
     let base = site_url(sc);
     match crate::render::render_slug(&sc.db, &sc.templates, lookup, &lang_s, kind, &base, &sc.tour_base) {
-        Ok((h, status)) => {
+        Ok((h, status, canonical)) => {
             // Defense in depth: only publish ever caches — and only publish
             // ever serves, even if a render path slips a status through.
             if status != "publish" {
                 return not_found(sc);
+            }
+            // Canonical-rel gate (M22): only the canonical permalink may
+            // write into the cache. Alias renders (old slugs, /category/x,
+            // unnested category paths, wrong-prefix term archives) 301 to
+            // the canonical URL instead of leaving a second stale copy —
+            // ".html" suffixes already normalized above.
+            let req = format!("/{}/", clean.trim_matches('/'));
+            if !canonical.is_empty() && canonical != req {
+                return moved_permanently(&canonical);
             }
             write_cache(sc, &format!("{clean}/index.html"), &h);
             html_response(h)
@@ -502,7 +536,8 @@ fn moved_permanently(target: &str) -> Response {
 
 /// `.md` lookup: `{lang}/{slug}` → translated post, `{tour_base}/{slug}`
 /// → tour, else post/page. Mirrors the normalization in `public_page`.
-fn md_for_slug(sc: &SiteCtx, clean: &str) -> Option<String> {
+/// Returns (post id, markdown) — the id feeds the canonical-rel gate.
+fn md_for_slug(sc: &SiteCtx, clean: &str) -> Option<(i64, String)> {
     let conn = crate::db::conn(&sc.db).ok()?;
     let cfg = crate::lang::config(&conn);
     let (lang, rest) = crate::lang::split_path(&cfg, clean);
@@ -511,7 +546,7 @@ fn md_for_slug(sc: &SiteCtx, clean: &str) -> Option<String> {
         Some(s) => ("tour", s),
         None => ("", rest),
     };
-    crate::render::post_markdown(&conn, slug.trim_matches('/'), &lang, kind, &site_url(sc), &sc.tour_base)
+    crate::render::post_markdown_id(&conn, slug.trim_matches('/'), &lang, kind, &site_url(sc), &sc.tour_base)
 }
 
 /// WP-scanner paths that can never be a permalink on this CMS — checked
@@ -576,17 +611,29 @@ pub(crate) fn asset_redirect_target(origin: &str, site_url: &str, allow: &[Strin
     allow.contains(&o_host).then(|| origin.to_string())
 }
 
-/// Atomic write into the cache dir: tmp+rename so a reader never catches a
-/// half-written page. Failures are silent — the response still serves, the
-/// next miss just renders again.
+/// Atomic write into the cache dir: unique tmp + rename so a reader never
+/// catches a half-written page and two racing misses can't clobber each
+/// other's tmp (audit H6 — the old `{file}.tmp` name was deterministic:
+/// the slower render's rename could resurrect older content, and orphans
+/// were immune to bust_cache_dir). Write/rename failures only cost a
+/// re-render on the next miss — logged, never fatal.
+static CACHE_TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 fn write_cache(sc: &SiteCtx, rel: &str, html: &str) {
     let dest = sc.out.join(rel);
     if let Some(parent) = dest.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let tmp = dest.with_extension("tmp");
-    if std::fs::write(&tmp, html).is_ok() {
-        let _ = std::fs::rename(&tmp, &dest);
+    let n = CACHE_TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = dest.with_extension(format!("{}.{}.tmp", std::process::id(), n));
+    match std::fs::write(&tmp, html) {
+        Ok(()) => {
+            if let Err(e) = std::fs::rename(&tmp, &dest) {
+                eprintln!("cache rename {} → {}: {e}", tmp.display(), dest.display());
+                let _ = std::fs::remove_file(&tmp);
+            }
+        }
+        Err(e) => eprintln!("cache write {}: {e}", tmp.display()),
     }
 }
 
