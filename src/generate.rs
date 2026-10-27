@@ -643,6 +643,7 @@ fn bare_ctx(
     m.insert("foot_scripts_eztoc".into(), json!(""));
     m.insert("foot_scripts_comment_reply".into(), json!(""));
     m.insert("foot_scripts_wpdiscuz".into(), json!(""));
+    m.insert("head_extra".into(), json!(""));
     m.insert("lang".into(), json!(lang));
     m.insert("title".into(), json!(title));
     m.insert("site_url".into(), json!(site_url));

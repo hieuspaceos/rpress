@@ -454,7 +454,7 @@ pub(crate) fn page(
                 "day": day, "month": month,
                 "date_url": format!("{site_url}{prefix}{date_url}"),
                 "date_label": date_label,
-                "author": "hieutuyen",
+                "author": post_meta1(conn, *post_id, "author_login"),
                 "cats": cat_links,
             }));
         }
@@ -747,6 +747,16 @@ fn mark_current_menu(html: &str, site_url: &str, term_path: &str) -> String {
 /// Minimal wpautop for taxonomy descriptions: "\n\n" chunks → <p>. Unlike
 /// the post pipeline, bare <img>/<iframe> lines ARE wrapped (WP behavior
 /// for inline-only chunks — the reference shows <p><img/></p>).
+/// Single post_meta value — bylines + archive card fields.
+fn post_meta1(conn: &Connection, post_id: i64, key: &str) -> String {
+    conn.query_row(
+        "SELECT COALESCE(meta_value,'') FROM post_meta WHERE post_id=?1 AND meta_key=?2 LIMIT 1",
+        rusqlite::params![post_id, key],
+        |r| r.get(0),
+    )
+    .unwrap_or_default()
+}
+
 fn wpautop(s: &str) -> String {
     let s = s.replace("\r\n", "\n").replace('\r', "\n");
     const BLOCKS: &[&str] = &[

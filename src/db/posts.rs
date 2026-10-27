@@ -51,7 +51,8 @@ pub struct PostForm {
 
 /// `%var%` substitution for Rank Math SEO templates. Data uses only
 /// `%title%`, `%sep%`, `%sitename%` (audit 2026-10-23); `%sep%` is "-" —
-/// WP rendered titles as `Title - Au Coeur du Vietnam`.
+/// WP rendered titles as `Title - <blogname>` — site_name falls back to
+/// `blogname` (imported verbatim), then an empty string.
 pub fn resolve_seo(tpl: &str, title: &str, sitename: &str) -> String {
     tpl.replace("%title%", title)
         .replace("%sitename%", sitename)
@@ -66,14 +67,17 @@ fn site_name_conn(c: &Connection) -> String {
     )
     .ok()
     .filter(|s| !s.is_empty())
-    .unwrap_or_else(|| "Au Coeur du Vietnam".into())
+    .unwrap_or_else(|| {
+        c.query_row("SELECT value FROM settings WHERE key='blogname' LIMIT 1", [], |r| r.get::<_, String>(0))
+            .unwrap_or_default()
+    })
 }
 
 pub fn site_name(db: &Path) -> String {
     crate::db::conn(db)
         .ok()
         .map(|c| site_name_conn(&c))
-        .unwrap_or_else(|| "Au Coeur du Vietnam".into())
+        .unwrap_or_default()
 }
 
 /// PHP `serialize(array<string>)` for `rank_math_robots`.

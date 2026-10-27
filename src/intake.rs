@@ -7,14 +7,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-pub const FORM_SLUGS: &[&str] = &[
-    "rappel-gratuit",
-    "devolucion-de-llamada-gratuita",
-    "reserver-un-guide-ou-un-chauffeur",
-    "ecrivez-vos-avis",
-    "tour-enquiry",
-    "consulta-tour",
-];
+
 
 #[derive(Clone, Default)]
 pub struct Rate {

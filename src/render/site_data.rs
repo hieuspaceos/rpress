@@ -277,8 +277,8 @@ pub(crate) fn site_data(
         "lang": lang,
         "url_prefix": prefix,
         "site_url": site_url,
-        "tour_base": tour_base,
         "tour_base_url": format!("{site_url}{prefix}/{tour_base}/"),
+        "chrome": chrome_ctx(conn, site_url, lang),
     });
     if let Some(obj) = map.as_object_mut() {
         for (k, v) in extra {
@@ -582,4 +582,354 @@ fn menu_li(items: &[Value]) -> String {
         out.push_str("</li>");
     }
     out
+}
+
+/// Per-site chrome values the base templates read as `site.chrome.*`.
+/// Everything here is seeded from import (theme options, plugin payloads)
+/// or derived from settings — never a hardcoded aucoeur string.
+fn chrome_ctx(conn: &Connection, site_url: &str, lang: &str) -> Value {
+    let get = |k: &str| -> String {
+        conn.query_row("SELECT value FROM settings WHERE key=?1", [k], |r| r.get::<_, String>(0))
+            .unwrap_or_default()
+    };
+    let theme: Value = get("plugin:theme-traveltour:general")
+        .parse::<serde_json::Value>()
+        .unwrap_or(Value::Null);
+    let tget = |k: &str| -> String {
+        theme.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string()
+    };
+    let media_path = |id: &str| -> Option<(String, String)> {
+        let wid: i64 = id.parse().ok()?;
+        conn.query_row(
+            "SELECT path, COALESCE(alt,'') FROM media WHERE wp_id=?1",
+            [wid],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+        )
+        .ok()
+    };
+    let logo_img = |key: &str, cls: &str| -> Value {
+        media_path(&tget(key))
+            .map(|(p, alt)| {
+                json!(format!(
+                    "<a class=\"{cls}\" href=\"{site_url}/\" ><img src=\"{site_url}/wp-content/uploads/{p}\" alt=\"{alt}\" srcset=\"{site_url}/wp-content/uploads/{p} 1x, {site_url}/wp-content/uploads/{p} 2x\"  /></a>"
+                ))
+            })
+            .unwrap_or(Value::Null)
+    };
+    // top-bar HTML payloads carry origin URLs + [gdlr_core_icon]
+    // shortcodes: expand shortcodes, then re-anchor own-origin links on
+    // the live site_url.
+    /* Polylang string map: option strings stored in primary lang pair
+       with translations — non-primary pages substitute the translated
+       copy verbatim (same post-processing as the primary string). */
+    let primary = conn
+        .query_row("SELECT value FROM settings WHERE key='primary_lang'", [], |r| {
+            r.get::<_, String>(0)
+        })
+        .unwrap_or_default();
+    let pll_map: Vec<(String, String)> =
+        serde_json::from_str(&get("pll_string_map")).unwrap_or_default();
+    let translated = |raw: &str| -> String {
+        if lang == primary || pll_map.is_empty() {
+            return raw.to_string();
+        }
+        /* pll_string_map: (primary-copy, translated-copy) pairs from
+           the language-term metas — order already resolved at import.
+           The theme-option copy may drift in whitespace from the
+           registered copy → normalized compare; several near-identical
+           registrations exist → highest shared-line score wins. */
+        let norm = |x: &str| x.split_whitespace().collect::<String>();
+        let rn = norm(raw);
+        let shared = |x: &str| {
+            let xl: std::collections::BTreeSet<&str> =
+                raw.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
+            x.lines()
+                .map(|l| l.trim())
+                .filter(|l| !l.is_empty() && xl.contains(l))
+                .count()
+        };
+        /* Stale re-registrations pair a source with a same-language
+           copy — a sibling that still equals raw is no translation. */
+        pll_map
+            .iter()
+            .filter(|(p, t)| norm(p) == rn && norm(t) != rn)
+            .map(|(_, t)| t.clone())
+            .next()
+            .or_else(|| {
+                pll_map
+                    .iter()
+                    .filter(|(_, t)| norm(t) != rn)
+                    .max_by_key(|(p, _)| shared(p))
+                    .filter(|(p, _)| shared(p) > 3)
+                    .map(|(_, t)| t.clone())
+            })
+            .unwrap_or_else(|| raw.to_string())
+    };
+    let bar = |key: &str| -> String {
+        let raw = translated(&get(key));
+        if raw.is_empty() {
+            return String::new();
+        }
+        let expanded = crate::render::shortcode::expand_shortcodes(&raw, site_url);
+        crate::url_util::rewrite_own_origin(&expanded, site_url, &menu_aliases(conn, site_url))
+    };
+    // Social profile URLs for JSON-LD sameAs — theme social options +
+    // any outbound links in the top-bar payload.
+    let mut same_as: Vec<String> = Vec::new();
+    for k in [
+        "top-bar-social-facebook",
+        "top-bar-social-instagram",
+        "top-bar-social-youtube",
+        "top-bar-social-linkedin",
+        "top-bar-social-twitter",
+        "top-bar-social-tiktok",
+    ] {
+        let v = tget(k);
+        if v.starts_with("http") {
+            same_as.push(v);
+        }
+    }
+    let name = get("blogname").if_empty_else(|| get("site_name"));
+    let desc = get("blogdescription");
+    // Sticky buttons from the ssb plugin payload: order string then btn map.
+    let mut sticky: Vec<Value> = Vec::new();
+    if let Ok(serde_json::Value::Object(o)) =
+        crate::php_serialize::unserialize(get("ssb_buttons").as_bytes())
+    {
+        let mut btns: Vec<(i64, &serde_json::Value)> = o
+            .get("btns")
+            .and_then(|b| b.as_object())
+            .map(|m| m.iter().filter_map(|(k, v)| k.parse::<i64>().ok().map(|n| (n, v))).collect())
+            .unwrap_or_default();
+        btns.sort_by_key(|(n, _)| *n);
+        for (_, b) in btns {
+            let text = b.get("btn_text").and_then(|v| v.as_str()).unwrap_or("");
+            let link = b.get("btn_link").and_then(|v| v.as_str()).unwrap_or("");
+            let icon = b.get("btn_icon").and_then(|v| v.as_str()).unwrap_or("").replace("fas fa-", "fa fa-");
+            if !text.is_empty() {
+                sticky.push(json!({
+                    "text": text,
+                    "url": crate::url_util::strip_origin(link, site_url, &menu_aliases(conn, site_url)),
+                    "icon": icon,
+                }));
+            }
+        }
+    }
+    json!({
+        "name": name,
+        "description": desc,
+        "email": tget("top-bar-social-email"),
+        "same_as": same_as,
+        "logo": logo_img("logo", "traveltour-orig-logo"),
+        "logo_fixed": logo_img("fixed-navigation-bar-logo", "traveltour-fixed-nav-logo"),
+        "logo_mobile": logo_img("mobile-logo", "traveltour-orig-logo"),
+        "topbar_left_html": bar("topbar_left_html"),
+        "topbar_right_html": bar("topbar_right_html"),
+        "copyright_left_html": crate::url_util::rewrite_own_origin(
+            &crate::render::shortcode::expand_shortcodes(&get("copyright_left_html"), site_url),
+            site_url, &menu_aliases(conn, site_url)),
+        "copyright_right_html": crate::url_util::rewrite_own_origin(
+            &crate::render::shortcode::expand_shortcodes(&get("copyright_right_html"), site_url),
+            site_url, &menu_aliases(conn, site_url)),
+        "sticky": sticky,
+        "contact_slugs": serde_json::from_str::<serde_json::Value>(&get("contact_slugs")).unwrap_or(Value::Null),
+        "enable_top_bar": tget("enable-top-bar") != "disable",
+        "body_suffix": "wp-theme-traveltour wp-child-theme-traveltour-child gdlr-core-body tourmaster-body metaslider-plugin traveltour-body traveltour-body-front traveltour-full  traveltour-with-sticky-navigation gdlr-core-link-to-lightbox",
+        "favicons": favicons_html(conn, site_url),
+        "sticky_html": sticky_html(&sticky, lang),
+        "lang_flags_sticky": lang_flags_sticky_html(conn, site_url),
+        "chaty_js": chaty_js(conn, site_url),
+        "chaty_css": chaty_css(conn, site_url),
+    })
+}
+
+trait IfEmpty { fn if_empty_else(self, f: impl FnOnce() -> String) -> String; }
+impl IfEmpty for String {
+    fn if_empty_else(self, f: impl FnOnce() -> String) -> String {
+        if self.is_empty() { f() } else { self }
+    }
+}
+
+/// `site_icon` media sizes → favicon links (WP emits 32/192/180/270px
+/// variants when the attachment metadata carries them).
+fn favicons_html(conn: &Connection, site_url: &str) -> String {
+    let id: i64 = conn
+        .query_row("SELECT CAST(value AS INTEGER) FROM settings WHERE key='site_icon'", [], |r| r.get(0))
+        .unwrap_or(0);
+    if id == 0 {
+        return String::new();
+    }
+    let (path, sizes): (String, String) = match conn.query_row(
+        "SELECT path, COALESCE(sizes_json,'{}') FROM media WHERE wp_id=?1",
+        [id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    ) {
+        Ok(v) => v,
+        _ => return String::new(),
+    };
+    let base = path.rsplitn(2, '.').nth(1).unwrap_or(&path);
+    let ext = path.rsplitn(2, '.').next().unwrap_or("png");
+    let sized = |w: i64, h: i64| -> Option<String> {
+        let sj: serde_json::Value = serde_json::from_str(&sizes).unwrap_or(Value::Null);
+        sj.as_object()?.values().find_map(|s| {
+            let sw = s.get("width").and_then(|x| x.as_i64()).unwrap_or(0);
+            let sh = s.get("height").and_then(|x| x.as_i64()).unwrap_or(0);
+            (sw == w && sh == h).then(|| s.get("file").and_then(|f| f.as_str()).map(str::to_string))?
+        })
+        .or(Some(format!("{base}-{w}x{h}.{ext}")))
+    };
+    let mut out = String::new();
+    if let Some(f) = sized(32, 32) {
+        out.push_str(&format!("<link rel=\"icon\" href=\"{site_url}/wp-content/uploads/{}\" sizes=\"32x32\" />\n", dir_join(&path, &f)));
+    }
+    if let Some(f) = sized(192, 192) {
+        out.push_str(&format!("<link rel=\"icon\" href=\"{site_url}/wp-content/uploads/{}\" sizes=\"192x192\" />\n", dir_join(&path, &f)));
+    }
+    if let Some(f) = sized(180, 180) {
+        out.push_str(&format!("<link rel=\"apple-touch-icon\" href=\"{site_url}/wp-content/uploads/{}\" />\n", dir_join(&path, &f)));
+    }
+    if let Some(f) = sized(270, 270) {
+        out.push_str(&format!("<meta name=\"msapplication-TileImage\" content=\"{site_url}/wp-content/uploads/{}\" />", dir_join(&path, &f)));
+    }
+    out
+}
+fn dir_join(path: &str, file: &str) -> String {
+    match path.rfind('/') {
+        Some(i) => format!("{}/{}", &path[..i], file),
+        None => file.to_string(),
+    }
+}
+
+/// ssb buttons → `.sticky-slider-main{ -one/-two }` wrappers; WP emits one
+/// wrapper per button per sidebar scope — render all in the current lang.
+fn sticky_html(btns: &[Value], _lang: &str) -> String {
+    if btns.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("<div class=\"sticky-slider-main\">");
+    for (i, b) in btns.iter().enumerate() {
+        let text = b.get("text").and_then(|v| v.as_str()).unwrap_or("");
+        let url = b.get("url").and_then(|v| v.as_str()).unwrap_or("");
+        let icon = b.get("icon").and_then(|v| v.as_str()).unwrap_or("");
+        out.push_str(&format!(
+            "<div class=\"sticky-slider-main-{}\"><a rel=\"nofollow\" href=\"{}\"><span class=\"{}\"></span> {}</a></div>",
+            ["one", "two", "three", "four"].get(i).copied().unwrap_or("one"),
+            url, icon, text
+        ));
+    }
+    out.push_str("</div>");
+    out
+}
+
+/// Cross-language flag strip in the sticky rail — all configured langs,
+/// flag PNG from media (falls back to the polylang .svg filename base).
+fn lang_flags_sticky_html(conn: &Connection, site_url: &str) -> String {
+    let cfg = crate::lang::config(conn);
+    let mut out = String::new();
+    for l in &cfg.langs {
+        let url = format!("{}{}/", site_url.trim_end_matches('/'), crate::lang::url_prefix(&cfg, l));
+        // WP used uploaded flag PNGs (2024/06/{country}.png); resolve by
+        // media alt/title 'flag {lang}' or fall back to the polylang svg.
+        let img: String = conn
+            .query_row(
+                "SELECT path FROM media WHERE LOWER(alt)=LOWER(?1) OR LOWER(title)=LOWER(?1) LIMIT 1",
+                [format!("flag {l}")],
+                |r| r.get(0),
+            )
+            .unwrap_or_else(|_| String::new());
+        let src = if img.is_empty() {
+            format!("{site_url}/wp-content/plugins/polylang/vendor/wpsyntex/flags/{}", crate::lang::flag_file(l))
+        } else {
+            format!("{site_url}/wp-content/uploads/{img}")
+        };
+        out.push_str(&format!(
+            "<a class=\"lang-flag mobile {l}\" href=\"{url}\" target=\"_blank\"><span style=\"color: #fff; margin-left: 12px\"><img src=\"{src}\"/></span></a>\n"
+        ));
+    }
+    out
+}
+
+/// Chaty widget: `cht_*`/`chaty_*` options → the plugin's inline
+/// `chaty_settings` object + script tags. Absent options → empty string
+/// (no chat markup on sites without the plugin).
+fn chaty_js(conn: &Connection, site_url: &str) -> String {
+    let get = |k: &str| -> String {
+        conn.query_row("SELECT value FROM settings WHERE key=?1", [k], |r| r.get::<_, String>(0))
+            .unwrap_or_default()
+    };
+    let total = get("chaty_total_settings").parse::<i64>().unwrap_or(0);
+    if total == 0 {
+        return String::new();
+    }
+    // Channel list: cht_social_{n}_{Name} serialized rows.
+    let mut channels = Vec::new();
+    for n in 0..total.max(1) {
+        let mut st = match conn.prepare(
+            "SELECT key, value FROM settings WHERE key LIKE ?1",
+        ) {
+            Ok(s) => s,
+            _ => return String::new(),
+        };
+        let pat = format!("cht_social_{n}_%");
+        let rows: Vec<(String, String)> = st
+            .query_map(rusqlite::params![pat], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })
+            .map(|it| it.flatten().collect())
+            .unwrap_or_default();
+        if !rows.is_empty() {
+            for (k, v) in rows {
+                let name = k.rsplit('_').next().unwrap_or("");
+                if let Ok(v) = crate::php_serialize::unserialize(v.as_bytes()) {
+                    channels.push(json!({"id": name, "value": v.get("value").cloned().unwrap_or(Value::Null)}));
+                }
+            }
+        }
+    }
+    let widget = json!({
+        "id": 0,
+        "identifier": 0,
+        "settings": {
+            "cta_type": "simple-view",
+            "default_state": get("chaty_default_state").if_empty("click".into()),
+            "position": get("cht_position").if_empty("right".into()),
+            "cta_text": get("cht_cta"),
+            "cta_bg_color": get("cht_cta_bg_color"),
+            "icon_view": get("chaty_icons_view").if_empty("vertical".into()),
+            "bottom_spacing": get("cht_bottom_spacing").if_empty("25".into()),
+            "side_spacing": get("cht_side_spacing").if_empty("25".into()),
+        },
+        "channels": channels,
+    });
+    let settings = json!({
+        "ajax_url": format!("{site_url}/wp-admin/admin-ajax.php"),
+        "analytics": "0",
+        "capture_analytics": "0",
+        "token": get("cht_token"),
+        "chaty_widgets": [widget],
+    });
+    format!(
+        "<script id=\"chaty-front-end-js-extra\">\nvar chaty_settings = {};\n</script>\n\
+         <script defer id=\"chaty-front-end-js\" src=\"{site_url}/wp-content/plugins/chaty/dist/js/script.js\"></script>\n\
+         <script defer id=\"chaty-mail-check-js\" src=\"{site_url}/wp-content/plugins/chaty/admin/assets/js/mailcheck.js\"></script>\n\
+         <script id=\"chaty-picmo-js-js\" src=\"{site_url}/wp-content/plugins/chaty/admin/assets/js/picmo-umd.min.js\"></script>",
+        settings
+    )
+}
+fn chaty_css(conn: &Connection, site_url: &str) -> String {
+    let has: bool = conn
+        .query_row("SELECT 1 FROM settings WHERE key='chaty_total_settings' LIMIT 1", [], |r| {
+            r.get::<_, i64>(0)
+        })
+        .is_ok();
+    if has {
+        format!("<link rel='stylesheet' id='chaty-front-css-css' href='{site_url}/wp-content/plugins/chaty/dist/css/style.css' media='all' />")
+    } else {
+        String::new()
+    }
+}
+
+trait IfEmpty2 { fn if_empty(self, f: String) -> String; }
+impl IfEmpty2 for String {
+    fn if_empty(self, f: String) -> String { if self.is_empty() { f } else { self } }
 }

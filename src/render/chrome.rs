@@ -207,10 +207,19 @@ pub(crate) fn iso8601(dt: &str) -> String {
     }
 }
 
-/// body_class per WP body_class(): the traveltour suffix is constant
-/// (front and single pages share it verbatim in the captures).
-pub(crate) fn body_class(_lang: &str, kind: &str, id: i64, is_front: bool) -> String {
-    const SUFFIX: &str = "wp-theme-traveltour wp-child-theme-traveltour-child gdlr-core-body tourmaster-body metaslider-plugin traveltour-body traveltour-body-front traveltour-full  traveltour-with-sticky-navigation gdlr-core-link-to-lightbox";
+/// body_class per WP body_class(): the theme suffix comes from the
+/// `site_body_suffix` setting (seeded per site/theme), falling back to
+/// traveltour's value only when unset.
+pub(crate) fn body_class(conn: &Connection, _lang: &str, kind: &str, id: i64, is_front: bool) -> String {
+    let suffix = conn
+        .query_row("SELECT value FROM settings WHERE key='site_body_suffix'", [], |r| {
+            r.get::<_, String>(0)
+        })
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| {
+            "wp-theme-traveltour wp-child-theme-traveltour-child gdlr-core-body tourmaster-body metaslider-plugin traveltour-body traveltour-body-front traveltour-full  traveltour-with-sticky-navigation gdlr-core-link-to-lightbox".into()
+        });
     let core = if is_front {
         format!("home wp-singular page-template-default page page-id-{id}")
     } else {
@@ -227,7 +236,7 @@ pub(crate) fn body_class(_lang: &str, kind: &str, id: i64, is_front: bool) -> St
     if kind == "tour" && !is_front {
         core
     } else {
-        format!("{core} {SUFFIX}")
+        format!("{core} {suffix}")
     }
 }
 
@@ -338,7 +347,21 @@ pub(crate) fn chrome_vars(
         || lang_cfg.langs.iter().any(|l| {
             canonical == format!("{}{}/", site_url, crate::lang::url_prefix(&lang_cfg, l))
         });
-    let is_contact = slug == "rappel-gratuit" || slug == "devolucion-de-llamada-gratuita";
+    /* Contact-form pages: the imported CF7 form slugs, keyed per lang
+       (settings.contact_slugs seeded at import). */
+    let is_contact = conn
+        .query_row("SELECT value FROM settings WHERE key='contact_slugs'", [], |r| {
+            r.get::<_, String>(0)
+        })
+        .ok()
+        .and_then(|v| serde_json::from_str::<serde_json::Value>(&v).ok())
+        .map(|m| {
+            lang_cfg
+                .langs
+                .iter()
+                .any(|l| m.get(l).and_then(|a| a.as_array()).map(|a| a.iter().any(|s| s.as_str() == Some(slug))).unwrap_or(false))
+        })
+        .unwrap_or(false);
     let is_single = !is_front;
 
     // --- meta description / og:description -------------------------------
@@ -362,33 +385,40 @@ pub(crate) fn chrome_vars(
     // default for pages without an image; the home page sets it explicitly).
     let img_id = featured_id
         .or_else(|| meta("_thumbnail_id").parse::<i64>().ok())
-        .unwrap_or(6444);
-    let (path, alt, mime, w, h) = media_detail(conn, img_id)
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| {
-            (
-                "2023/12/logo-agence-de-voyage-au-vietnam.png".into(),
-                "Agence de voyage locale au Vietnam, depuis 2009. Voyage au Vietnam sur mesure, authentique, immersif au coeur de la culture, de la population.".into(),
-                "image/png".into(),
-                2000,
-                1010,
-            )
-        });
-    let img_url = format!("{site_url}/wp-content/uploads/{path}");
-    let og_image_block = format!(
-        "<meta property=\"og:image\" content=\"{u}\" />\n\
-         <meta property=\"og:image:secure_url\" content=\"{u}\" />\n\
-         <meta property=\"og:image:width\" content=\"{w}\" />\n\
-         <meta property=\"og:image:height\" content=\"{h}\" />\n\
-         <meta property=\"og:image:alt\" content=\"{a}\" />\n\
-         <meta property=\"og:image:type\" content=\"{m}\" />",
-        u = esc_attr(&img_url),
-        w = w,
-        h = h,
-        a = esc_attr(&alt),
-        m = mime,
-    );
+        .or_else(|| {
+            conn.query_row("SELECT CAST(value AS INTEGER) FROM settings WHERE key='og_fallback_media'", [], |r| r.get(0))
+                .ok()
+        })
+        .unwrap_or(0);
+    /* No featured image → the site's og fallback (import seeds
+       `og_fallback_media` from the theme logo attachment). Nothing at all
+       → omit the block rather than pin another site's logo. */
+    let detail = media_detail(conn, img_id).ok().flatten();
+    let img_url = detail
+        .as_ref()
+        .map(|(p, _, _, _, _)| format!("{site_url}/wp-content/uploads/{p}"))
+        .unwrap_or_default();
+    let (alt, mime, w, h) = detail
+        .as_ref()
+        .map(|(_, a, m, w, h)| (a.clone(), m.clone(), *w, *h))
+        .unwrap_or_default();
+    let og_image_block = if img_url.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "<meta property=\"og:image\" content=\"{u}\" />\n\
+             <meta property=\"og:image:secure_url\" content=\"{u}\" />\n\
+             <meta property=\"og:image:width\" content=\"{w}\" />\n\
+             <meta property=\"og:image:height\" content=\"{h}\" />\n\
+             <meta property=\"og:image:alt\" content=\"{a}\" />\n\
+             <meta property=\"og:image:type\" content=\"{m}\" />",
+            u = esc_attr(&img_url),
+            w = w,
+            h = h,
+            a = esc_attr(&alt),
+            m = mime,
+        )
+    };
 
     // --- twitter label/data pairs -----------------------------------------
     // post: Écrit par + Temps de lecture; page: label1=lecture only; tour &
@@ -397,7 +427,9 @@ pub(crate) fn chrome_vars(
     let (tw_label1, tw_data1, tw_label2, tw_data2) = match kind {
         "post" => (
             crate::lang::t(lang, "written_by").to_string(),
-            "hieutuyen".to_string(),
+            /* Bylines come from the post's imported author (post_meta
+               author_login); archive cards read the same key. */
+            meta("author_login"),
             crate::lang::t(lang, "reading_time").to_string(),
             markdown::reading_time(words, lang),
         ),
@@ -407,6 +439,16 @@ pub(crate) fn chrome_vars(
             String::new(),
             String::new(),
         ),
+        _ if is_front => {
+            // Front twitter card labels: translated static labels + the
+            // post's own author byline (wp post_author of the front page).
+            (
+                crate::lang::t(lang, "written_by").to_string(),
+                meta("author_login"),
+                crate::lang::t(lang, "reading_time").to_string(),
+                markdown::reading_time(words, lang),
+            )
+        }
         _ => (String::new(), String::new(), String::new(), String::new()),
     };
 
@@ -473,7 +515,7 @@ pub(crate) fn chrome_vars(
         "html_prefix".into(),
         json!("prefix=\"og: https://ogp.me/ns#\" class=\"no-js\""),
     );
-    m.insert("body_class".into(), json!(body_class(lang, kind, id, is_front)));
+    m.insert("body_class".into(), json!(body_class(conn, lang, kind, id, is_front)));
     m.insert("is_front".into(), json!(is_front));
     m.insert("is_contact".into(), json!(is_contact));
     m.insert("is_single".into(), json!(is_single));
@@ -496,10 +538,29 @@ pub(crate) fn chrome_vars(
     m.insert("flags".into(), json!(flags));
     m.insert("navx".into(), Value::Object(nav_map(conn, id, kind, slug, is_front, lang)?));
     let page_title_html = if kind == "page" && !is_front {
-        let bg = if slug == "rappel-gratuit" {
-            format!(" style=\"background-image: url({site_url}/wp-content/uploads/2024/02/slider-1.jpg) ;\"")
-        } else {
-            String::new()
+        /* Page-title background image: the page's `gdlr-core-page-option`
+           `title-background` media id (per-page option, imported into
+           post_meta) — media path via media.wp_id lookup. */
+        let bg = {
+            let raw = meta("gdlr-core-page-option");
+            if raw.is_empty() {
+                String::new()
+            } else {
+                crate::php_serialize::unserialize(raw.as_bytes())
+                    .ok()
+                    .and_then(|v| {
+                        let t = v.get("title-background")?;
+                        t.as_i64().or_else(|| t.as_str().and_then(|s| s.parse().ok()))
+                    })
+                    .and_then(|mid| {
+                        conn.query_row("SELECT path FROM media WHERE wp_id=?1", [mid], |r| {
+                            r.get::<_, String>(0)
+                        })
+                        .ok()
+                    })
+                    .map(|p| format!(" style=\"background-image: url({site_url}/wp-content/uploads/{p}) ;\""))
+                    .unwrap_or_default()
+            }
         };
         format!("<div class=\"traveltour-page-title-wrap  traveltour-style-large traveltour-center-align\"{bg} ><div class=\"traveltour-header-transparent-substitute\" ></div><div class=\"traveltour-page-title-overlay\"  ></div><div class=\"traveltour-page-title-container traveltour-container\" ><div class=\"traveltour-page-title-content traveltour-item-pdlr\"  ><h1 class=\"traveltour-page-title\"  >{}</h1></div></div></div>", esc(title))
     } else {
@@ -534,6 +595,24 @@ pub(crate) fn chrome_vars(
         .map(|j| format!("<script type=\"application/ld+json\">{j}</script>"))
         .unwrap_or_default();
     m.insert("post_jsonld".into(), json!(jsonld));
+    /* Auhfc "insert headers/footers" plugin payload: arbitrary head HTML
+       per post (org JSON-LD, preload links — content owned by the site,
+       kept verbatim). Deserialized `head` field only. */
+    let sitewide = conn
+        .query_row("SELECT value FROM settings WHERE key='site_head_html'", [], |r| r.get::<_, String>(0))
+        .unwrap_or_default();
+    let head_extra = crate::php_serialize::unserialize(meta("_auhfc").as_bytes())
+        .ok()
+        .and_then(|v| v.get("head").and_then(|h| h.as_str().map(str::to_string)))
+        .unwrap_or_default();
+    let head_extra = format!("{sitewide}{head_extra}");
+    m.insert("head_extra".into(), json!(crate::url_util::rewrite_own_origin(
+        &head_extra,
+        site_url,
+        &conn
+            .query_row("SELECT value FROM settings WHERE key='site_url'", [], |r| r.get::<_, String>(0))
+            .unwrap_or_default(),
+    )));
     // Widget registry: the four traveltour-footer-column contents come from
     // the footer-{1..4}-{lang} sidebars; base_fr/base_es keep the column
     // wrapper divs.

@@ -1,5 +1,5 @@
 //! `forms` table — CF7-style form definitions (slug/title/markup/mail/
-//! messages). Seeded once from `intake::FORM_SLUGS`; after that the DB is
+//! messages). Rows are imported from the WP dump (wpcf7 forms); after that the DB is
 //! source of truth so admin edits take effect without a rebuild.
 
 use anyhow::Result;

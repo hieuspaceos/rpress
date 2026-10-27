@@ -1,7 +1,7 @@
 ---
 phase: 2
 title: "Site-scoped chrome ctx: literals → settings/ctx vars"
-status: pending
+status: done
 priority: P1
 effort: "1.5d"
 dependencies: [1]

@@ -20,6 +20,7 @@ const WANTED: &[&str] = &[
     "wp_term_relationships",
     "wp_comments",
     "wp_commentmeta",
+    "wp_termmeta",
     "wp_options",
     "wp_rank_math_redirections",
     "wp_glsr_ratings",
@@ -29,6 +30,7 @@ const WANTED: &[&str] = &[
 #[derive(Default)]
 struct Post {
     id: i64,
+    author: i64,
     post_type: String,
     status: String,
     slug: String,
@@ -65,10 +67,12 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
     let phys: Vec<&str> = physical.iter().map(|s| s.as_str()).collect();
     // ---- Pass 1: load dump into memory ------------------------------------
     let mut terms: HashMap<i64, (String, String)> = HashMap::new(); // term_id -> (name, slug)
+    let mut users: HashMap<i64, String> = HashMap::new(); // user_id -> display/login
     let mut ttax: HashMap<i64, (i64, String, String)> = HashMap::new(); // tt_id -> (term_id, taxonomy, description)
     let mut rels: Vec<(i64, i64)> = Vec::new(); // object_id -> tt_id
     let mut posts: Vec<Post> = Vec::new();
     let mut post_meta: Vec<(i64, String, String)> = Vec::new();
+    let mut pll_metas: Vec<(i64, String)> = Vec::new();
     let mut comments: Vec<(i64, i64, i64, String, String, String, String, String, String, String)> = Vec::new();
     let mut comment_meta: Vec<(i64, String, String)> = Vec::new();
     let mut options: HashMap<String, String> = HashMap::new();
@@ -89,9 +93,19 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
             Some("comments") => "wp_comments",
             Some("commentmeta") => "wp_commentmeta",
             Some("options") => "wp_options",
+            Some("users") => "wp_users",
             _ => table,
         };
         match table {
+            "wp_users" => {
+                // id -> login (display_name is v[8] but login is what WP
+                // renders in bylines); feeds post_meta 'author_login'.
+                if let Some(uid) = v[0].as_i64() {
+                    let login = v[1].to_string_lossy().unwrap_or_default();
+                    let dname = v[8].to_string_lossy().unwrap_or_default();
+                    users.insert(uid, if dname.is_empty() { login } else { dname });
+                }
+            }
             "wp_terms" => {
                 if let (Some(id), Some(name), Some(slug)) =
                     (v[0].as_i64(), v[1].to_string_lossy(), v[2].to_string_lossy())
@@ -136,6 +150,20 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
                     approved.to_string(),
                 ));
             }
+            "wp_termmeta" => {
+                /* Polylang string translations live on the synthetic
+                   `pll_language` terms' termmeta — capture raw values;
+                   harvested after stmt_set into pll_string_map. */
+                if let (Some(tid), Some(k), Some(mv)) = (
+                    v[1].as_i64(),
+                    v[2].to_string_lossy(),
+                    v[3].to_string_lossy(),
+                ) {
+                    if k == "_pll_strings_translations" {
+                        pll_metas.push((tid, mv));
+                    }
+                }
+            }
             "wp_commentmeta" => {
                 if let (Some(cid), Some(k), Some(mv)) =
                     (v[1].as_i64(), v[2].to_string_lossy(), v[3].to_string_lossy())
@@ -171,9 +199,12 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
                             | "thumbnail_size_w" | "thumbnail_size_h" | "thumbnail_crop"
                             | "medium_size_w" | "medium_size_h"
                             | "medium_large_size_w" | "medium_large_size_h"
-                            | "large_size_w" | "large_size_h" | "uploads_use_yearmonth"
                             | "gdlr-core-page-builder-view-mode" | "polylang"
-                    ) || k.starts_with("theme_mods_") {
+                            | "blogdescription" | "traveltour_general"
+                            | "ssb_buttons" | "ssb_settings" | "site_icon" | "auhfc_settings_sitewide"
+                    ) || k.starts_with("theme_mods_")
+                        || k.starts_with("chaty_")
+                        || k.starts_with("cht_") {
                         options.insert(k, mv);
                     }
                 }
@@ -202,6 +233,7 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
                 let st = v[7].to_string_lossy().unwrap_or_default();
                 posts.push(Post {
                     id: v[0].as_i64().unwrap_or(0),
+                    author: v[1].as_i64().unwrap_or(0),
                     post_type: pt,
                     status: st,
                     slug: v[11].to_string_lossy().unwrap_or_default(),
@@ -368,6 +400,56 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
         sql!("import__insert_or_ignore_12"),
     )?;
     let mut stmt_set = tx.prepare(sql!("import__insert_or_replace"))?;
+    /* Polylang string translations: `_pll_strings_translations` post meta
+       holds [non-primary, primary] string pairs for theme/plugin option
+       strings (top-bar text, copyright…). The carrier posts have no
+       language term so they never import — harvest the pairs now into a
+       setting the chrome reads per-lang. langs order: [other, primary]. */
+    {
+        let mut pairs: Vec<(String, String)> = Vec::new();
+        /* Each `_pll_strings_translations` meta lives on a language term:
+           its pairs are [other_lang, this_term_lang]. Resolve the
+           carrier term's slug so (primary, translated) order is right
+           regardless of registration order. */
+        for (tid, mv) in &pll_metas {
+            let term_lang = ttax
+                .values()
+                .find(|(t, tax, _)| t == tid && tax == "language")
+                .and_then(|(t, _, _)| terms.get(t))
+                .map(|(_, slug)| slug.clone())
+                .unwrap_or_else(|| primary.clone());
+            if let Ok(serde_json::Value::Array(list)) =
+                crate::php_serialize::unserialize(mv.as_bytes())
+            {
+                for pair in list {
+                    if let serde_json::Value::Array(p2) = &pair {
+                        if p2.len() == 2 {
+                            let first = p2[0].as_str().unwrap_or("");
+                            let second = p2[1].as_str().unwrap_or("");
+                            if first.is_empty() || second.is_empty() {
+                                continue;
+                            }
+                            // element on the term-lang side = [i1];
+                            // source (primary) = the other element.
+                            let (prim, tr) = if term_lang == primary {
+                                (second.to_string(), first.to_string())
+                            } else {
+                                (first.to_string(), second.to_string())
+                            };
+                            pairs.push((prim, tr));
+                        }
+                    }
+                }
+            }
+        }
+        if !pairs.is_empty() {
+            stmt_set.execute(params![
+                "pll_string_map",
+                serde_json::to_string(&pairs)?
+            ])?;
+        }
+    }
+
 
     // Posts whose body was authored in a page builder rpress can't
     // interpret (Elementor today; the table is the hook for more) — generate
@@ -441,6 +523,12 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
                 wp_to_cms.insert(p.id, p.id);
                 if p.meta.contains_key("_elementor_data") {
                     stmt_h.execute(params![p.id])?;
+                }
+                /* Bylines: WP's post_author → display name survives the
+                   import as post_meta 'author_login' (posts has no author
+                   column; chrome/archive read it from meta). */
+                if let Some(name) = users.get(&p.author) {
+                    let _ = stmt_meta.execute(params![p.id, "author_login", name]);
                 }
                 for (k, vals) in &p.meta {
                     for mv in vals {
@@ -779,6 +867,84 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
             ])?;
         }
     }
+    /* Site-chrome seeds: the base templates read `site.*` ctx vars whose
+       data lives in theme option payloads. Pull the few theme-general
+       fields chrome needs into namespaced theme settings + verbatim
+       settings rows for the plugin payloads (ssb, chaty) rendered
+       raw by site_data. */
+    {
+        let mut st = tx.prepare("INSERT OR REPLACE INTO settings(key, value) VALUES(?1, ?2)")?;
+        // traveltour_general → `plugin:theme-traveltour:general` flat JSON + a
+        // few flat settings keys the chrome reads directly.
+        if let Some(raw) = options.get("traveltour_general") {
+            if let Ok(serde_json::Value::Object(m)) =
+                crate::php_serialize::unserialize(raw.as_bytes())
+            {
+                let mut flat = serde_json::Map::new();
+                for (k, v) in &m {
+                    if let Some(s) = v.as_str() {
+                        flat.insert(k.clone(), serde_json::Value::String(s.to_string()));
+                    }
+                }
+                st.execute(params![
+                    "plugin:theme-traveltour:general",
+                    serde_json::to_string(&serde_json::Value::Object(flat))?
+                ])?;
+                for (opt_key, set_key) in [
+                    ("top-bar-left-text", "topbar_left_html"),
+                    ("top-bar-right-text", "topbar_right_html"),
+                    ("copyright-left", "copyright_left_html"),
+                    ("copyright-right", "copyright_right_html"),
+                ] {
+                    if let Some(v) = m.get(opt_key).and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+                        st.execute(params![set_key, v])?;
+                    }
+                }
+            }
+        }
+        /* auhfc_settings_sitewide → `site_head_html`: arbitrary sitewide
+           head markup (analytics, preconnect, custom meta) applied on every
+           page. Same verbatim rule as widget HTML. */
+        if let Some(raw) = options.get("auhfc_settings_sitewide") {
+            if let Ok(v) = crate::php_serialize::unserialize(raw.as_bytes()) {
+                if let Some(head) = v.get("head").and_then(|x| x.as_str()) {
+                    st.execute(params!["site_head_html", head])?;
+                }
+                if let Some(body) = v.get("body").and_then(|x| x.as_str()) {
+                    st.execute(params!["site_body_html", body])?;
+                }
+                if let Some(footer) = v.get("footer").and_then(|x| x.as_str()) {
+                    st.execute(params!["site_footer_html", footer])?;
+                }
+            }
+        }
+        // Contact-form pages (is_contact): every imported CF7 form slug,
+        // grouped per lang — chrome marks `is_contact` on those slugs.
+        {
+            let mut fq = tx.prepare("SELECT slug, lang FROM forms")?;
+            let map: std::collections::BTreeMap<String, Vec<String>> = fq
+                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+                .flatten()
+                .fold(std::collections::BTreeMap::new(), |mut acc, (slug, lang)| {
+                    acc.entry(lang).or_default().push(slug);
+                    acc
+                });
+            if !map.is_empty() {
+                st.execute(params![
+                    "contact_slugs",
+                    serde_json::to_string(&map)?
+                ])?;
+                /* intake reads a flat slug list. */
+                st.execute(params![
+                    "form_slugs",
+                    serde_json::to_string(
+                        &map.values().flatten().cloned().collect::<Vec<_>>()
+                    )?
+                ])?;
+            }
+        }
+    }
+
     drop((
         stmt_post, stmt_meta, stmt_media, stmt_pt, stmt_comment, stmt_ra, stmt_redir, stmt_menu,
         stmt_mi, stmt_trans, stmt_trans_member, stmt_term, stmt_ttrans, stmt_set, stmt_h,

@@ -81,3 +81,28 @@ mod tests {
         assert_eq!(strip_origin("https://imagetravel.vn", SITE, ORIGIN), "http://localhost:8414/");
     }
 }
+
+/// Re-anchor every own-origin `href="http(s)://host/…"` occurrence inside
+/// an HTML fragment on `site_url` (top-bar/copyright payloads carry the
+/// origin host verbatim). Attribute-delimited `href=`/`src=` only —
+/// free-text URLs stay untouched.
+pub fn rewrite_own_origin(html: &str, site_url: &str, aliases: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html;
+    while let Some(i) = rest.find(['"', '\''].as_ref()) {
+        // find quoted attr value starting with http
+        let (q, after_q) = (&rest[i..i + 1], &rest[i + 1..]);
+        if !(after_q.starts_with("http://") || after_q.starts_with("https://")) {
+            out.push_str(&rest[..i + 1]);
+            rest = after_q;
+            continue;
+        }
+        let end = after_q.find(q).unwrap_or(after_q.len());
+        let url = &after_q[..end];
+        out.push_str(&rest[..i + 1]);
+        out.push_str(&strip_origin(url, site_url, aliases));
+        rest = &after_q[end..];
+    }
+    out.push_str(rest);
+    out
+}

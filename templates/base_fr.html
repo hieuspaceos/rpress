@@ -21,8 +21,8 @@ jQuery("#map").mouseleave(function() {
 <meta property="og:title" content="{{ seo_title }}" />
 {% if og_desc %}<meta property="og:description" content="{{ og_desc }}" />{% endif %}
 <meta property="og:url" content="{{ canonical }}" />
-<meta property="og:site_name" content="AucoeurVietnam - IMAGE Travel" />
-{% if not is_front %}<meta property="article:publisher" content="https://www.facebook.com/aucoeurvietnam" />
+<meta property="og:site_name" content="{{ site.chrome.name }}" />
+{% if site.chrome.same_as[0] is defined %}<meta property="article:publisher" content="{{ site.chrome.same_as[0] }}" />
 {% if kind == 'post' %}<meta property="article:section" content="Blog" />{% endif %}{% endif %}
 <meta property="og:updated_time" content="{{ og_updated }}" />
 {{ og_image_block|safe }}
@@ -30,10 +30,10 @@ jQuery("#map").mouseleave(function() {
 <meta name="twitter:title" content="{{ seo_title }}" />
 {% if og_desc %}<meta name="twitter:description" content="{{ og_desc }}" />{% endif %}
 <meta name="twitter:image" content="{{ og_image_url }}" />
-{% if is_front %}<meta name="twitter:label1" content="Écrit par" />
-<meta name="twitter:data1" content="aucoeurvietnam-admin" />
-<meta name="twitter:label2" content="Temps de lecture" />
-<meta name="twitter:data2" content="Moins d’une minute" />
+{% if is_front and tw_label1 %}<meta name="twitter:label1" content="{{ tw_label1 }}" />
+<meta name="twitter:data1" content="{{ tw_data1 }}" />
+<meta name="twitter:label2" content="{{ tw_label2 }}" />
+<meta name="twitter:data2" content="{{ tw_data2 }}" />
 {% elif tw_label1 %}<meta name="twitter:label1" content="{{ tw_label1 }}" />
 <meta name="twitter:data1" content="{{ tw_data1 }}" />
 {% if tw_label2 %}<meta name="twitter:label2" content="{{ tw_label2 }}" />
@@ -65,7 +65,7 @@ jQuery("#map").mouseleave(function() {
 <link rel='stylesheet' id='traveltour-custom-style-css' href='{{ site_url }}/wp-content/uploads/traveltour-style-custom.css?1792660118&#038;ver=7.1.3' media='all' />
 <link rel='stylesheet' id='traveltour-child-theme-style-css' href='{{ site_url }}/wp-content/themes/traveltour-child/style.css?ver=7.1.3' media='all' />
 
-<link rel='stylesheet' id='chaty-front-css-css' href='{{ site_url }}/wp-content/plugins/chaty/dist/css/style.css?ver=3.6.31723438833' media='all' />
+{{ site.chrome.chaty_css|safe }}
 {{ head_css_wpdiscuz|safe }}
 {{ head_css_extra|safe }}
 <link rel='stylesheet' id='tourmaster-custom-style-css' href='{{ site_url }}/wp-content/uploads/tourmaster-style-custom.css?1774338224&#038;ver=7.1.3' media='all' />
@@ -84,201 +84,23 @@ jQuery(document).ready(function($){ jQuery('li.cat-item:has(ul.children)').addCl
 <script id="jquery-migrate-js" src="{{ site_url }}/wp-includes/js/jquery/jquery-migrate.min.js?ver=3.4.1"></script>
 <meta name="generator" content="WordPress 7.1.3" />
 <link rel='shortlink' href='{{ shortlink }}' />
-{% if is_front %}<style>@media only screen and (max-width: 767px){ #slider-hp.gdlr-core-pbf-wrapper > .gdlr-core-pbf-background-wrap > .gdlr-core-pbf-background{background-image: url({{ site_url }}/wp-content/uploads/2024/04/slider-1-m-c-2.jpg)  !important;} }#search-home:hover .gdlr-core-pbf-column-content-margin, #search-home:hover .gdlr-core-pbf-column-content-margin .gdlr-core-pbf-background-wrap, #search-home:hover .gdlr-core-pbf-column-content-margin .gdlr-core-pbf-background-frame{ border-color: #ffffff !important; }#hl-5-icon-one:hover .gdlr-core-pbf-column-content-margin, #hl-5-icon-one:hover .gdlr-core-pbf-column-content-margin .gdlr-core-pbf-background-wrap, #hl-5-icon-one:hover .gdlr-core-pbf-column-content-margin .gdlr-core-pbf-background-frame{ border-color: #ffffff !important; }#hl-5-icon-two:hover .gdlr-core-pbf-column-content-margin, #hl-5-icon-two:hover .gdlr-core-pbf-column-content-margin .gdlr-core-pbf-background-wrap, #hl-5-icon-two:hover .gdlr-core-pbf-column-content-margin .gdlr-core-pbf-background-frame{ border-color: #ffffff !important; }#hl-5-icon-three:hover .gdlr-core-pbf-column-content-margin, #hl-5-icon-three:hover .gdlr-core-pbf-column-content-margin .gdlr-core-pbf-background-wrap, #hl-5-icon-three:hover .gdlr-core-pbf-column-content-margin .gdlr-core-pbf-background-frame{ border-color: #ffffff !important; }#hl-5-icon-four:hover .gdlr-core-pbf-column-content-margin, #hl-5-icon-four:hover .gdlr-core-pbf-column-content-margin .gdlr-core-pbf-background-wrap, #hl-5-icon-four:hover .gdlr-core-pbf-column-content-margin .gdlr-core-pbf-background-frame{ border-color: #ffffff !important; }#hl-5-icon-five:hover .gdlr-core-pbf-column-content-margin, #hl-5-icon-five:hover .gdlr-core-pbf-column-content-margin .gdlr-core-pbf-background-wrap, #hl-5-icon-five:hover .gdlr-core-pbf-column-content-margin .gdlr-core-pbf-background-frame{ border-color: #ffffff !important; }#gdlr-core-column-1:hover .gdlr-core-pbf-column-content-margin, #gdlr-core-column-1:hover .gdlr-core-pbf-column-content-margin .gdlr-core-pbf-background-wrap, #gdlr-core-column-1:hover .gdlr-core-pbf-column-content-margin .gdlr-core-pbf-background-frame{ border-color: #ffffff !important; }#gdlr-core-column-2:hover .gdlr-core-pbf-column-content-margin, #gdlr-core-column-2:hover .gdlr-core-pbf-column-content-margin .gdlr-core-pbf-background-wrap, #gdlr-core-column-2:hover .gdlr-core-pbf-column-content-margin .gdlr-core-pbf-background-frame{ border-color: #ffffff !important; }@media only screen and (max-width: 767px){ #gdlr-core-column-2 .gdlr-core-pbf-column-content-margin{padding-top: 0px !important;padding-bottom: 0px !important;}}#gdlr-core-column-3:hover .gdlr-core-pbf-column-content-margin, #gdlr-core-column-3:hover .gdlr-core-pbf-column-content-margin .gdlr-core-pbf-background-wrap, #gdlr-core-column-3:hover .gdlr-core-pbf-column-content-margin .gdlr-core-pbf-background-frame{ border-color: #ffffff !important; }#gdlr-core-column-3:hover .gdlr-core-pbf-column-content-margin .gdlr-core-pbf-background-wrap{  }@media only screen and (max-width: 999px){ #gdlr-core-column-3 .gdlr-core-pbf-column-content-margin{}}@media only screen and (max-width: 999px){ #gdlr-core-column-3 .gdlr-core-pbf-column-content-margin{}}#gdlr-core-column-4:hover .gdlr-core-pbf-column-content-margin, #gdlr-core-column-4:hover .gdlr-core-pbf-column-content-margin .gdlr-core-pbf-background-wrap, #gdlr-core-column-4:hover .gdlr-core-pbf-column-content-margin .gdlr-core-pbf-background-frame{ border-color: #ffffff !important; }#gdlr-core-column-4:hover .gdlr-core-pbf-column-content-margin .gdlr-core-pbf-background-wrap{  }@media only screen and (max-width: 999px){ #gdlr-core-column-4 .gdlr-core-pbf-column-content-margin{}}@media only screen and (max-width: 999px){ #gdlr-core-column-4 .gdlr-core-pbf-column-content-margin{}}#gdlr-core-column-5:hover .gdlr-core-pbf-column-content-margin, #gdlr-core-column-5:hover .gdlr-core-pbf-column-content-margin .gdlr-core-pbf-background-wrap, #gdlr-core-column-5:hover .gdlr-core-pbf-column-content-margin .gdlr-core-pbf-background-frame{ border-color: #ffffff !important; }#gdlr-core-column-5:hover .gdlr-core-pbf-column-content-margin .gdlr-core-pbf-background-wrap{  }#gdlr-core-column-6:hover .gdlr-core-pbf-column-content-margin, #gdlr-core-column-6:hover .gdlr-core-pbf-column-content-margin .gdlr-core-pbf-background-wrap, #gdlr-core-column-6:hover .gdlr-core-pbf-column-content-margin .gdlr-core-pbf-background-frame{ border-color: #ffffff !important; }#gdlr-core-column-6:hover .gdlr-core-pbf-column-content-margin .gdlr-core-pbf-background-wrap{  }#gdlr-core-column-7:hover .gdlr-core-pbf-column-content-margin, #gdlr-core-column-7:hover .gdlr-core-pbf-column-content-margin .gdlr-core-pbf-background-wrap, #gdlr-core-column-7:hover .gdlr-core-pbf-column-content-margin .gdlr-core-pbf-background-frame{ border-color: #ffffff !important; }#gdlr-core-column-7:hover .gdlr-core-pbf-column-content-margin .gdlr-core-pbf-background-wrap{  }</style>
-{% endif %}
-<script async src="https://www.googletagmanager.com/gtag/js?id=G-P1PQPQM8YC"></script>
-<script>
-  window.dataLayer = window.dataLayer || [];
-  function gtag(){dataLayer.push(arguments);}
-  gtag('js', new Date());
 
-  gtag('config', 'G-P1PQPQM8YC');
-</script>
-
-<!-- Google Tag Manager -->
-<script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
-new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
-j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
-'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
-})(window,document,'script','dataLayer','GTM-NL9NL336');</script>
-<!-- End Google Tag Manager -->
-
-<script type="text/javascript">
-    (function(c,l,a,r,i,t,y){
-        c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
-        t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
-        y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
-    })(window, document, "clarity", "script", "tpu4wkbk8t");
-</script>{% if is_front %}<link rel="preload" href="/wp-content/uploads/2024/04/slider-1-m-c-2.jpg" as="image" fetchpriority="high">
-<link rel="preload" href="/wp-content/uploads/2024/02/slider-1.jpg" as="image" fetchpriority="high">
-{% endif %}
-{% if is_front or is_contact %}<script type="application/ld+json">
-{
-  "@context": "https://schema.org/",
-  "@type": "TravelAgency",
-  "name": "AucoeurVietnam - IMAGE Travel",
-  "alternatename": "AucoeurVietnam - IMAGE Travel",
-  "description": "AucoeurVietnam - IMAGE Travel dispose de 3 agences réparties dans 3 régions, chacune étant dirigée par un responsable local pour garantir la qualité des voyages. Tung Vu, guide expert des montagnes du Nord, dirige l'agence à Hanoï. Quynh-Anh, forte d'une grande expérience dans l'organisation de voyages sur mesure, gère l'agence au Centre. À Saigon, Laetitia Tran, passionnée de la culture française et bénéficiant de 12 ans d'expérience en tant que conseillère de voyage, dirige l'agence du Sud. Toujours disponibles pour partager leur passion, ils vous offrent des voyages authentiques et immersifs au Vietnam.",
-  "image": "{{ site_url }}/wp-content/uploads/2024/04/logo-aucoeurvietnam.jpg",
-  "founder": {
-  	"@type": "Person",
-    "name": "Nguyen Ngoc Toan",
-    "URL": "https://www.facebook.com/toan.nguyen.336333",
-    "Address": "29/5A Hoang Dieu street, ward 10, district Phu Nhuan"
-  },
-  "additionalType": [
-  	"https://www.facebook.com/aucoeurvietnam",
-    "https://www.instagram.com/aucoeurvietnam/",
-    "https://www.youtube.com/@AucoeurVietnam"
-  ],
-  "address": {
-    "@type": "PostalAddress",
-    {% if is_contact %}"postalCode": "700000",
-    "streetAddress": "22 Nguyen Trong Loi, P4, district Tan Binh",
-    {% else %}"postalCode": "100000",
-    "streetAddress": "152 Pho Đuc Chinh, Truc Bạch, Ba Đinh Ha Noi, Hanoi City, 100000, Viêt Nam",{% endif %}
-    "addressCountry": "VN",
-    {% if is_contact %}"addressRegion": "Ho Chi Minh",
-    "addressLocality": "Ho Chi Minh",
-    {% else %}"addressRegion": "Ha Noi",
-    "addressLocality": "Ha Noi",{% endif %}
-    "telephone": "84909426406"
-  },
-  "aggregateRating": {
-    "@type": "AggregateRating",
-    "ratingValue": "5",
-    "ratingCount": "5",
-    "reviewCount": "5"
-  },
-  {% if is_contact %}"hasMap": "https://maps.app.goo.gl/zpBYvDHZ4VsZa8AT7",{% else %}"hasMap": "https://maps.app.goo.gl/J7FbtM7uxXzkt16P7",{% endif %}
-  "geo": {
-    "@type": "GeoCoordinates",
-    "latitude": "10.806623729270942",
-    "longitude": "106.66271765349438"
-  },
-  "openingHoursSpecification": {
-    "@type": "OpeningHoursSpecification",
-    "validFrom": "",
-    "opens": "08:00",
-    "closes": "18:00",
-    "dayOfWeek": [
-      "Monday",
-      "Tuesday",
-      "Wednesday",
-      "Thursday",
-      "Friday",
-      "Saturday"
-    ]
-  },
-  "sameAs": [
-  	"https://www.facebook.com/aucoeurvietnam",
-    "https://www.instagram.com/aucoeurvietnam/",
-    "https://www.youtube.com/@AucoeurVietnam"
-  ],
-  "telephone": "84909426406",
-  "email": "bonjour@test.aucoeurvietnam.com",
-  "priceRange": "$$$",
-  "url": "{{ site_url }}/",
-  "@id": "{{ site_url }}/",
-  "mainEntityOfPage": "{{ site_url }}/votre-agence-de-voyage-locale/",
-  "numberOfEmployees" : "50",
-  "foundingDate": "2009",
-  "legalName": "AucoeurVietnam IMAGE Travel",
-  "slogan": "Agence de voyage locale au Vietnam, depuis 2009. Voyage au Vietnam sur mesure, authentique, immersif au coeur de la culture, de la population."
-}
-</script>{% endif %}<link rel="icon" href="{{ site_url }}/wp-content/uploads/2024/01/cropped-Aucoeur-02-02-32x32.png" sizes="32x32" />
-<link rel="icon" href="{{ site_url }}/wp-content/uploads/2024/01/cropped-Aucoeur-02-02-192x192.png" sizes="192x192" />
-<link rel="apple-touch-icon" href="{{ site_url }}/wp-content/uploads/2024/01/cropped-Aucoeur-02-02-180x180.png" />
-<meta name="msapplication-TileImage" content="{{ site_url }}/wp-content/uploads/2024/01/cropped-Aucoeur-02-02-270x270.png" />
+{{ head_extra|safe }}{{ site.chrome.favicons|safe }}
 
 {{ post_jsonld|safe }}
 </head>
 
 <body class="{{ body_class }}">
-<div class="traveltour-mobile-header-wrap" ><div class="traveltour-top-bar" ><div class="traveltour-top-bar-background" ></div><div class="traveltour-top-bar-container clearfix traveltour-container " ><div class="traveltour-top-bar-left traveltour-item-pdlr travel-tour-hide-on-mobile"><span class="traveltour-custom-wpml-flag" >{% for f in flags %}{% if f.url %}<span class="traveltour-custom-wpml-flag-item traveltour-language-code-{{ f.lang }}" ><a href="{{ f.url }}" ><img src="{{ site_url }}/wp-content/plugins/polylang/vendor/wpsyntex/flags/{{ f.flag }}" alt="{{ f.lang }}" width="18" height="12" /></a></span>{% endif %}{% endfor %}</span><i class="fa fa-phone" style="font-size: 12px ;color: #fff ;margin-right: 5px ;"  ></i> <a style="color: #fff" href="tel:+84.909.426.406">WhatsApp: +84.909.426.406</a>
-<i class="fa fa-envelope" style="font-size: 12px ;color: #fff ;margin-left: 10px ;margin-right: 5px ;"  ></i> <a style="color: #fff" href="/cdn-cgi/l/email-protection#5f3d303135302a2d1f2b3a2c2b713e2a3c303a2a2d29363a2b313e32713c3032"><span class="__cf_email__" data-cfemail="492b262723263c3b093d2c3a3d67283c2a262c3c3b3f202c3d272824672a2624">[email&#160;protected]</span></a>
-
-<a style="margin-left: 10px" href="https://www.facebook.com/aucoeurvietnam" target="_blank"><img alt="facebook aucoeurvietnam" src="{{ site_url }}/wp-content/uploads/2024/03/facebook.png" /></a>
-<a href="https://instagram.com/aucoeurvietnam.official/" target="_blank"><img alt="instagram aucoeurvietnam" src="{{ site_url }}/wp-content/uploads/2024/03/instagram.png" /></a>
-</a>
-<a href="https://www.youtube.com/@AucoeurVietnam" target="_blank"><img alt="instagram aucoeurvietnam" src="{{ site_url }}/wp-content/uploads/2024/03/youtube.png" /></a>
-<a href="https://www.linkedin.com/company/imagetravel-events/" target="_blank"><img alt="instagram aucoeurvietnam" src="{{ site_url }}/wp-content/uploads/2024/03/linkedin.png" /></a></div><div class="traveltour-top-bar-right traveltour-item-pdlr"><div class="traveltour-top-bar-right-text "><div class="top-bar-right lang-fr mobile">
-
-<div class="dropdown">
-<a class="dropbtn" href="{{ site_url }}/votre-agence-de-voyage-locale/" target="blank"><img width="20px" height="20px" style="margin-bottom: 3px;"  src="{{ site_url }}/wp-content/uploads/2024/01/cropped-Aucoeur-02-02.png" alt="Aucoeurvietnam favicon"><span style="color: #fff; margin-left: 5px">Qui sommes - nous ? | </span></a>
-
-<div class="dropdown-content">
- <a href="{{ site_url }}/votre-agence-de-voyage-locale/">À propos de AucoeurVietnam
-</a>
- <a 
-href="{{ site_url }}/vos-conseillers-de-voyage-locaux/">Nos conseillers de voyage
-</a>
-
-<a href="{{ site_url }}/conditions-de-vente/">Nos conditions de vente
-</a>
-<a href="https://brochure.test.aucoeurvietnam.com/pdfviewer/ebooks-guide-de-voyage-au-vietnam/?auto_viewer=true#page=&zoom=page-fit&pagemode=none">Ebooks de voyage
-</a>
-</div>
-</div>
-
-<a href="{{ site_url }}/blog-de-voyage-au-vietnam/" target="blank"><span style="color: #fff; margin-left: 5px">Blog | </span></a>
-<a href="{{ site_url }}/parcours-de-tourisme-responsable/" target="blank"><span style="color: #fff; margin-left: 5px">Parcours responsable | </span></a>
-
-<a rel="nofollow"  href="{{ site_url }}/faq-les-questions-voyage-au-vietnam/"><span style="color: #fff; margin-left: 5px">FAQ </span></a>
-
-<a class="lang-flag mobile de" href="https://reise.test.aucoeurvietnam.com/" target="_blank"><span style="color: #fff; margin-left: 22px"><img src="{{ site_url }}/wp-content/uploads/2024/06/germany.png"/></span></a>
-
-<a class="lang-flag mobile es" href="{{ site_url }}/es" target="_blank"><span style="color: #fff; margin-left: 12px"><img src="{{ site_url }}/wp-content/uploads/2024/06/spain.png"/></span></a>
-
-<a class="lang-flag mobile fr" href="{{ site_url }}/" target="_blank"><span style="color: #fff; margin-left: 12px"><img src="{{ site_url }}/wp-content/uploads/2024/06/france.png"/></span></a>
-
-</div></div></div></div></div><div class="traveltour-mobile-header traveltour-header-background traveltour-style-slide" id="traveltour-mobile-header" ><div class="traveltour-mobile-header-container traveltour-container" ><div class="traveltour-logo  traveltour-item-pdlr"><div class="traveltour-logo-inner"><a class="traveltour-fixed-nav-logo" href="{{ site_url }}/" ><img src="{{ site_url }}/wp-content/uploads/2024/04/logo-agence-de-voyage-au-vietnam.jpg" alt="Logo-agence-de-voyage-au-vietnam" width="600" height="303" title="Logo-agence-de-voyage-au-vietnam"  srcset="{{ site_url }}/wp-content/uploads/2024/04/logo-agence-de-voyage-au-vietnam.jpg 1x, {{ site_url }}/wp-content/uploads/2024/04/logo-agence-de-voyage-au-vietnam.jpg 2x"  /></a><a class=" traveltour-orig-logo" href="{{ site_url }}/" ><img src="{{ site_url }}/wp-content/uploads/2024/04/logo-aucoeurvietnam-m2.jpg" alt="logo-aucoeurvietnam-m2" width="150" height="76" title="logo-aucoeurvietnam-m2" /></a></div></div><div class="traveltour-mobile-menu-right" ><div class="traveltour-mobile-menu" ><a class="traveltour-mm-menu-button traveltour-mobile-menu-button traveltour-mobile-button-hamburger-with-border" href="#traveltour-mobile-menu" ><i class="fa fa-bars" ></i></a><div class="traveltour-mm-menu-wrap traveltour-navigation-font" id="traveltour-mobile-menu" data-slide="right" ><ul id="menu-main-menu" class="m-menu">{% if site is defined and site.menus is defined %}{{ site.menus.menu_main_html|default("")|safe }}{% endif %}</ul></div></div></div></div></div></div><div class="traveltour-body-outer-wrapper ">
+<div class="traveltour-mobile-header-wrap" ><div class="traveltour-top-bar" ><div class="traveltour-top-bar-background" ></div><div class="traveltour-top-bar-container clearfix traveltour-container " ><div class="traveltour-top-bar-left traveltour-item-pdlr travel-tour-hide-on-mobile"><span class="traveltour-custom-wpml-flag" >{% for f in flags %}{% if f.url %}<span class="traveltour-custom-wpml-flag-item traveltour-language-code-{{ f.lang }}" ><a href="{{ f.url }}" ><img src="{{ site_url }}/wp-content/plugins/polylang/vendor/wpsyntex/flags/{{ f.flag }}" alt="{{ f.lang }}" width="18" height="12" /></a></span>{% endif %}{% endfor %}</span>{{ site.chrome.topbar_left_html|safe }}</div><div class="traveltour-top-bar-right traveltour-item-pdlr"><div class="traveltour-top-bar-right-text ">{{ site.chrome.topbar_right_html|safe }}</div></div></div></div></div><div class="traveltour-mobile-header traveltour-header-background traveltour-style-slide" id="traveltour-mobile-header" ><div class="traveltour-mobile-header-container traveltour-container" ><div class="traveltour-logo  traveltour-item-pdlr"><div class="traveltour-logo-inner">{{ site.chrome.logo_fixed|safe }}{{ site.chrome.logo|safe }}</div></div><div class="traveltour-mobile-menu-right" ><div class="traveltour-mobile-menu" ><a class="traveltour-mm-menu-button traveltour-mobile-menu-button traveltour-mobile-button-hamburger-with-border" href="#traveltour-mobile-menu" ><i class="fa fa-bars" ></i></a><div class="traveltour-mm-menu-wrap traveltour-navigation-font" id="traveltour-mobile-menu" data-slide="right" ><ul id="menu-main-menu" class="m-menu">{% if site is defined and site.menus is defined %}{{ site.menus.menu_main_html|default("")|safe }}{% endif %}</ul></div></div></div></div></div></div><div class="traveltour-body-outer-wrapper ">
 		<div class="traveltour-body-wrapper clearfix  traveltour-with-frame">
-	<div class="traveltour-top-bar " ><div class="traveltour-top-bar-background" ></div><div class="traveltour-top-bar-container clearfix traveltour-container " ><div class="traveltour-top-bar-left traveltour-item-pdlr traveltour-disable"><div class="traveltour-top-bar-left-text"><i class="fa fa-phone" style="font-size: 12px ;color: #fff ;margin-right: 5px ;"  ></i> <a style="color: #fff" href="tel:+84.909.426.406">WhatsApp: +84.909.426.406</a>
-<i class="fa fa-envelope" style="font-size: 12px ;color: #fff ;margin-left: 10px ;margin-right: 5px ;"  ></i> <a style="color: #fff" href="/cdn-cgi/l/email-protection#c2a0adaca8adb7b082b6a7b1b6eca3b7a1ada7b7b0b4aba7b6aca3afeca1adaf"><span class="__cf_email__" data-cfemail="61030e0f0b0e141321150412154f0014020e041413170804150f000c4f020e0c">[email&#160;protected]</span></a>
-
-<a style="margin-left: 10px" href="https://www.facebook.com/aucoeurvietnam" target="_blank"><img alt="facebook aucoeurvietnam" src="{{ site_url }}/wp-content/uploads/2024/03/facebook.png" /></a>
-<a href="https://instagram.com/aucoeurvietnam.official/" target="_blank"><img alt="instagram aucoeurvietnam" src="{{ site_url }}/wp-content/uploads/2024/03/instagram.png" /></a>
-</a>
-<a href="https://www.youtube.com/@AucoeurVietnam" target="_blank"><img alt="instagram aucoeurvietnam" src="{{ site_url }}/wp-content/uploads/2024/03/youtube.png" /></a>
-<a href="https://www.linkedin.com/company/imagetravel-events/" target="_blank"><img alt="instagram aucoeurvietnam" src="{{ site_url }}/wp-content/uploads/2024/03/linkedin.png" /></a></div></div><div class="traveltour-top-bar-right traveltour-item-pdlr traveltour-disable"><div class="traveltour-top-bar-right-text"><div class="top-bar-right lang-fr mobile">
-
-<div class="dropdown">
-<a class="dropbtn" href="{{ site_url }}/votre-agence-de-voyage-locale/" target="blank"><img width="20px" height="20px" style="margin-bottom: 3px;"  src="{{ site_url }}/wp-content/uploads/2024/01/cropped-Aucoeur-02-02.png" alt="Aucoeurvietnam favicon"><span style="color: #fff; margin-left: 5px">Qui sommes - nous ? | </span></a>
-
-<div class="dropdown-content">
- <a href="{{ site_url }}/votre-agence-de-voyage-locale/">À propos de AucoeurVietnam
-</a>
- <a 
-href="{{ site_url }}/vos-conseillers-de-voyage-locaux/">Nos conseillers de voyage
-</a>
-
-<a href="{{ site_url }}/conditions-de-vente/">Nos conditions de vente
-</a>
-<a href="https://brochure.test.aucoeurvietnam.com/pdfviewer/ebooks-guide-de-voyage-au-vietnam/?auto_viewer=true#page=&zoom=page-fit&pagemode=none">Ebooks de voyage
-</a>
-</div>
-</div>
-
-<a href="{{ site_url }}/blog-de-voyage-au-vietnam/" target="blank"><span style="color: #fff; margin-left: 5px">Blog | </span></a>
-<a href="{{ site_url }}/parcours-de-tourisme-responsable/" target="blank"><span style="color: #fff; margin-left: 5px">Parcours responsable | </span></a>
-
-<a rel="nofollow"  href="{{ site_url }}/faq-les-questions-voyage-au-vietnam/"><span style="color: #fff; margin-left: 5px">FAQ </span></a>
-
-<a class="lang-flag mobile de" href="https://reise.test.aucoeurvietnam.com/" target="_blank"><span style="color: #fff; margin-left: 22px"><img src="{{ site_url }}/wp-content/uploads/2024/06/germany.png"/></span></a>
-
-<a class="lang-flag mobile es" href="{{ site_url }}/es" target="_blank"><span style="color: #fff; margin-left: 12px"><img src="{{ site_url }}/wp-content/uploads/2024/06/spain.png"/></span></a>
-
-<a class="lang-flag mobile fr" href="{{ site_url }}/" target="_blank"><span style="color: #fff; margin-left: 12px"><img src="{{ site_url }}/wp-content/uploads/2024/06/france.png"/></span></a>
-
-</div></div><div class="traveltour-top-bar-wpml-flag" ><span class="traveltour-custom-wpml-flag" >{% for f in flags %}{% if f.url %}<span class="traveltour-custom-wpml-flag-item traveltour-language-code-{{ f.lang }}" ><a href="{{ f.url }}" ><img src="{{ site_url }}/wp-content/plugins/polylang/vendor/wpsyntex/flags/{{ f.flag }}" alt="{{ f.lang }}" width="18" height="12" /></a></span>{% endif %}{% endfor %}</span></div></div></div></div>	
+	<div class="traveltour-top-bar " ><div class="traveltour-top-bar-background" ></div><div class="traveltour-top-bar-container clearfix traveltour-container " ><div class="traveltour-top-bar-left traveltour-item-pdlr traveltour-disable"><div class="traveltour-top-bar-left-text">{{ site.chrome.topbar_left_html|safe }}</div></div><div class="traveltour-top-bar-right traveltour-item-pdlr traveltour-disable"><div class="traveltour-top-bar-right-text">{{ site.chrome.topbar_right_html|safe }}</div></div><div class="traveltour-top-bar-wpml-flag" ><span class="traveltour-custom-wpml-flag" >{% for f in flags %}{% if f.url %}<span class="traveltour-custom-wpml-flag-item traveltour-language-code-{{ f.lang }}" ><a href="{{ f.url }}" ><img src="{{ site_url }}/wp-content/plugins/polylang/vendor/wpsyntex/flags/{{ f.flag }}" alt="{{ f.lang }}" width="18" height="12" /></a></span>{% endif %}{% endfor %}</span></div></div></div></div>	
 <header class="traveltour-header-wrap traveltour-header-style-plain  traveltour-style-splitted-menu traveltour-sticky-navigation traveltour-style-fixed" >
 	<div class="traveltour-header-background" ></div>
 	<div class="traveltour-header-container  traveltour-container">
 			
 		<div class="traveltour-header-container-inner clearfix">
 						<div class="traveltour-navigation traveltour-item-pdlr clearfix " >
-			<div class="traveltour-main-menu" id="traveltour-main-menu" ><ul id="menu-main-menu-1" class="sf-menu"><li class="traveltour-center-nav-menu-item" ><div class="traveltour-logo  traveltour-item-pdlr"><div class="traveltour-logo-inner"><a class="traveltour-fixed-nav-logo" href="{{ site_url }}/" ><img src="{{ site_url }}/wp-content/uploads/2024/04/logo-agence-de-voyage-au-vietnam.jpg" alt="Logo-agence-de-voyage-au-vietnam" width="600" height="303" title="Logo-agence-de-voyage-au-vietnam"  srcset="{{ site_url }}/wp-content/uploads/2024/04/logo-agence-de-voyage-au-vietnam.jpg 1x, {{ site_url }}/wp-content/uploads/2024/04/logo-agence-de-voyage-au-vietnam.jpg 2x"  /></a><a class=" traveltour-orig-logo" href="{{ site_url }}/" ><img src="{{ site_url }}/wp-content/uploads/2024/04/logo-aucoeurvietnam.jpg" alt="logo-aucoeurvietnam" width="160" height="81" title="logo-aucoeurvietnam"  srcset="{{ site_url }}/wp-content/uploads/2024/04/logo-aucoeurvietnam.jpg 1x, {{ site_url }}/wp-content/uploads/2024/04/logo-aucoeurvietnam.jpg 2x"  /></a></div></div></li>{% if site is defined and site.menus is defined %}{{ site.menus.menu_main_html|default("")|safe }}{% endif %}</ul></div>			</div><!-- traveltour-navigation -->
+			<div class="traveltour-main-menu" id="traveltour-main-menu" ><ul id="menu-main-menu-1" class="sf-menu"><li class="traveltour-center-nav-menu-item" ><div class="traveltour-logo  traveltour-item-pdlr"><div class="traveltour-logo-inner">{{ site.chrome.logo_fixed|safe }}{{ site.chrome.logo|safe }}</div></div></li>{% if site is defined and site.menus is defined %}{{ site.menus.menu_main_html|default("")|safe }}{% endif %}</ul></div>			</div><!-- traveltour-navigation -->
 
 		</div><!-- traveltour-header-inner -->
 	</div><!-- traveltour-header-container -->
@@ -287,33 +109,11 @@ href="{{ site_url }}/vos-conseillers-de-voyage-locaux/">Nos conseillers de voyag
 <div class="gdlr-core-page-builder-body clearfix">{{ body | safe }}</div>
 {% endblock %}
 </div></div>
-<footer><div class="traveltour-footer-wrapper " ><div class="traveltour-footer-container traveltour-container clearfix" ><div class="traveltour-footer-column traveltour-item-pdlr traveltour-column-15" >{{ footer_1|safe }}</div><div class="traveltour-footer-column traveltour-item-pdlr traveltour-column-15" >{{ footer_2|safe }}</div><div class="traveltour-footer-column traveltour-item-pdlr traveltour-column-15" >{{ footer_3|safe }}</div><div class="traveltour-footer-column traveltour-item-pdlr traveltour-column-15" >{{ footer_4|safe }}</div></div></div><div class="traveltour-copyright-wrapper " ><div class="traveltour-copyright-container traveltour-container clearfix"><div class="traveltour-copyright-left traveltour-item-pdlr">© COPYRIGHT 2023, AUCOEURVIETNAM - BY IMAGE TRAVEL & EVENTS CO., LTD FROM 2009.</div><div class="traveltour-copyright-right traveltour-item-pdlr">Contactez-nous 
-<a href="https://www.facebook.com/aucoeurvietnam" target="_blank"><img alt="facebook aucoeurvietnam" src="{{ site_url }}/wp-content/uploads/2024/03/facebook.png" /></a>
-<a href="https://instagram.com/aucoeurvietnam.official/" target="_blank"><img alt="instagram aucoeurvietnam" src="{{ site_url }}/wp-content/uploads/2024/03/instagram.png" /></a>
-</a>
-<a href="https://www.youtube.com/@AucoeurVietnam" target="_blank"><img alt="instagram aucoeurvietnam" src="{{ site_url }}/wp-content/uploads/2024/03/youtube.png" /></a>
-<a href="https://www.linkedin.com/company/imagetravel-events/" target="_blank"><img alt="instagram aucoeurvietnam" src="{{ site_url }}/wp-content/uploads/2024/03/linkedin.png" /></a></div></div></div></footer></div></div>
+<footer><div class="traveltour-footer-wrapper " ><div class="traveltour-footer-container traveltour-container clearfix" ><div class="traveltour-footer-column traveltour-item-pdlr traveltour-column-15" >{{ footer_1|safe }}</div><div class="traveltour-footer-column traveltour-item-pdlr traveltour-column-15" >{{ footer_2|safe }}</div><div class="traveltour-footer-column traveltour-item-pdlr traveltour-column-15" >{{ footer_3|safe }}</div><div class="traveltour-footer-column traveltour-item-pdlr traveltour-column-15" >{{ footer_4|safe }}</div></div></div><div class="traveltour-copyright-wrapper " ><div class="traveltour-copyright-container traveltour-container clearfix"><div class="traveltour-copyright-left traveltour-item-pdlr">{{ site.chrome.copyright_left_html|safe }}</div><div class="traveltour-copyright-right traveltour-item-pdlr">{{ site.chrome.copyright_right_html|safe }}</div></div></div></footer></div></div>
 <script type="speculationrules">
 {"prefetch":[{"source":"document","where":{"and":[{"href_matches":"/*"},{"not":{"href_matches":["/wp-*.php","/wp-admin/*","/wp-content/uploads/*","/wp-content/*","/wp-content/plugins/*","/wp-content/themes/traveltour-child/*","/wp-content/themes/traveltour/*","/*\\?(.+)"]}},{"not":{"selector_matches":"a[rel~=\"nofollow\"]"}},{"not":{"selector_matches":".no-prefetch, .no-prefetch a"}}]},"eagerness":"conservative"}]}
 </script>
- <div class="sticky-slider-main">
-		<div class="sticky-slider-main-one sticky-fr"><a rel="nofollow" href="{{ site_url }}/devis-sur-mesure/"><span class="fa fa-envelope"></span> Devis Sur Mesure</a></div>
-    	<div class="sticky-slider-main-two sticky-fr"><a rel="nofollow" href="{{ site_url }}/rappel-gratuit/"><span class="fa fa-phone"></span> Rappel Gratuit</a></div>
-		<div class="sticky-slider-main-one sticky-es"><a rel="nofollow" href="{{ site_url }}/es/cotizacion-personalizada/"><span class="fa fa-envelope"></span>Presupuesto a medida</a></div>
-    	<div class="sticky-slider-main-two sticky-es"><a rel="nofollow" href="{{ site_url }}/es/devolucion-de-llamada-gratuita/"><span class="fa fa-phone"></span> Llamada gratuita</a></div>
-	  </div>
-	  <div class="sticky-slider-main mobile">
-		<div class="sticky-slider-main-one sticky-fr"><a rel="nofollow" href="{{ site_url }}/devis-sur-mesure/"><span class="fa fa-envelope"></span>Devis Gratuit</a></div>
-		<div class="sticky-slider-main-one sticky-es"><a rel="nofollow" href="{{ site_url }}/es/cotizacion-personalizada/"><span class="fa fa-envelope"></span>Presupuesto a medida</a></div>
-	  </div>
-<!-- 	  <div class="sticky-slider-main-chat">
-		<div class="facebook sticky-fr"><a href="https://www.messenger.com/t/aucoeurvietnam" target="blank"><img src="{{ site_url }}/wp-content/uploads/2024/05/fb-200-200.png" alt="facebook" /></a></div>
-	  </div> -->
-      <div class="sticky-slider-main-lang">
-		<a class="lang-flag mobile de" href="https://reise.test.aucoeurvietnam.com/" target="_blank"><span style="color: #fff;"><img src="{{ site_url }}/wp-content/uploads/2024/06/germany.png"/></span></a>
-        <a class="lang-flag mobile es" href="{{ site_url }}/es" target="_blank"><span style="color: #fff; margin-left: 12px"><img src="{{ site_url }}/wp-content/uploads/2024/06/spain.png"/></span></a>
-		<a class="lang-flag mobile fr" href="{{ site_url }}/" target="_blank"><span style="color: #fff; margin-left: 12px"><img src="{{ site_url }}/wp-content/uploads/2024/06/france.png"/></span></a>
-      </div>
+ {{ site.chrome.sticky_html|safe }}<div class="sticky-slider-main-lang">{{ site.chrome.lang_flags_sticky|safe }}</div>
     <script id="wp-hooks-js" src="{{ site_url }}/wp-includes/js/dist/hooks.min.js?ver=f0f188028580e8dc1255"></script>
 <script id="wp-i18n-js" src="{{ site_url }}/wp-includes/js/dist/i18n.min.js?ver=1dfe7db3940c23ea9216"></script>
 <script id="wp-i18n-js-after">
@@ -428,14 +228,7 @@ var traveltour_script_core = {"home_url":"{{ site_url }}/"};
 //# sourceURL=traveltour-script-core-js-extra
 </script>
 <script id="traveltour-script-core-js" src="{{ site_url }}/wp-content/themes/traveltour/js/script-core.js?ver=1.0.0"></script>
-<script id="chaty-front-end-js-extra">
-var chaty_settings = {"ajax_url":"{{ site_url }}/wp-admin/admin-ajax.php","analytics":"0","capture_analytics":"0","token":"c349b8b791","chaty_widgets":[{"id":0,"identifier":0,"settings":{"cta_type":"simple-view","cta_body":"","cta_head":"","cta_head_bg_color":"","cta_head_text_color":"","show_close_button":1,"position":"right","custom_position":1,"bottom_spacing":"25","side_spacing":"25","icon_view":"vertical","default_state":"click","cta_text":"Discutez avec nous","cta_text_color":"#202020","cta_bg_color":"rgb(255, 255, 255)","show_cta":"first_click","is_pending_mesg_enabled":"off","pending_mesg_count":"1","pending_mesg_count_color":"#ffffff","pending_mesg_count_bgcolor":"#dd0000","widget_icon":"chat-base","widget_icon_url":"","font_family":"-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Oxygen-Sans,Ubuntu,Cantarell,Helvetica Neue,sans-serif","widget_size":"54","custom_widget_size":"54","is_google_analytics_enabled":"off","close_text":"Hide","widget_color":"RGB(90, 147, 109)","widget_icon_color":"#ffffff","widget_rgb_color":"0,0,0","has_custom_css":0,"custom_css":"","widget_token":"515b4941f4","widget_index":"","attention_effect":"waggle"},"triggers":{"has_time_delay":1,"time_delay":"1","exit_intent":0,"has_display_after_page_scroll":0,"display_after_page_scroll":"1","auto_hide_widget":0,"hide_after":0,"show_on_pages_rules":[],"time_diff":0,"has_date_scheduling_rules":0,"date_scheduling_rules":{"start_date_time":"","end_date_time":""},"date_scheduling_rules_timezone":0,"day_hours_scheduling_rules_timezone":0,"has_day_hours_scheduling_rules":[],"day_hours_scheduling_rules":[],"day_time_diff":0,"show_on_direct_visit":0,"show_on_referrer_social_network":0,"show_on_referrer_search_engines":0,"show_on_referrer_google_ads":0,"show_on_referrer_urls":[],"has_show_on_specific_referrer_urls":0,"has_traffic_source":0,"has_countries":0,"countries":[],"has_target_rules":0},"channels":[{"channel":"Whatsapp","value":"84909426406","hover_text":"","chatway_position":"","svg_icon":"\u003Csvg width=\"39\" height=\"39\" viewBox=\"0 0 39 39\" fill=\"none\" xmlns=\"http://www.w3.org/2000/svg\"\u003E\u003Ccircle class=\"color-element\" cx=\"19.4395\" cy=\"19.4395\" r=\"19.4395\" fill=\"#49E670\"/\u003E\u003Cpath d=\"M12.9821 10.1115C12.7029 10.7767 11.5862 11.442 10.7486 11.575C10.1902 11.7081 9.35269 11.8411 6.84003 10.7767C3.48981 9.44628 1.39593 6.25317 1.25634 6.12012C1.11674 5.85403 2.13001e-06 4.39053 2.13001e-06 2.92702C2.13001e-06 1.46351 0.83755 0.665231 1.11673 0.399139C1.39592 0.133046 1.8147 1.01506e-06 2.23348 1.01506e-06C2.37307 1.01506e-06 2.51267 1.01506e-06 2.65226 1.01506e-06C2.93144 1.01506e-06 3.21063 -2.02219e-06 3.35022 0.532183C3.62941 1.19741 4.32736 2.66092 4.32736 2.79397C4.46696 2.92702 4.46696 3.19311 4.32736 3.32616C4.18777 3.59225 4.18777 3.59224 3.90858 3.85834C3.76899 3.99138 3.6294 4.12443 3.48981 4.39052C3.35022 4.52357 3.21063 4.78966 3.35022 5.05576C3.48981 5.32185 4.18777 6.38622 5.16491 7.18449C6.42125 8.24886 7.39839 8.51496 7.81717 8.78105C8.09636 8.91409 8.37554 8.9141 8.65472 8.648C8.93391 8.38191 9.21309 7.98277 9.49228 7.58363C9.77146 7.31754 10.0507 7.1845 10.3298 7.31754C10.609 7.45059 12.2841 8.11582 12.5633 8.38191C12.8425 8.51496 13.1217 8.648 13.1217 8.78105C13.1217 8.78105 13.1217 9.44628 12.9821 10.1115Z\" transform=\"translate(12.9597 12.9597)\" fill=\"#FAFAFA\"/\u003E\u003Cpath d=\"M0.196998 23.295L0.131434 23.4862L0.323216 23.4223L5.52771 21.6875C7.4273 22.8471 9.47325 23.4274 11.6637 23.4274C18.134 23.4274 23.4274 18.134 23.4274 11.6637C23.4274 5.19344 18.134 -0.1 11.6637 -0.1C5.19344 -0.1 -0.1 5.19344 -0.1 11.6637C-0.1 13.9996 0.624492 16.3352 1.93021 18.2398L0.196998 23.295ZM5.87658 19.8847L5.84025 19.8665L5.80154 19.8788L2.78138 20.8398L3.73978 17.9646L3.75932 17.906L3.71562 17.8623L3.43104 17.5777C2.27704 15.8437 1.55796 13.8245 1.55796 11.6637C1.55796 6.03288 6.03288 1.55796 11.6637 1.55796C17.2945 1.55796 21.7695 6.03288 21.7695 11.6637C21.7695 17.2945 17.2945 21.7695 11.6637 21.7695C9.64222 21.7695 7.76778 21.1921 6.18227 20.039L6.17557 20.0342L6.16817 20.0305L5.87658 19.8847Z\" transform=\"translate(7.7758 7.77582)\" fill=\"white\" stroke=\"white\" stroke-width=\"0.2\"/\u003E\u003C/svg\u003E","is_desktop":1,"is_mobile":1,"icon_color":"#49E670","icon_rgb_color":"73,230,112","channel_type":"Whatsapp","custom_image_url":"","order":"","pre_set_message":"","is_use_web_version":"1","is_open_new_tab":"1","is_default_open":"0","has_welcome_message":"1","emoji_picker":"1","input_placeholder":"Write your message...","chat_welcome_message":"\u003Cp\u003EBonjour! Je m'apelle H\u00e0, conseill\u00e8re de voyage de AucoeurVietnam. \u003Cbr /\u003EComment puis-je vous aider? :)\u003C/p\u003E","wp_popup_headline":"","wp_popup_nickname":"","wp_popup_profile":"","wp_popup_head_bg_color":"#4AA485","qr_code_image_url":"","mail_subject":"","channel_account_type":"personal","contact_form_settings":[],"contact_fields":[],"url":"https://web.whatsapp.com/send?phone=84909426406","mobile_target":"","desktop_target":"_blank","target":"_blank","is_agent":0,"agent_data":[],"header_text":"","header_sub_text":"","header_bg_color":"","header_text_color":"","widget_token":"515b4941f4","widget_index":"","click_event":"","viber_url":""}]}],"data_analytics_settings":"off","lang":{"whatsapp_label":"WhatsApp Message","hide_whatsapp_form":"Hide WhatsApp Form","emoji_picker":"Show Emojis"},"has_chatway":""};
-//# sourceURL=chaty-front-end-js-extra
-</script>
-<script defer id="chaty-front-end-js" src="{{ site_url }}/wp-content/plugins/chaty/dist/js/script.js?ver=3.6.31723438833"></script>
-<script defer id="chaty-mail-check-js" src="{{ site_url }}/wp-content/plugins/chaty/admin/assets/js/mailcheck.js?ver=3.6.3"></script>
-<script id="chaty-picmo-js-js" src="{{ site_url }}/wp-content/plugins/chaty/admin/assets/js/picmo-umd.min.js?ver=3.6.3"></script>
-<script id="chaty-picmo-latest-js-js" src="{{ site_url }}/wp-content/plugins/chaty/admin/assets/js/picmo-latest-umd.min.js?ver=3.6.3"></script>
+{{ site.chrome.chaty_js|safe }}
 <script id="tourmaster-tour-script-js" src="{{ site_url }}/wp-content/plugins/tourmaster/tour/tourmaster-tour.js?ver=7.1.3"></script>
 <script id="site-reviews-js-before">
 window.hasOwnProperty("GLSR")||(window.GLSR={Event:{on:()=>{}}});GLSR.action="glsr_public_action";GLSR.addons=[];GLSR.ajaxpagination=["#wpadminbar",".site-navigation-fixed"];GLSR.ajaxurl="{{ site_url }}/wp-admin/admin-ajax.php";GLSR.captcha=[];GLSR.nameprefix="site-reviews";GLSR.starsconfig={"clearable":false,tooltip:"Sélectionnez une note"};GLSR.state={"popstate":false};GLSR.text={closemodal:"Close Modal"};GLSR.urlparameter="reviews-page";GLSR.validationconfig={field:"glsr-field",form:"glsr-form","field_error":"glsr-field-is-invalid","field_hidden":"glsr-hidden","field_message":"glsr-field-error","field_required":"glsr-required","field_valid":"glsr-field-is-valid","form_error":"glsr-form-is-invalid","form_message":"glsr-form-message","form_message_failed":"glsr-form-failed","form_message_success":"glsr-form-success","input_error":"glsr-is-invalid","input_valid":"glsr-is-valid"};GLSR.validationstrings={accepted:"Ce champ doit être accepté.",between:"Cette valeur de champ doit être comprise entre %s et %s.",betweenlength:"Ce champ doit avoir entre %s et %s caractères.",email:"Ce champ requiert une adresse e-mail valide.",errors:"Veuillez corriger les erreurs de soumission.",max:"La valeur maximale pour ce champ est %s.",maxfiles:"This field allows a maximum of %s files.",maxlength:"Ce champ doit avoir au maximum %s caractères.",min:"La valeur minimale pour ce champ est %s.",minfiles:"This field requires a minimum of %s files.",minlength:"Ce champ doit avoir au minimum %s caractères.",number:"Ce champ doit être un nombre.",pattern:"Please match the requested format.",regex:"Please match the requested format.",required:"Ce champ est obligatoire.",tel:"This field requires a valid telephone number.",url:"This field requires a valid website URL (make sure it starts with http or https).",unsupported:"L’avis n’a pas pu être soumis parce que votre navigateur est trop ancien. Veuillez réessayer avec un navigateur moderne."};GLSR.version="7.2.13";

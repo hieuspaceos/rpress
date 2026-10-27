@@ -297,50 +297,6 @@ const MIGRATIONS: &[(&str, &str, &str)] = &[
     ("sessions", "csrf", "TEXT NOT NULL DEFAULT ''"),
 ];
 
-/// Seed the `forms` table from `intake::FORM_SLUGS` on first run — only when
-/// the table is empty. CF7-style markup per slug so the editor has real
-/// starting content.
-fn seed_forms(c: &rusqlite::Connection) -> anyhow::Result<()> {
-    let n: i64 = c.query_row("SELECT COUNT(*) FROM forms", [], |r| r.get(0))?;
-    if n > 0 {
-        return Ok(());
-    }
-    let contact_markup = "<label> Your name\n    [text* your-name] </label>\n\
-        <label> Your email\n    [email* your-email] </label>\n\
-        <label> Subject\n    [text your-subject] </label>\n\
-        <label> Your message (optional)\n    [textarea your-message] </label>\n\
-        [submit \"Send\"]\n";
-    let tour_markup = "<label> Your name\n    [text* your-name] </label>\n\
-        <label> Your email\n    [email* your-email] </label>\n\
-        <label> Tour\n    [text tour-name] </label>\n\
-        <label> Travel date\n    [date travel-date] </label>\n\
-        <label> Your message\n    [textarea* your-message] </label>\n\
-        [submit \"Send enquiry\"]\n";
-    let review_markup = "<label> Your name\n    [text* your-name] </label>\n\
-        <label> Your email\n    [email* your-email] </label>\n\
-        <label> Rating\n    [number* rating min:1 max:5] </label>\n\
-        <label> Review\n    [textarea* review] </label>\n\
-        [submit \"Submit review\"]\n";
-    let msgs = r#"{"success":"Thank you for your message. It has been sent.","validation":"One or more fields have an error. Please check and try again.","spam":"There was an error trying to send your message.","required":"This field is required.","email_invalid":"The e-mail address entered is invalid."}"#;
-    let mail_body = "From: [your-name] <[your-email]>\nSubject: [your-subject]\n\n[your-message]\n";
-    let seeds: &[(&str, &str, &str, &str, &str)] = &[
-        // (slug, title, lang, kind, markup)
-        ("rappel-gratuit", "Rappel gratuit", "fr", "form", contact_markup),
-        ("devolucion-de-llamada-gratuita", "Devolución de llamada gratuita", "es", "form", contact_markup),
-        ("reserver-un-guide-ou-un-chauffeur", "Réserver un guide ou un chauffeur", "fr", "form", tour_markup),
-        ("ecrivez-vos-avis", "Écrivez vos avis", "fr", "review", review_markup),
-        ("tour-enquiry", "Tour enquiry", "fr", "form", tour_markup),
-        ("consulta-tour", "Consulta tour", "es", "form", tour_markup),
-    ];
-    let mut st = c.prepare(
-        "INSERT INTO forms(slug,title,lang,kind,markup,mail_to,mail_from,mail_subject,mail_body,messages,created_at,updated_at)
-         VALUES(?1,?2,?3,?4,?5,'','[your-email]','[your-subject]',?6,?7,datetime('now'),datetime('now'))",
-    )?;
-    for (slug, title, lang, kind, markup) in seeds {
-        st.execute(rusqlite::params![slug, title, lang, kind, markup, mail_body, msgs])?;
-    }
-    Ok(())
-}
 /// Pre-DDL cleanup hook: `post_meta` predates the (post_id, meta_key)
 /// unique index, so existing dbs may hold dup rows that would make
 /// `CREATE UNIQUE INDEX` fail. Dedupes BEFORE `execute_batch(DDL)` runs.
@@ -432,7 +388,6 @@ pub fn migrate_conn(c: &rusqlite::Connection) -> anyhow::Result<()> {
     // lift its content out; gdlr rows stay empty (their post_content was
     // never imported; a fresh `rpress import` fills it).
     backfill_body_html(c);
-    seed_forms(c)?;
     Ok(())
 }
 

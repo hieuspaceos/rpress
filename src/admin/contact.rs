@@ -1,5 +1,5 @@
 //! Contact → CF7 "Contact Forms" list + Flamingo "Inbound Messages" inbox.
-//! Form slugs are code constants (`intake::FORM_SLUGS`); submissions are
+//! Forms come from the `forms` table (imported CF7 forms); submissions are
 //! moderated through `intake::moderate` so `approve` keeps feeding the
 //! comments/reviews tables.
 use super::list;
@@ -14,24 +14,16 @@ const INBOX: &str = "/admin/contact/inbox";
 /// Hard cap on CSV export rows (Flamingo-scale; overflow gets a note row).
 const EXPORT_CAP: i64 = 10_000;
 
-/// Spanish variants inside `intake::FORM_SLUGS` — the fr/es pairs.
-const ES_SLUGS: &[&str] = &["devolucion-de-llamada-gratuita", "consulta-tour"];
+fn if_empty<'a>(v: &'a str, d: String) -> String {
+    if v.is_empty() { d } else { v.to_string() }
+}
 
-/// `rappel-gratuit` → "Rappel gratuit" (CF7 title column).
 fn humanize(slug: &str) -> String {
     let s = slug.replace('-', " ");
     let mut c = s.chars();
     match c.next() {
         Some(ch) => format!("{}{}", ch.to_uppercase(), c.as_str()),
         None => String::new(),
-    }
-}
-
-fn form_lang(slug: &str) -> &'static str {
-    if ES_SLUGS.contains(&slug) {
-        "Español"
-    } else {
-        "Français"
     }
 }
 
@@ -364,9 +356,16 @@ pub(crate) async fn inbox_page(
 
     // Filter (GET): form dropdown + search box + Filter button.
     let mut opts = String::from("<option value=\"\">View all forms</option>");
-    for &slug in intake::FORM_SLUGS {
-        let sel = if slug == form { " selected" } else { "" };
-        opts.push_str(&format!("<option value=\"{}\"{}>{}</option>", esc(slug), sel, esc(&humanize(slug))));
+    if let Ok(forms) = crate::db::forms::list(&sc.db) {
+        for f in &forms {
+            let sel = if f.slug == form { " selected" } else { "" };
+            opts.push_str(&format!(
+                "<option value=\"{}\"{}>{}</option>",
+                esc(&f.slug),
+                sel,
+                esc(&if_empty(&f.title, humanize(&f.slug)))
+            ));
+        }
     }
     let view_hidden = if view == "inbox" {
         String::new()
@@ -551,22 +550,25 @@ pub(crate) async fn detail_page(State(app): State<App>, headers: HeaderMap, Path
 }
 
 /// Screen D: `/admin/contact/form/{slug}` — CF7 "Edit Contact Form" parity.
-/// The form itself is code (`intake::FORM_SLUGS` + template markup baked into
+/// The form itself lives in `forms.markup` (imported CF7 markup baked into
 /// the binary), so the screen is read-only: slug, endpoint, lang, counts,
 /// and the most recent submissions.
 pub(crate) async fn form_detail(State(app): State<App>, headers: HeaderMap, Path(slug): Path<String>) -> Response {
     let Ok((s, sc)) = need_auth(&app, &headers) else {
         return Redirect::to("/admin/login").into_response();
     };
-    if !intake::FORM_SLUGS.contains(&slug.as_str()) {
+    let Ok(form_row) = crate::db::forms::get_by_slug(&sc.db, &slug) else {
         return StatusCode::NOT_FOUND.into_response();
-    }
+    };
+    let Some(form_row) = form_row else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
     let counts = subdb::form_counts(&sc.db).unwrap_or_default();
     let n = counts.get(slug.as_str()).copied().unwrap_or(0);
-    let lang = form_lang(&slug);
+    let lang = match form_row.lang.as_str() { "es" => "Español", _ => "Français" }.to_string();
     let mut meta = String::new();
     let mr = |k: &str, v: String| format!("<tr><th scope=\"row\">{k}</th><td>{v}</td></tr>");
-    meta.push_str(&mr("Title", esc(&humanize(&slug))));
+    meta.push_str(&mr("Title", esc(&if_empty(&form_row.title, humanize(&slug)))));
     meta.push_str(&mr("Slug", esc(&slug)));
     meta.push_str(&mr("Endpoint", format!("<code>POST /form/{}</code>", esc(&slug))));
     meta.push_str(&mr("Lang", lang.to_string()));
@@ -615,13 +617,12 @@ pub(crate) async fn form_detail(State(app): State<App>, headers: HeaderMap, Path
          <a href=\"/admin/contact\" class=\"page-title-action\">← Back to list</a>\
          <hr class=\"wp-header-end\">\
          <h2>{}</h2>\
-         <p>This form is defined in code (<code>intake::FORM_SLUGS</code>) — its fields and markup ship with the binary. Edit is not available from the admin.</p>\
          <table class=\"form-table\"><tbody>{}</tbody></table>\
          <h2>Recent Submissions</h2>\
          <table class=\"widefat striped\"><thead><tr><th>Subject</th><th>From</th><th>Status</th><th>Date</th></tr></thead><tbody>{}</tbody></table>\
          </div>",
         chrome("contact", &s),
-        esc(&humanize(&slug)),
+        esc(&if_empty(&form_row.title, humanize(&slug))),
         meta,
         rows
     );
