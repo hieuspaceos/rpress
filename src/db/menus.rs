@@ -241,10 +241,49 @@ pub fn move_item(db: &Path, menu_id: i64, id: i64, dir: &str) -> Result<bool> {
     let mut order: Vec<i64> = flat.iter().map(|(iid, _)| *iid).collect();
     let mut new_parent = flat[idx].1;
     match dir {
-        // Swap with the adjacent row in the flat list (single node; subtree
-        // stays put — predictable fallback for the rare cross-depth edge).
-        "up" if idx > 0 => order.swap(idx, idx - 1),
-        "down" if idx + 1 < order.len() => order.swap(idx, idx + 1),
+        // Move the whole subtree before the contiguous subtree block that
+        // ends right above it (WP nav-menus "Up one" swaps siblings; a bare
+        // row swap would strand the previous parent's descendants — the
+        // audit's orphan bug). No-op when the item's parent sits above it.
+        "up" if idx > 0 => {
+            let end = subtree_end(&order, idx);
+            // Previous row's subtree swallowing the moving item → it is an
+            // ancestor; moving up would break DFS order, so no-op.
+            if subtree_end(&order, idx - 1) > idx {
+                return Ok(false);
+            }
+            // Largest contiguous subtree ending exactly at idx: climb
+            // order[idx-1]'s ancestor chain while each ancestor's subtree
+            // ends at idx (a trailing chain of last-children rolls up).
+            let mut start = idx - 1;
+            while let Some(par) = parent_of(order[start]) {
+                match order.iter().position(|x| *x == par) {
+                    Some(ppos) if subtree_end(&order, ppos) == idx => start = ppos,
+                    _ => break,
+                }
+            }
+            let block: Vec<i64> = order.drain(idx..end).collect();
+            order.splice(start..start, block);
+        }
+        // Same shape mirrored: the subtree moves past the contiguous block
+        // that starts right after it. No-op when nothing follows.
+        "down" if idx + 1 < order.len() => {
+            let end = subtree_end(&order, idx);
+            if end >= order.len() {
+                return Ok(false);
+            }
+            // Last child of a parent can't slide past the next ancestor-
+            // level subtree — that would strand it outside its parent
+            // (the `out` move handles that reparent).
+            if let Some(p) = flat[idx].1 {
+                if !is_desc(order[end], p) {
+                    return Ok(false);
+                }
+            }
+            let next_end = subtree_end(&order, end);
+            let block: Vec<i64> = order.drain(idx..end).collect();
+            order.splice(next_end - block.len()..next_end - block.len(), block);
+        }
         "top" if idx > 0 => {
             let end = subtree_end(&order, idx);
             let block: Vec<i64> = order.drain(idx..end).collect();

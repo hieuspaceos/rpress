@@ -27,7 +27,7 @@ pub fn atomic_write(path: &Path, contents: impl AsRef<[u8]>) -> Result<()> {
     Ok(())
 }
 
-pub fn run(db: &Path, templates: &Path, out: &Path, site_url: &str) -> Result<()> {
+pub fn run(db: &Path, templates: &Path, out: &Path, site_url: &str, tour_base: &str) -> Result<()> {
     let t0 = Instant::now();
     fs::create_dir_all(out)?;
     let conn = crate::db::conn(db)?;
@@ -84,13 +84,13 @@ pub fn run(db: &Path, templates: &Path, out: &Path, site_url: &str) -> Result<()
             if display != *slug {
                 let prefix = crate::lang::url_prefix(&lang_cfg, lang);
                 raw_redirects.push((
-                    format!("{prefix}/voyage/{slug}/"),
-                    format!("{site_url}{prefix}/voyage/{display}/", site_url = site_url.trim_end_matches('/')),
+                    format!("{prefix}/{tour_base}/{slug}/"),
+                    format!("{site_url}{prefix}/{tour_base}/{display}/", site_url = site_url.trim_end_matches('/')),
                 ));
                 wslug = display;
             }
         }
-        let rel = rel_path_with_cfg(&lang_cfg, *id, front, lang, kind, &wslug);
+        let rel = rel_path_with_cfg(&lang_cfg, *id, front, lang, kind, &wslug, tour_base);
         let dest = out.join(&rel);
         let rendered = if harvest.contains(id) && !legacy_origin.is_empty() {
             let path = rel.to_string_lossy().replace("index.html", "");
@@ -108,12 +108,12 @@ pub fn run(db: &Path, templates: &Path, out: &Path, site_url: &str) -> Result<()
         } else {
             None
         };
-        match rendered.unwrap_or_else(|| render::render_slug(db, templates, slug, lang, kind, site_url)) {
+        match rendered.unwrap_or_else(|| render::render_slug(db, templates, slug, lang, kind, site_url, tour_base)) {
             Ok((html, _status)) => {
                 atomic_write(&dest, html)?;
                 // sibling index.md — the markdown content-negotiation target
                 // (/slug/index.md + Accept header). Only for post/tour/page.
-                if let Some(md) = render::post_markdown(&conn, slug, lang, kind, site_url) {
+                if let Some(md) = render::post_markdown(&conn, slug, lang, kind, site_url, tour_base) {
                     let md_dest = dest.with_file_name("index.md");
                     let _ = atomic_write(&md_dest, md);
                 }
@@ -140,14 +140,14 @@ pub fn run(db: &Path, templates: &Path, out: &Path, site_url: &str) -> Result<()
     // front is emitted by the posts loop as index.html.
     for lang in lang_cfg.langs.iter().filter(|l| *l != &lang_cfg.primary) {
         let rel = PathBuf::from(crate::lang::rel_prefix(&lang_cfg, lang)).join("index.html");
-        match render::render_slug(db, templates, lang, lang, "", site_url) {
+        match render::render_slug(db, templates, lang, lang, "", site_url, tour_base) {
             Ok((html, _status)) => {
                 atomic_write(&out.join(&rel), html)?;
                 written += 1;
                 let lastmod: Option<String> = conn
                     .query_row("SELECT MAX(modified_at) FROM posts WHERE lang=?1 AND kind='page'", [lang], |r| r.get(0))
                     .ok();
-                urls.push((format!("{}{}", site_url.trim_end_matches('/'), crate::lang::page_path(&lang_cfg, lang, "page", "", "voyage")), "page".into(), lastmod));
+                urls.push((format!("{}{}", site_url.trim_end_matches('/'), crate::lang::page_path(&lang_cfg, lang, "page", "", tour_base)), "page".into(), lastmod));
             }
             Err(e) => {
                 // No localized front post — harvest origin/{lang}/ when the
@@ -206,7 +206,7 @@ pub fn run(db: &Path, templates: &Path, out: &Path, site_url: &str) -> Result<()
             let rel = PathBuf::from(format!("{path}/index.html"));
             let dest = out.join(&rel);
             let render_slug_arg = path.trim_matches('/');
-            match render::render_slug(db, templates, render_slug_arg, lang, "archive", site_url) {
+            match render::render_slug(db, templates, render_slug_arg, lang, "archive", site_url, tour_base) {
                 Ok((html, _status)) => {
                     atomic_write(&dest, html)?;
                     written += 1;
@@ -242,7 +242,7 @@ pub fn run(db: &Path, templates: &Path, out: &Path, site_url: &str) -> Result<()
                     };
                     emit(&tax_l, tslug, &lang, &path)?;
                 }
-            } else if crate::render_archive::is_taxonomy(&tax_l) {
+            } else if crate::render_archive::is_taxonomy(&conn, &tax_l) {
                 let langs = term_langs(tax, tslug);
                 let lang = langs.first().cloned().unwrap_or_else(|| {
                     if matches!(tax_l.as_str(), "region-es" | "perfil" | "duracion" | "estilo") { "es".into() } else { lang_cfg.primary.clone() }
@@ -254,16 +254,16 @@ pub fn run(db: &Path, templates: &Path, out: &Path, site_url: &str) -> Result<()
         }
     }
 
-    write_404(out, templates, &conn, site_url)?;
+    write_404(out, templates, &conn, site_url, tour_base)?;
     // Search index must exist (or not) before the search page renders —
     // its template branches on `pagefind` to emit the real UI or an
     // honest "unavailable" notice instead of a dead div (6.5).
     run_pagefind(out);
-    write_search(out, templates, &conn, site_url)?;
-    write_feeds(out, &conn, site_url)?;
+    write_search(out, templates, &conn, site_url, tour_base)?;
+    write_feeds(out, &conn, site_url, tour_base)?;
     write_sitemap(out, site_url, &urls)?;
     write_robots(out, site_url)?;
-    write_llms_txt(out, &conn, site_url, "voyage")?;
+    write_llms_txt(out, &conn, site_url, tour_base)?;
 
     let dur = t0.elapsed();
     if !harvest.is_empty() {
@@ -286,7 +286,7 @@ pub fn run(db: &Path, templates: &Path, out: &Path, site_url: &str) -> Result<()
     Ok(())
 }
 
-pub(crate) fn rel_path_with_cfg(cfg: &crate::lang::LangConfig, id: i64, front: i64, lang: &str, kind: &str, slug: &str) -> PathBuf {
+pub(crate) fn rel_path_with_cfg(cfg: &crate::lang::LangConfig, id: i64, front: i64, lang: &str, kind: &str, slug: &str, tour_base: &str) -> PathBuf {
     if id == front {
         let lp = crate::lang::rel_prefix(cfg, lang);
         return if lp.is_empty() { PathBuf::from("index.html") } else { PathBuf::from(lp).join("index.html") };
@@ -294,7 +294,7 @@ pub(crate) fn rel_path_with_cfg(cfg: &crate::lang::LangConfig, id: i64, front: i
     let mut p = PathBuf::new();
     let lp = crate::lang::rel_prefix(cfg, lang);
     if !lp.is_empty() { p.push(lp); }
-    if kind == "tour" { p.push("voyage"); }
+    if kind == "tour" { p.push(tour_base); }
     p.push(slug);
     p.push("index.html");
     p
@@ -302,7 +302,7 @@ pub(crate) fn rel_path_with_cfg(cfg: &crate::lang::LangConfig, id: i64, front: i
 
 /// Resolve a post's rendered output path (lang prefix, kind dir, front-page
 /// special case, tour display_slug) from an existing row.
-fn post_out_rel(conn: &Connection, post_id: i64) -> Result<PathBuf> {
+fn post_out_rel(conn: &Connection, post_id: i64, tour_base: &str) -> Result<PathBuf> {
     let (slug, lang, kind): (String, String, String) = conn
         .query_row(
             "SELECT slug, lang, kind FROM posts WHERE id=?1",
@@ -322,15 +322,15 @@ fn post_out_rel(conn: &Connection, post_id: i64) -> Result<PathBuf> {
         slug
     };
     let cfg = crate::lang::config(conn);
-    Ok(rel_path_with_cfg(&cfg, post_id, front, &lang, &kind, &wslug))
+    Ok(rel_path_with_cfg(&cfg, post_id, front, &lang, &kind, &wslug, tour_base))
 }
 
 /// Remove a still-existing post's rendered file — call BEFORE hard-deleting
 /// the row (regen_post can't resolve a deleted id). Trashes a page that was
 /// never rendered is a harmless no-op.
-pub fn remove_file_for(db: &Path, out: &Path, post_id: i64) -> Result<()> {
+pub fn remove_file_for(db: &Path, out: &Path, post_id: i64, tour_base: &str) -> Result<()> {
     let conn = crate::db::conn(db)?;
-    let rel = post_out_rel(&conn, post_id)?;
+    let rel = post_out_rel(&conn, post_id, tour_base)?;
     let dest = out.join(&rel);
     if dest.exists() {
         fs::remove_file(&dest)?;
@@ -338,16 +338,33 @@ pub fn remove_file_for(db: &Path, out: &Path, post_id: i64) -> Result<()> {
     Ok(())
 }
 
+/// XML text-node escape for the raw-string emitters (sitemap `<loc>`,
+/// feed `<link>`): `&<>` plus quotes so the value is attribute-safe too.
+pub(crate) fn xml_esc(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+/// CDATA-safe payload: a literal `]]>` inside content would close the
+/// section early — split it as `]]]]><![CDATA[>` (valid, lossless).
+pub(crate) fn cdata(s: &str) -> String {
+    s.replace("]]>", "]]]]><![CDATA[>")
+}
+
+
 /// Single-file regenerate for one post id — comment moderation, scheduled
 /// flips and small fixes shouldn't pay for a full site build. Non-publish
 /// ids delete their rendered file instead (trash/draft URLs must die).
 
-pub fn regen_post(db: &Path, templates: &Path, out: &Path, post_id: i64) -> Result<()> {
+pub fn regen_post(db: &Path, templates: &Path, out: &Path, post_id: i64, tour_base: &str) -> Result<()> {
     let conn = crate::db::conn(db)?;
     let status: String = conn
         .query_row("SELECT status FROM posts WHERE id=?1", [post_id], |r| r.get(0))
         .with_context(|| format!("regen_post: post {post_id} not found"))?;
-    let rel = post_out_rel(&conn, post_id)?;
+    let rel = post_out_rel(&conn, post_id, tour_base)?;
     let dest = out.join(&rel);
     if status != "publish" {
         // Draft/trash: the rendered file must go, not just stay stale.
@@ -363,7 +380,7 @@ pub fn regen_post(db: &Path, templates: &Path, out: &Path, post_id: i64) -> Resu
         .query_row("SELECT slug, lang, kind FROM posts WHERE id=?1", [post_id], |r| {
             Ok((r.get(0)?, r.get(1)?, r.get(2)?))
         })?;
-    let (html, _status) = render::render_slug(db, templates, &slug, &lang, &kind, &site_url)?;
+    let (html, _status) = render::render_slug(db, templates, &slug, &lang, &kind, &site_url, tour_base)?;
     atomic_write(&dest, html)?;
     Ok(())
 }
@@ -376,6 +393,7 @@ fn bare_ctx(
     lang: &str,
     title: &str,
     canonical: &str,
+    tour_base: &str,
 ) -> Result<serde_json::Map<String, serde_json::Value>> {
     use serde_json::json;
     let mut m = serde_json::Map::new();
@@ -424,19 +442,19 @@ fn bare_ctx(
     // Footer sidebars — same registry the page chrome uses.
     for n in 1..=4 {
         let sidebar = format!("footer-{n}-{lang}");
-        let html = crate::widgets::render_sidebar(conn, &sidebar, site_url, lang, "")?;
+        let html = crate::widgets::render_sidebar(conn, &sidebar, site_url, lang, "", tour_base)?;
         m.insert(format!("footer_{n}"), serde_json::json!(html));
     }
     m.insert("body".into(), json!(""));
     Ok(m)
 }
 
-pub(crate) fn write_404(out: &Path, templates: &Path, conn: &Connection, site_url: &str) -> Result<()> {
+pub(crate) fn write_404(out: &Path, templates: &Path, conn: &Connection, site_url: &str, tour_base: &str) -> Result<()> {
     // Real 404 markup from the template — previously this re-emitted the
     // homepage as 404.html.
     let env = render::load_env(templates)?;
     let site = site_url.trim_end_matches('/');
-    let ctx = bare_ctx(conn, site_url, "fr", "404 — Page introuvable", &format!("{site}/404.html"))?;
+    let ctx = bare_ctx(conn, site_url, "fr", "404 — Page introuvable", &format!("{site}/404.html"), tour_base)?;
     let html = env
         .get_template("404.html")?
         .render(minijinja::Value::from_serialize(serde_json::Value::Object(ctx)))?;
@@ -485,7 +503,7 @@ pub(crate) fn run_pagefind(out: &Path) {
     }
 }
 
-pub(crate) fn write_search(out: &Path, templates: &Path, conn: &Connection, site_url: &str) -> Result<()> {
+pub(crate) fn write_search(out: &Path, templates: &Path, conn: &Connection, site_url: &str, tour_base: &str) -> Result<()> {
     // `pagefind` tells the template whether the index bundle exists this
     // run: real pagefind-ui when present, degraded form + notice when not.
     let indexed = out.join("pagefind").join("pagefind-ui.js").is_file()
@@ -502,6 +520,7 @@ pub(crate) fn write_search(out: &Path, templates: &Path, conn: &Connection, site
             lang,
             if lang == "es" { "Buscar" } else { "Recherche" },
             &format!("{site}/{dir}/"),
+            tour_base,
         )?;
         ctx.insert("pagefind".into(), serde_json::json!(indexed));
         let html = env
@@ -513,7 +532,7 @@ pub(crate) fn write_search(out: &Path, templates: &Path, conn: &Connection, site
     Ok(())
 }
 
-pub(crate) fn write_feeds(out: &Path, conn: &Connection, site: &str) -> Result<()> {
+pub(crate) fn write_feeds(out: &Path, conn: &Connection, site: &str, tour_base: &str) -> Result<()> {
     let site = site.trim_end_matches('/');
     // WP "RSS feeds show the most recent / excerpt" setting (Settings →
     // Reading). 0 = full text in <content:encoded>, 1 = excerpt only.
@@ -552,22 +571,23 @@ pub(crate) fn write_feeds(out: &Path, conn: &Connection, site: &str) -> Result<(
         for row in rows {
             let (title, slug, date, excerpt, body) = row?;
             let prefix = crate::lang::url_prefix(&lang_cfg, lang);
-            let link = format!("{site}{prefix}/{slug}/");
+            let link = xml_esc(&format!("{site}{prefix}/{slug}/"));
             let pub_date = rfc822(&date);
             let mut item = format!(
-                "<item><title><![CDATA[{title}]]></title><link>{link}</link><guid isPermaLink=\"true\">{link}</guid><pubDate>{pub_date}</pubDate><description><![CDATA[{}]]></description>",
-                excerpt.unwrap_or_default()
+                "<item><title><![CDATA[{}]]></title><link>{link}</link><guid isPermaLink=\"true\">{link}</guid><pubDate>{pub_date}</pubDate><description><![CDATA[{}]]></description>",
+                cdata(&title),
+                cdata(&excerpt.unwrap_or_default()),
             );
             if use_excerpt == 0 {
                 item.push_str(&format!(
                     "<content:encoded><![CDATA[{}]]></content:encoded>",
-                    body.unwrap_or_default()
+                    cdata(&body.unwrap_or_default())
                 ));
             }
             items.push_str(&item);
             items.push_str("</item>\n");
         }
-        let channel_link = format!("{}{}", site, crate::lang::page_path(&lang_cfg, lang, "page", "", "voyage").trim_end_matches('/'));
+        let channel_link = xml_esc(&format!("{}{}", site, crate::lang::page_path(&lang_cfg, lang, "page", "", tour_base).trim_end_matches('/')));
         let channel_title = conn
             .query_row(
                 "SELECT value FROM settings WHERE key='site_name' LIMIT 1",
@@ -576,8 +596,9 @@ pub(crate) fn write_feeds(out: &Path, conn: &Connection, site: &str) -> Result<(
             )
             .unwrap_or_else(|_| "rpress".into());
         let xml = format!(
-            r#"<?xml version="1.0" encoding="UTF-8"?><rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/"><channel><title>{channel_title}</title><link>{channel_link}</link><description>Feed</description>
-{items}</channel></rss>"#
+            r#"<?xml version="1.0" encoding="UTF-8"?><rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/"><channel><title>{}</title><link>{channel_link}</link><description>Feed</description>
+{items}</channel></rss>"#,
+            xml_esc(&channel_title),
         );
         atomic_write(&dest, xml)?;
     }
@@ -640,7 +661,7 @@ pub(crate) fn write_sitemap(out: &Path, site: &str, urls: &[(String, String, Opt
         );
         let mut index_lastmod: Option<String> = None;
         for (loc, lastmod) in list {
-            body.push_str(&format!("<url><loc>{loc}</loc>"));
+            body.push_str(&format!("<url><loc>{}</loc>", xml_esc(loc)));
             if let Some(lm) = lastmod {
                 let lm = iso_lastmod(lm);
                 body.push_str(&format!("<lastmod>{lm}</lastmod>"));
@@ -714,18 +735,31 @@ pub(crate) fn write_llms_txt(out: &Path, conn: &Connection, site: &str, tour_bas
     Ok(())
 }
 
+/// redirects.map — nginx `map` lines `~^/{old}  {new};`. Not XML: what must
+/// not leak is a `;` or newline (line injection) or whitespace (the map
+/// splits on it). Rows carrying either are dropped — an unmappable redirect
+/// beats a corrupt file.
 pub(crate) fn write_redirects(out: &Path, conn: &Connection, raw: &[(String, String)]) -> Result<()> {
+    let safe = |s: &str| -> Option<String> {
+        if s.bytes().any(|b| b.is_ascii_whitespace() || b == b';') {
+            None
+        } else {
+            Some(s.to_string())
+        }
+    };
     let mut body = String::new();
     let mut stmt = conn.prepare(sql!("generate__select_old_slug_new_url"))?;
     let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
     for row in rows {
         let (old, new) = row?;
         let old = old.trim_start_matches('/');
+        let (Some(old), Some(new)) = (safe(old), safe(&new)) else { continue };
         body.push_str(&format!("~^/{old}  {new};\n"));
     }
     // raw slug → canonical display slug for tours whose stored slug is
-    // degenerate (6416 'x' → /voyage/du-nord-au-sud-vietnam-12-jours/).
+    // degenerate (6416 'x' → {tour_base}/du-nord-au-sud-vietnam-12-jours/).
     for (old, new) in raw {
+        let (Some(old), Some(new)) = (safe(old), safe(new)) else { continue };
         body.push_str(&format!("~^{old}  {new};\n"));
     }
     atomic_write(&out.join("redirects.map"), body)?;

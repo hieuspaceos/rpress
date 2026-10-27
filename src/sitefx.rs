@@ -14,7 +14,7 @@ use std::path::Path;
 /// Rebuild the `(loc, kind, lastmod)` vec `write_sitemap` consumes —
 /// the same set `generate::run` collected while writing files, computed
 /// from `posts`/`post_terms` without rendering anything.
-fn collect_urls(conn: &Connection, site: &str) -> Result<Vec<(String, String, Option<String>)>> {
+fn collect_urls(conn: &Connection, site: &str, tour_base: &str) -> Result<Vec<(String, String, Option<String>)>> {
     let site = site.trim_end_matches('/');
     let mut urls: Vec<(String, String, Option<String>)> = Vec::new();
 
@@ -38,7 +38,7 @@ fn collect_urls(conn: &Connection, site: &str) -> Result<Vec<(String, String, Op
         } else {
             slug.clone()
         };
-        let rel = crate::generate::rel_path_with_cfg(&lang_cfg, *id, front, lang, kind, &wslug);
+        let rel = crate::generate::rel_path_with_cfg(&lang_cfg, *id, front, lang, kind, &wslug, tour_base);
         let loc_path = rel.to_string_lossy().replace("index.html", "");
         let loc = format!(
             "{}{}",
@@ -54,7 +54,7 @@ fn collect_urls(conn: &Connection, site: &str) -> Result<Vec<(String, String, Op
         let lastmod: Option<String> = conn
             .query_row("SELECT MAX(modified_at) FROM posts WHERE lang=?1 AND kind='page'", [lang], |r| r.get(0))
             .ok();
-        urls.push((format!("{}{}", site, crate::lang::page_path(&lang_cfg, lang, "page", "", "voyage")), "page".into(), lastmod));
+        urls.push((format!("{}{}", site, crate::lang::page_path(&lang_cfg, lang, "page", "", tour_base)), "page".into(), lastmod));
     }
 
     // Taxonomy archives — same set generate emitted.
@@ -112,7 +112,7 @@ fn collect_urls(conn: &Connection, site: &str) -> Result<Vec<(String, String, Op
                         archive_lastmod.clone(),
                     ));
                 }
-            } else if crate::render_archive::is_taxonomy(&tax_l) {
+            } else if crate::render_archive::is_taxonomy(conn, &tax_l) {
                 let langs = term_langs(tax, tslug);
                 let lang = langs.first().cloned().unwrap_or_else(|| {
                     if matches!(tax_l.as_str(), "region-es" | "perfil" | "duracion" | "estilo") { "es".into() } else { lang_cfg.primary.clone() }
@@ -133,7 +133,7 @@ fn collect_urls(conn: &Connection, site: &str) -> Result<Vec<(String, String, Op
 
 /// Raw-slug → canonical display-slug redirect rows for degenerate tour
 /// slugs (6416 'x'). Mirrors the raw_redirects collection in `generate::run`.
-fn collect_raw_redirects(conn: &Connection, site: &str) -> Result<Vec<(String, String)>> {
+fn collect_raw_redirects(conn: &Connection, site: &str, tour_base: &str) -> Result<Vec<(String, String)>> {
     let site = site.trim_end_matches('/');
     let lang_cfg = crate::lang::config(conn);
     let mut raw = Vec::new();
@@ -149,8 +149,8 @@ fn collect_raw_redirects(conn: &Connection, site: &str) -> Result<Vec<(String, S
         if &display != slug {
             let prefix = crate::lang::url_prefix(&lang_cfg, lang);
             raw.push((
-                format!("{prefix}/voyage/{slug}/"),
-                format!("{site}{prefix}/voyage/{display}/"),
+                format!("{prefix}/{tour_base}/{slug}/"),
+                format!("{site}{prefix}/{tour_base}/{display}/"),
             ));
         }
     }
@@ -161,15 +161,16 @@ fn collect_raw_redirects(conn: &Connection, site: &str) -> Result<Vec<(String, S
 /// Cheap enough to run at `serve()` boot: pure SQL + string writes, no
 /// renders. Called once on startup so a cold cache still has sitemap,
 /// feeds, robots, redirects and the search page from minute zero.
-pub fn emit_site_files(db: &Path, templates: &Path, out: &Path, site: &str) -> Result<()> {
+pub fn emit_site_files(db: &Path, templates: &Path, out: &Path, site: &str, tour_base: &str) -> Result<()> {
     let conn = crate::db::conn(db)?;
-    crate::generate::write_404(out, templates, &conn, site)?;
-    crate::generate::write_search(out, templates, &conn, site)?;
-    crate::generate::write_feeds(out, &conn, site)?;
-    let urls = collect_urls(&conn, site)?;
+    crate::generate::write_404(out, templates, &conn, site, tour_base)?;
+    crate::generate::write_search(out, templates, &conn, site, tour_base)?;
+    crate::generate::write_feeds(out, &conn, site, tour_base)?;
+    let urls = collect_urls(&conn, site, tour_base)?;
     crate::generate::write_sitemap(out, site, &urls)?;
     crate::generate::write_robots(out, site)?;
-    let raw = collect_raw_redirects(&conn, site)?;
+    crate::generate::write_llms_txt(out, &conn, site, tour_base)?;
+    let raw = collect_raw_redirects(&conn, site, tour_base)?;
     crate::generate::write_redirects(out, &conn, &raw)?;
     Ok(())
 }
@@ -178,14 +179,14 @@ pub fn emit_site_files(db: &Path, templates: &Path, out: &Path, site: &str) -> R
 /// WP `_wp_scheduled_delete` equivalent — posts/comments trashed > 30 days
 /// die here. Called at `serve()` boot so a long-running site never needs
 /// a manual generate to collect its trash.
-pub fn purge_duties(db: &Path, out: &Path) {
+pub fn purge_duties(db: &Path, out: &Path, tour_base: &str) {
     if let Ok(ids) = crate::db::ids_matching(
         db,
         "SELECT id FROM posts WHERE status='trash' AND modified_at < datetime('now','-30 days')",
         [],
     ) {
         for id in ids {
-            let _ = crate::generate::remove_file_for(db, out, id);
+            let _ = crate::generate::remove_file_for(db, out, id, tour_base);
         }
     }
     if let Err(e) = crate::db::purge_old_trash(db) {

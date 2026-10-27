@@ -53,6 +53,8 @@ pub struct PostCtx {
     /// body_json rendered to element HTML by render_nodes (top_level).
     pub body_html_rendered: String,
     pub kind: String,
+    /// URL segment for the tour CPT (threaded from SiteEnv/CLI).
+    pub tour_base: String,
 }
 
 /// Render one post single page.
@@ -252,7 +254,7 @@ pub(crate) fn page(conn: &Connection, templates: &Path, ctx: &PostCtx) -> Result
 
     // --- seo / translations ---------------------------------------------------
     let canonical = post_url.clone();
-    let alternates = translation_urls(conn, ctx.id, site);
+    let alternates = translation_urls(conn, ctx.id, site, &ctx.tour_base);
     let hreflang_fr = alternates.iter().find(|(l, _)| l == "fr").map(|(_, u)| u.clone()).unwrap_or_default();
     let hreflang_es = alternates.iter().find(|(l, _)| l == "es").map(|(_, u)| u.clone()).unwrap_or_default();
     let hreflang_links = hreflang_links(&alternates);
@@ -288,11 +290,12 @@ pub(crate) fn page(conn: &Connection, templates: &Path, ctx: &PostCtx) -> Result
         &ctx.body_html,
         &hreflang_fr,
         &hreflang_es,
+        &ctx.tour_base,
     )?;
     // `seo_title`/`title`/term names go into <title>, meta content="…"
     // attributes and text nodes — pre-escape at the boundary (templates run
     // AutoEscape::None; `|safe` on names marks them intentionally raw).
-    let sidebar_post = crate::widgets::render_sidebar(conn, "sidebar-post", site, &ctx.lang, &ctx.slug)?;
+    let sidebar_post = crate::widgets::render_sidebar(conn, "sidebar-post", site, &ctx.lang, &ctx.slug, &ctx.tour_base)?;
     for (k, v) in serde_json::json!({
         "seo_title": esc_attr(&seo_title),
         "seo_desc": seo_desc,
@@ -906,7 +909,7 @@ fn esc_attr(s: &str) -> String {
     esc(s).replace('"', "&quot;").replace('\'', "&#039;")
 }
 
-fn translation_urls(conn: &Connection, id: i64, site: &str) -> Vec<(String, String)> {
+fn translation_urls(conn: &Connection, id: i64, site: &str, tour_base: &str) -> Vec<(String, String)> {
     let cfg = crate::lang::config(conn);
     let group: Option<String> = conn
         .query_row("SELECT group_id FROM post_translation_members WHERE post_id=?1 LIMIT 1", [id], |r| r.get(0))
@@ -924,7 +927,7 @@ fn translation_urls(conn: &Connection, id: i64, site: &str) -> Vec<(String, Stri
         .filter_map(|(lang, pid)| {
             conn.query_row(sql!("render__select_slug_kind"), [pid], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
                 .ok()
-                .map(|(slug, kind)| (lang.clone(), crate::lang::page_url(&cfg, site, &lang, &kind, &slug, "voyage")))
+                .map(|(slug, kind)| (lang.clone(), crate::lang::page_url(&cfg, site, &lang, &kind, &slug, tour_base)))
         })
         .collect()
 }

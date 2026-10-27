@@ -37,14 +37,15 @@ pub(crate) async fn api_generate(
     let templates = sc.templates.clone();
     let out = sc.out.clone();
     let flag = sc.generating.clone();
+    let tour_base = sc.tour_base.clone();
     tokio::task::spawn_blocking(move || {
         // "Rebuild site files" under the render-first model: NOT a page
         // bake — just the scheduled duties + utility files + cache bust.
         // 1. WP `_wp_scheduled_delete` equivalent: trash > 30 days dies.
-        crate::sitefx::purge_duties(&db, &out);
+        crate::sitefx::purge_duties(&db, &out, &tour_base);
         // 2. Emit sitemap/feeds/robots/404/search/redirects.map.
         let base = crate::db::setting_value(&db, "site_url", "/");
-        if let Err(e) = crate::sitefx::emit_site_files(&db, &templates, &out, &base) {
+        if let Err(e) = crate::sitefx::emit_site_files(&db, &templates, &out, &base, &tour_base) {
             eprintln!("emit_site_files: {e:#}");
         }
         // 3. Clear the page cache — it re-warms itself from traffic.
@@ -1077,9 +1078,10 @@ pub(crate) fn regen_posts(sc: &SiteCtx, ids: &[i64]) {
     let db = sc.db.clone();
     let templates = sc.templates.clone();
     let out = sc.out.clone();
+    let tour_base = sc.tour_base.clone();
     tokio::task::spawn_blocking(move || {
         for id in ids {
-            if let Err(e) = generate::regen_post(&db, &templates, &out, id) {
+            if let Err(e) = generate::regen_post(&db, &templates, &out, id, &tour_base) {
                 eprintln!("regen post {id}: {e:#}");
             }
         }

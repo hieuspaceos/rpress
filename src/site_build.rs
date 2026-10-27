@@ -511,7 +511,7 @@ fn configure(c: &Ctx) -> Result<PhaseOut> {
 // ---------- generate ----------
 
 fn generate_phase(c: &Ctx) -> Result<PhaseOut> {
-    generate::run(&c.db, &c.templates, &c.cache, &c.env.local_url)?;
+    generate::run(&c.db, &c.templates, &c.cache, &c.env.local_url, &c.env.tour_base)?;
     let llms = c.cache.join("llms.txt");
     if llms.is_file() {
         std::fs::copy(&llms, c.www.join("llms.txt"))?;

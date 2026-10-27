@@ -30,8 +30,9 @@ pub struct PostCtx {
     pub body_html: String,
     pub body_html_rendered: String,
     pub kind: String,
+    /// URL segment for the tour CPT (threaded from SiteEnv/CLI).
+    pub tour_base: String,
 }
-
 /// Render one tour single page. `templates` is the template dir (for
 /// `single_tour.html` / base); the booking sidebar comes from the
 /// `sidebar-tour` widget rows.
@@ -87,10 +88,10 @@ pub(crate) fn page(conn: &Connection, templates: &Path, ctx: &PostCtx) -> Result
     // Permalink slug: some rows carry degenerate slugs (''/'x'), WP re-derives
     // post_name from the title — replicate with accent-stripping slugify.
     let display = display_slug(conn, ctx.id, &ctx.slug, &ctx.title);
-    let tour_path = format!("{}/voyage/{}/", url_prefix(&ctx.lang), display);
+    let tour_path = format!("{}/{}/{}/", url_prefix(&ctx.lang), ctx.tour_base, display);
     let canonical = format!("{}{}", ctx.site_url, tour_path);
 
-    let alternates = translation_urls(conn, ctx.id, &ctx.site_url);
+    let alternates = translation_urls(conn, ctx.id, &ctx.site_url, &ctx.tour_base);
     let hreflang_fr = alternates.iter().find(|(l, _)| l == "fr").map(|(_, u)| u.clone()).unwrap_or_default();
     let hreflang_es = alternates.iter().find(|(l, _)| l == "es").map(|(_, u)| u.clone()).unwrap_or_default();
     let hreflang_links = hreflang_links(&alternates);
@@ -130,10 +131,11 @@ pub(crate) fn page(conn: &Connection, templates: &Path, ctx: &PostCtx) -> Result
         &ctx.body_html,
         &hreflang_fr,
         &hreflang_es,
+        &ctx.tour_base,
     )?;
     // seo_title/title hit <title> + meta content attributes — pre-escaped
     // at the boundary (base templates run AutoEscape::None).
-    let sidebar_tour = crate::widgets::render_sidebar(conn, "sidebar-tour", &ctx.site_url, &ctx.lang, &ctx.slug)?;
+    let sidebar_tour = crate::widgets::render_sidebar(conn, "sidebar-tour", &ctx.site_url, &ctx.lang, &ctx.slug, &ctx.tour_base)?;
     for (k, v) in serde_json::json!({
         "seo_title": esc_attr(&seo_title),
         "seo_desc": seo_desc_out,
@@ -245,7 +247,7 @@ fn wp_slugify(s: &str) -> String {
         .join("-")
 }
 
-fn translation_urls(conn: &Connection, id: i64, site: &str) -> Vec<(String, String)> {
+fn translation_urls(conn: &Connection, id: i64, site: &str, tour_base: &str) -> Vec<(String, String)> {
     let cfg = crate::lang::config(conn);
     let group: Option<String> = conn
         .query_row("SELECT group_id FROM post_translation_members WHERE post_id=?1 LIMIT 1", [id], |r| r.get(0))
@@ -264,7 +266,7 @@ fn translation_urls(conn: &Connection, id: i64, site: &str) -> Vec<(String, Stri
             slug_of(conn, pid).map(|(slug, kind)| {
                 let title: String = conn.query_row("SELECT title FROM posts WHERE id=?1", [pid], |r| r.get(0)).unwrap_or_default();
                 let display = if kind == "tour" { display_slug(conn, pid, &slug, &title) } else { slug };
-                (lang.clone(), crate::lang::page_url(&cfg, site, &lang, &kind, &display, "voyage"))
+                (lang.clone(), crate::lang::page_url(&cfg, site, &lang, &kind, &display, tour_base))
             })
         })
         .collect()

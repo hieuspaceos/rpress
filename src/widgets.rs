@@ -567,6 +567,7 @@ pub(crate) fn render_sidebar(
     site_url: &str,
     lang: &str,
     current_slug: &str,
+    tour_base: &str,
 ) -> Result<String> {
     ensure(conn)?;
     let mut sid = resolve_id(sidebar_id, lang);
@@ -587,7 +588,7 @@ pub(crate) fn render_sidebar(
         // sidebar (a corrupted row is a bug to fix, not content to drop).
         let s: Value = serde_json::from_str(&settings)
             .with_context(|| format!("widget {wid} in {sid}: bad settings_json"))?;
-        let frag = render_widget(conn, &wid, &typ, &title, &s, site_url, lang, current_slug)
+        let frag = render_widget(conn, &wid, &typ, &title, &s, site_url, lang, current_slug, tour_base)
             .with_context(|| format!("widget {wid} in {sid}: render"))?;
         out.push_str(&frag);
     }
@@ -607,13 +608,14 @@ fn render_widget(
     site_url: &str,
     lang: &str,
     current_slug: &str,
+    tour_base: &str,
 ) -> Result<String> {
     if let Some(html) = s.get("html").and_then(|h| h.as_str()) {
         return render_fragment(html, site_url, lang);
     }
     match typ {
         "categories" => render_categories_widget(conn, wid, s, title, site_url, lang, current_slug),
-        "tour_list" => render_tour_list(conn, wid, s, title, site_url, lang),
+        "tour_list" => render_tour_list(conn, wid, s, title, site_url, lang, tour_base),
         _ => Ok(String::new()),
     }
 }
@@ -973,7 +975,7 @@ fn meta1(conn: &Connection, post_id: i64, key: &str) -> String {
 /// custom_html-13: thumbnail (sizes_json 'thumbnail' → 96×96, else the
 /// full image at 128×85), title, ribbon (promo-text or style term names
 /// with the tourmaster colours) and the De/Desde price block.
-fn tour_card(conn: &Connection, post_id: i64, site_url: &str, lang: &str) -> Result<Option<String>> {
+fn tour_card(conn: &Connection, post_id: i64, site_url: &str, lang: &str, tour_base: &str) -> Result<Option<String>> {
     let row: Option<(String, String, Option<i64>)> = conn
         .query_row(
             "SELECT slug, title, featured_media_id FROM posts WHERE id=?1 AND status='publish'",
@@ -1022,7 +1024,7 @@ fn tour_card(conn: &Connection, post_id: i64, site_url: &str, lang: &str) -> Res
     };
     let display = crate::render_tour::display_slug(conn, post_id, &slug, &title);
     let prefix = if lang == "es" { "/es" } else { "" };
-    let url = format!("{site_url}{prefix}/voyage/{display}/");
+    let url = format!("{site_url}{prefix}/{tour_base}/{display}/");
 
     // Thumbnail: media sizes_json 'thumbnail' → the 150x150 file rendered
     // at 96×96; otherwise the full image at 128×85 (the two shapes the
@@ -1108,6 +1110,7 @@ fn render_tour_list(
     row_title: &str,
     site_url: &str,
     lang: &str,
+    tour_base: &str,
 ) -> Result<String> {
     let title = s
         .get("title")
@@ -1138,7 +1141,7 @@ fn render_tour_list(
     };
     let mut cards = String::new();
     for id in ids {
-        if let Some(card) = tour_card(conn, id, site_url, lang)? {
+        if let Some(card) = tour_card(conn, id, site_url, lang, tour_base)? {
             cards.push_str(&card);
         }
     }
@@ -1191,6 +1194,7 @@ pub(crate) fn sidebar_widgets(
     sidebar_id: &str,
     site_url: &str,
     lang: &str,
+    tour_base: &str,
 ) -> Result<Vec<Value>> {
     ensure(conn)?;
     let sid = resolve_id(sidebar_id, lang);
@@ -1207,7 +1211,7 @@ pub(crate) fn sidebar_widgets(
             && s.get("taxonomy").and_then(|t| t.as_str()).is_some()
             && s.get("html").and_then(|h| h.as_str()).is_none();
         if !is_live_categories {
-            let html = render_widget(conn, &wid, &typ, &title, &s, site_url, lang, "")
+            let html = render_widget(conn, &wid, &typ, &title, &s, site_url, lang, "", tour_base)
                 .with_context(|| format!("widget {wid} in {sid}: render"))?;
             if !html.is_empty() {
                 out.push(json!({"id": wid, "html": html}));

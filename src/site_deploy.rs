@@ -228,19 +228,69 @@ fn vps_addr(name: &str, root: &Path) -> Result<(String, String)> {
 
 // ---------- shared steps ----------
 
+
 /// Regenerate against the public domain on a COPY of the db — the sandbox
-/// keeps pointing at localhost.
-fn stage_domain(root: &Path, work: &Path, domain: &str) -> Result<PathBuf> {
+/// keeps pointing at localhost. Absolute-URL columns the renderer never
+/// rewrites (menu_items.url, redirects.new_url) are rewritten here, on the
+/// staged copy only: a rewrite on work/rpress.db would destroy the
+/// local_url key future deploys match against.
+fn stage_domain(root: &Path, work: &Path, domain: &str, env: &SiteEnv) -> Result<PathBuf> {
     let staging = work.join("deploy-cache");
     let stagedb = work.join("deploy.db");
     std::fs::copy(work.join("rpress.db"), &stagedb)?;
     {
         let db = conn(&stagedb)?;
         db.execute(sql!("site__deploy_site_url"), params![domain])?;
+        rewrite_deploy_urls(&db, &env.local_url, domain)?;
     }
-    generate::run(&stagedb, &root.join("templates"), &staging, domain)?;
+    generate::run(&stagedb, &root.join("templates"), &staging, domain, &env.tour_base)?;
     eprintln!("staged {} → {domain}", staging.display());
     Ok(staging)
+}
+
+/// Point absolute-URL columns at the deployed domain. Keyed on every
+/// origin the data can carry: env.local_url, the previously-deployed
+/// domain (settings.deployed_domain, written at first deploy), and any
+/// `http://localhost:*` prefix. REPLACE on the staged copy only — idempotent
+/// across redeploys because each run re-keys from the settings row.
+pub fn rewrite_deploy_urls(db: &rusqlite::Connection, local_url: &str, domain: &str) -> Result<()> {
+    let prev: String = db
+        .query_row(
+            "SELECT value FROM settings WHERE key='deployed_domain'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or_default();
+    let mut origins: Vec<String> = Vec::new();
+    for o in [local_url.trim_end_matches('/'), prev.trim_end_matches('/'), domain.trim_end_matches('/')] {
+        if !o.is_empty() && o != domain && !origins.iter().any(|x| x == o) {
+            origins.push(o.to_string());
+        }
+    }
+    for origin in &origins {
+        for (table, field) in [("menu_items", "url"), ("redirects", "new_url")] {
+            db.execute(
+                &format!("UPDATE {table} SET {field}=REPLACE({field}, ?1, ?2) WHERE {field} LIKE ?1 || '%'"),
+                params![origin, domain],
+            )?;
+        }
+    }
+    // `http://localhost:PORT/path` — port varies, so rewrite the scheme+
+    // host+port prefix and keep the path suffix.
+    for (table, field) in [("menu_items", "url"), ("redirects", "new_url")] {
+        db.execute(
+            &format!(
+                "UPDATE {table} SET {field} = ?1 || SUBSTR({field}, 17 + INSTR(SUBSTR({field}, 18), '/')) \
+                 WHERE {field} LIKE 'http://localhost:%' AND INSTR(SUBSTR({field}, 18), '/') > 0"
+            ),
+            params![domain],
+        )?;
+    }
+    db.execute(
+        "INSERT OR REPLACE INTO settings(key, value) VALUES('deployed_domain', ?1)",
+        params![domain],
+    )?;
+    Ok(())
 }
 
 fn need_bin(name: &str, hint: &str) -> Result<()> {
@@ -248,6 +298,21 @@ fn need_bin(name: &str, hint: &str) -> Result<()> {
     if !o.ok || o.stdout.trim().is_empty() {
         bail!("missing `{name}` — {hint}");
     }
+    Ok(())
+}
+
+/// Record the last deployed domain on the WORK db after a successful
+/// deploy. The staged copy that carried the row is discarded; without this
+/// the next deploy reads deployed_domain='' and can't re-key rows that
+/// were already pointing at the previous domain. Bookkeeping only —
+/// URL columns in the work db are never touched (they keep local_url so
+/// future staged rewrites always have their match key).
+pub fn mark_deployed(work_db: &Path, domain: &str) -> Result<()> {
+    let db = conn(work_db)?;
+    db.execute(
+        "INSERT OR REPLACE INTO settings(key, value) VALUES('deployed_domain', ?1)",
+        params![domain],
+    )?;
     Ok(())
 }
 
@@ -275,9 +340,10 @@ fn deploy_static(a: &DeployArgs, root: &Path, env: &SiteEnv, work: &Path, domain
         return Ok(());
     }
     let dest = parse_dest(&dest, root)?;
-    let staging = stage_domain(root, work, domain)?;
+    let staging = stage_domain(root, work, domain, env)?;
     dest.push(&staging, "")?;
     dest.push(&work.join("www"), "")?;
+    mark_deployed(&work.join("rpress.db"), domain)?;
     eprintln!("deployed static {} → {domain}", env.site);
     eprintln!("note: vhost docroot = the synced dir; dynamic routes are off");
     Ok(())
@@ -290,7 +356,7 @@ fn deploy_pages(a: &DeployArgs, root: &Path, env: &SiteEnv, work: &Path, domain:
         eprintln!("dry-run: regenerate with {domain}, merge cache+www → work/{}/deploy-site, `wrangler pages deploy --project-name {project}`", env.site);
         return Ok(());
     }
-    let staging = stage_domain(root, work, domain)?;
+    let staging = stage_domain(root, work, domain, env)?;
     let site_dir = work.join("deploy-site");
     if site_dir.exists() {
         std::fs::remove_dir_all(&site_dir)?;
@@ -305,6 +371,7 @@ fn deploy_pages(a: &DeployArgs, root: &Path, env: &SiteEnv, work: &Path, domain:
     if !o.ok {
         bail!("wrangler deploy failed: {}", o.stderr.trim());
     }
+    mark_deployed(&work.join("rpress.db"), domain)?;
     eprintln!("deployed {} → Cloudflare Pages project {project}", env.site);
     eprintln!("note: bind {domain} as a custom domain on the project if not already");
     Ok(())
@@ -321,12 +388,23 @@ fn deploy_vps(a: &DeployArgs, root: &Path, env: &SiteEnv, work: &Path, domain: &
         return Ok(());
     }
     let dest = parse_dest(&dest, root)?;
-    // payload: binary + db + templates + www; cache/ regenerates on the host
+    // payload: binary + rewritten db + templates + www; cache/ regenerates
+    // on the host. The pushed db is a copy rewritten to the domain — the
+    // sandbox keeps local_url (menu_items.url/redirects.new_url would
+    // otherwise ship localhost links).
+    let stagedb = work.join("deploy.db");
+    std::fs::copy(work.join("rpress.db"), &stagedb)?;
+    {
+        let db = conn(&stagedb)?;
+        db.execute(sql!("site__deploy_site_url"), params![domain])?;
+        rewrite_deploy_urls(&db, &env.local_url, domain)?;
+    }
     dest.push(&bin, "bin/rpress")?;
-    dest.push(&work.join("rpress.db"), "rpress.db")?;
+    dest.push(&stagedb, "rpress.db")?;
     dest.push(&root.join("templates"), "templates")?;
     dest.push(&work.join("www"), "www")?;
     eprintln!("app payload pushed — remote needs a first `generate` + the runbook below");
+    mark_deployed(&work.join("rpress.db"), domain)?;
     print_runbook(env, domain, a.app_dir.as_deref());
     Ok(())
 }

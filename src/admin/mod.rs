@@ -93,11 +93,11 @@ pub async fn serve(db: PathBuf, templates: PathBuf, out: PathBuf, www: PathBuf, 
     if let Ok(boot_conn) = crate::db::conn(&db) {
         let _ = crate::widgets::ensure(&boot_conn);
     }
-    crate::sitefx::purge_duties(&db, &out);
+    crate::sitefx::purge_duties(&db, &out, &tour_base);
     purge_alias_caches(&db, &out);
     {
         let site_url_boot = crate::db::setting_value(&db, "site_url", "/");
-        if let Err(e) = crate::sitefx::emit_site_files(&db, &templates, &out, &site_url_boot) {
+        if let Err(e) = crate::sitefx::emit_site_files(&db, &templates, &out, &site_url_boot, &tour_base) {
             eprintln!("emit_site_files: {e:#}");
         }
     }
@@ -307,7 +307,7 @@ async fn public_root(State(app): State<App>, headers: HeaderMap) -> Response {
         return StatusCode::NOT_FOUND.into_response();
     };
     match crate::render::front_ids(&conn).0 {
-        Some(id) => match crate::render::render_slug_by_id_public(&conn, &sc.templates, id, &site_url(sc)) {
+        Some(id) => match crate::render::render_slug_by_id_public(&conn, &sc.templates, id, &site_url(sc), &sc.tour_base) {
             // Publish-gated render: a draft page_on_front never reaches 200.
             Ok((h, status)) if status == "publish" => {
                 write_cache(sc, "index.html", &h);
@@ -415,6 +415,21 @@ async fn public_page(State(app): State<App>, headers: HeaderMap, ConnectInfo(pee
     if is_junk_prefix(clean) {
         return not_found(sc);
     }
+    // WP pagination aliases `/…/page/{N}` (N all digits) 404ed while WP
+    // rendered page 2+ of the archive — divergence documented in
+    // phase-04: 301 to the archive root instead of rendering a page we
+    // don't paginate. Bare `/page/N` → `/`.
+    {
+        let (rest, leaf) = clean.rsplit_once('/').unwrap_or(("", clean));
+        if !leaf.is_empty() && leaf.bytes().all(|b| b.is_ascii_digit()) {
+            if rest == "page" {
+                return moved_permanently("/");
+            }
+            if let Some(root) = rest.strip_suffix("/page") {
+                return moved_permanently(&format!("/{root}/"));
+            }
+        }
+    }
     // ".md" miss → generate the markdown for this slug on demand (post only;
     // archives/front return 404). Write-back so the next hit is static.
     if md_path.is_some() {
@@ -458,7 +473,7 @@ async fn public_page(State(app): State<App>, headers: HeaderMap, ConnectInfo(pee
         None => ("", rest),
     };
     let base = site_url(sc);
-    match crate::render::render_slug(&sc.db, &sc.templates, lookup, &lang_s, kind, &base) {
+    match crate::render::render_slug(&sc.db, &sc.templates, lookup, &lang_s, kind, &base, &sc.tour_base) {
         Ok((h, status)) => {
             // Defense in depth: only publish ever caches — and only publish
             // ever serves, even if a render path slips a status through.
@@ -496,7 +511,7 @@ fn md_for_slug(sc: &SiteCtx, clean: &str) -> Option<String> {
         Some(s) => ("tour", s),
         None => ("", rest),
     };
-    crate::render::post_markdown(&conn, slug.trim_matches('/'), &lang, kind, &site_url(sc))
+    crate::render::post_markdown(&conn, slug.trim_matches('/'), &lang, kind, &site_url(sc), &sc.tour_base)
 }
 
 /// WP-scanner paths that can never be a permalink on this CMS — checked

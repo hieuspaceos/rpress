@@ -46,13 +46,16 @@ pull() {
   if [ -n "${DUMP_LOCAL:-}" ]; then
     cp "$DUMP_LOCAL" "$DUMP"
   elif [ -n "${DUMP_REMOTE:-}" ]; then
-    [ -n "${VPS_HOST:?env missing VPS_HOST}" ]
-    "$VPS" list >/dev/null
+    [ -n "${VPS_HOST:-}${SSH_TARGET:-}" ] || { echo "env missing VPS_HOST or SSH_TARGET" >&2; exit 1; }
     mkdir -p "$WORK/dump-src"
-    "$ROOT/../vps-ssh/.askpass/rsync-pull.sh" "$VPS_HOST" "$DUMP_REMOTE" "$WORK/dump-src/"
+    if [ -n "${SSH_TARGET:-}" ]; then
+      rsync -az --timeout=60 -e "ssh -o BatchMode=yes -o ConnectTimeout=15" \
+        "$SSH_TARGET:$DUMP_REMOTE" "$WORK/dump-src/"
+    else
+      "$VPS" list >/dev/null
+      "$ROOT/../vps-ssh/.askpass/rsync-pull.sh" "$VPS_HOST" "$DUMP_REMOTE" "$WORK/dump-src/"
+    fi
     mv "$WORK/dump-src/$(basename "$DUMP_REMOTE")" "$DUMP"; rmdir "$WORK/dump-src"
-  else
-    echo "env needs DUMP_REMOTE or DUMP_LOCAL" >&2; exit 1
   fi
   test -s "$DUMP"
   head -c 300 "$DUMP" | grep -q -e TABLE -e INSERT -e dump \
@@ -69,17 +72,28 @@ pull() {
       rsync -a "$WP_CONTENT_LOCAL/../wp-includes/$part/" "$WWW/wp-includes/$part/"
     done
   elif [ -n "${WP_ROOT:-}" ]; then
-    for part in uploads themes plugins; do
-      "$ROOT/../vps-ssh/.askpass/rsync-pull.sh" "$VPS_HOST" \
-        "$WP_ROOT/wp-content/$part/" "$WWW/wp-content/$part/"
-    done
-    # WP core static assets (jquery, block-editor css, fonts) — referenced
-    # by theme markup; serving them from www avoids a remote 307 per page.
-    for part in js css fonts images; do
-      "$ROOT/../vps-ssh/.askpass/rsync-pull.sh" "$VPS_HOST" \
-        "$WP_ROOT/wp-includes/$part/" "$WWW/wp-includes/$part/"
-    done
-  fi
+    if [ -n "${SSH_TARGET:-}" ]; then
+      for part in uploads themes plugins; do
+        rsync -az --timeout=60 -e "ssh -o BatchMode=yes -o ConnectTimeout=15" \
+          "$SSH_TARGET:$WP_ROOT/wp-content/$part/" "$WWW/wp-content/$part/"
+      done
+      for part in js css fonts images; do
+        rsync -az --timeout=60 -e "ssh -o BatchMode=yes -o ConnectTimeout=15" \
+          "$SSH_TARGET:$WP_ROOT/wp-includes/$part/" "$WWW/wp-includes/$part/"
+      done
+    else
+      for part in uploads themes plugins; do
+        "$ROOT/../vps-ssh/.askpass/rsync-pull.sh" "$VPS_HOST" \
+          "$WP_ROOT/wp-content/$part/" "$WWW/wp-content/$part/"
+      done
+      # WP core static assets (jquery, block-editor css, fonts) — referenced
+      # by theme markup; serving them from www avoids a remote 307 per page.
+      for part in js css fonts images; do
+        "$ROOT/../vps-ssh/.askpass/rsync-pull.sh" "$VPS_HOST" \
+          "$WP_ROOT/wp-includes/$part/" "$WWW/wp-includes/$part/"
+      done
+    fi
+    fi
   # Repo-owned front assets — always present locally, never 307.
   for f in front.css nav.js; do
     [ -f "$ROOT/www/$f" ] && cp "$ROOT/www/$f" "$WWW/$f"
@@ -130,7 +144,7 @@ configure() {
 }
 
 generate() {
-  "$BIN" generate --db "$DB" --templates "$TEMPLATES" --out "$CACHE" --site-url "$LOCAL_URL"
+  "$BIN" generate --db "$DB" --templates "$TEMPLATES" --out "$CACHE" --site-url "$LOCAL_URL" --tour-base "$TOUR_BASE"
   [ -f "$CACHE/llms.txt" ] && cp "$CACHE/llms.txt" "$WWW/llms.txt"
 }
 
@@ -138,13 +152,13 @@ check() {
   fail=0
   # Sample rendered paths straight from the DB — no per-site hardcoding.
   # Path rule mirrors generate::rel_path: primary lang has no prefix; every
-  # other lang writes under /<lang>/; tours add /voyage/.
+  # other lang writes under /<lang>/; tours add /$TOUR_BASE/.
   front=$(sqlite3 "$DB" "SELECT CAST(value AS INTEGER) FROM settings WHERE key='page_on_front';")
   primary=$(sqlite3 "$DB" "SELECT COALESCE((SELECT value FROM settings WHERE key='primary_lang'),'fr');")
   langs=$(sqlite3 "$DB" "SELECT COALESCE((SELECT value FROM settings WHERE key='languages'), '$primary');")
   while IFS='|' read -r id slug lang kind; do
     rel="$slug"
-    [ "$kind" = tour ] && rel="voyage/$slug"
+    [ "$kind" = tour ] && rel="$TOUR_BASE/$slug"
     [ "$lang" != "$primary" ] && rel="$lang/$rel"
     [ "$id" = "$front" ] && rel=""
     f="$CACHE/${rel:+$rel/}index.html"
@@ -186,14 +200,14 @@ parity() {
     WHERE p.status='publish' AND p.kind IN ('page','post','tour')
     ORDER BY p.id LIMIT 8;" > "$WORK/.parity-sample"
   primary=$(sqlite3 "$DB" "SELECT COALESCE((SELECT value FROM settings WHERE key='primary_lang'),'fr');")
-  python3 - "$SITE_URL" "$CACHE" "$WORK/.parity-sample" "$primary" <<'PY'
+  python3 - "$SITE_URL" "$CACHE" "$WORK/.parity-sample" "$primary" "$TOUR_BASE" <<'PY'
 import re, sys, urllib.request, pathlib
-origin, cache, primary = sys.argv[1].rstrip('/'), pathlib.Path(sys.argv[2]), sys.argv[4]
+origin, cache, primary, tour_base = sys.argv[1].rstrip('/'), pathlib.Path(sys.argv[2]), sys.argv[4], sys.argv[5]
 paths = ['/']
 for line in pathlib.Path(sys.argv[3]).read_text().splitlines():
     slug, lang, kind, is_front = (line.split('|') + [''] * 4)[:4]
     if is_front == '1': continue  # front page is '/' already
-    rel = f"{kind == 'tour' and 'voyage/' or ''}{slug}"
+    rel = f"{kind == 'tour' and tour_base + '/' or ''}{slug}"
     if lang != primary: rel = f"{lang}/{rel}"
     paths.append('/' + rel + '/')
 def sig(t):

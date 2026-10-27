@@ -18,7 +18,7 @@
 //!     generic mechanism — this is the term-archive backstop).
 
 use anyhow::{Context, Result};
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::Path;
@@ -39,14 +39,35 @@ pub(crate) struct Term {
     pub description: String,
 }
 
-/// Taxonomies routable as `/{tax}/{slug}/` (post categories and tags use
-/// their own bases — bare category paths and `etiquette/`).
-pub(crate) fn is_taxonomy(t: &str) -> bool {
-    matches!(
-        t,
-        "region" | "duree" | "style" | "profil" | "pays" | "activites"
-            | "duracion" | "estilo" | "perfil" | "region-es"
+
+/// Taxonomies routable as `/{tax}/{slug}/`: any taxonomy that actually
+/// exists in the data (DB lookup replaces the frozen allowlist so renamed
+/// or newly-imported taxonomies route too), minus WP/rpress internals that
+/// can never own a public archive. Category and post_tag still dispatch
+/// through their own bases (bare paths, `etiquette/`).
+pub(crate) fn is_taxonomy(conn: &Connection, t: &str) -> bool {
+    const INTERNAL: &[&str] = &[
+        "nav_menu", "term_language", "post_format", "link_category",
+        "ml-slider", "elementor_library_type", "wp_theme", "wp_template",
+        "wp_template_part", "wp_navigation", "wp_font_family", "wp_font_face",
+        "wpcode_location", "wpcode_tags", "wpcode_type",
+        "rank_math_redirection_category", "flamingo_inbound_channel",
+        "taxonomies_list", "viet",
+    ];
+    let tl = t.to_lowercase();
+    if tl == "category" || tl == "post_tag" || INTERNAL.iter().any(|x| *x == tl) {
+        return false;
+    }
+    conn.query_row(
+        "SELECT 1 FROM terms WHERE taxonomy=?1 COLLATE NOCASE \
+         UNION SELECT 1 FROM post_terms WHERE taxonomy=?1 COLLATE NOCASE LIMIT 1",
+        [t],
+        |r| r.get::<_, i64>(0),
     )
+    .optional()
+    .ok()
+    .flatten()
+    .is_some()
 }
 
 /// Look up `terms(taxonomy, slug)`; fall back to a post_terms-only term
@@ -458,7 +479,7 @@ pub(crate) fn page(
                 }
             };
             let display = crate::render_tour::display_slug(conn, *id, slug, title);
-            let url = format!("{site_url}{prefix}/voyage/{display}/");
+            let url = format!("{site_url}{prefix}/{}/{display}/", ctx.tour_base);
             let image = fid
                 .and_then(|m| media.get(&m))
                 .map(|(p, _)| format!("{site_url}/wp-content/uploads/{p}"))
@@ -474,10 +495,11 @@ pub(crate) fn page(
                 "url": url,
                 "title": wp_title(&title.replace('<', "&lt;").replace('>', "&gt;")),
                 "image": image, "alt": esc_attr(&alt),
-                "promo_text": esc(&promo_text),
+
                 "promo_color": if promo_color.is_empty() { "#ffffff".into() } else { esc_attr(&promo_color) },
                 "promo_bg": esc_attr(&promo_bg),
                 "promo_bg_alpha": rgba(&promo_bg, 0.5),
+                "promo_text": esc(&promo_text),
                 "price": fmt_price(&raw_price),
                 "duration_text": esc(&os("duration-text")),
                 "departure": esc(&os("departure-location")),
@@ -537,8 +559,9 @@ pub(crate) fn page(
         "",
         &hreflang_fr,
         &hreflang_es,
+        &ctx.tour_base,
     )?;
-    let sidebar_post = crate::widgets::render_sidebar(conn, "sidebar-post", &site_url, lang, &term.slug)?;
+    let sidebar_post = crate::widgets::render_sidebar(conn, "sidebar-post", &site_url, lang, &term.slug, &ctx.tour_base)?;
     for (k, v) in serde_json::json!({
         "seo_title": esc_attr(&term.name),
         "seo_desc": seo_desc,
@@ -559,7 +582,7 @@ pub(crate) fn page(
         "posts": post_cards,
         "current": &term.slug,
         "term_count": if post_cards.is_empty() { cards.len() } else { post_cards.len() },
-        "widgets": if is_post_tax { Vec::<Value>::new() } else { crate::widgets::sidebar_widgets(conn, "sidebar-archive", &site_url, lang)? },
+        "widgets": if is_post_tax { Vec::<Value>::new() } else { crate::widgets::sidebar_widgets(conn, "sidebar-archive", &site_url, lang, &ctx.tour_base)? },
         "sidebar_post": sidebar_post,
         "body": "",
     })

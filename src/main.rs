@@ -55,6 +55,9 @@ enum Cmd {
         out: PathBuf,
         #[arg(long, default_value = "http://localhost:8400")]
         site_url: String,
+        /// URL segment for the tour CPT (e.g. "voyage").
+        #[arg(long, default_value = "voyage")]
+        tour_base: String,
     },
     /// WP → rpress one-liner: import dump, create admin, generate site
     Migrate {
@@ -69,6 +72,9 @@ enum Cmd {
         site_url: String,
         #[arg(long)]
         www: Option<PathBuf>,
+        /// URL segment for the tour CPT (e.g. "voyage").
+        #[arg(long, default_value = "voyage")]
+        tour_base: String,
     },
     User {
         #[command(subcommand)]
@@ -137,6 +143,9 @@ enum RenderStep {
         out: PathBuf,
         #[arg(long, default_value = "http://localhost:8400")]
         site_url: String,
+        /// URL segment for the tour CPT (e.g. "voyage").
+        #[arg(long, default_value = "voyage")]
+        tour_base: String,
     },
     Coverage {
         #[arg(long, default_value = "rpress.db")]
@@ -150,6 +159,9 @@ enum RenderStep {
         templates: PathBuf,
         #[arg(long, default_value = "http://localhost:8400")]
         site_url: String,
+        /// URL segment for the tour CPT (e.g. "voyage").
+        #[arg(long, default_value = "voyage")]
+        tour_base: String,
     },
 }
 
@@ -161,22 +173,22 @@ fn main() -> Result<()> {
             ImportStep::Verify { db } => verify::run(&db),
         },
         Cmd::Render { step } => match step {
-            RenderStep::Slug { slug, db, templates, out, site_url } => {
-                render::run(&db, &templates, &slug, &out, &site_url)
+            RenderStep::Slug { slug, db, templates, out, site_url, tour_base } => {
+                render::run(&db, &templates, &slug, &out, &site_url, &tour_base)
             }
             RenderStep::Coverage { db } => render::coverage(&db),
-            RenderStep::VerifyRefs { db, templates, site_url } => {
-                verify::verify_refs(&db, &templates, &site_url)
+            RenderStep::VerifyRefs { db, templates, site_url, tour_base } => {
+                verify::verify_refs(&db, &templates, &site_url, &tour_base)
             }
         },
-        Cmd::Generate { db, templates, out, site_url } => {
-            generate::run(&db, &templates, &out, &site_url)
+        Cmd::Generate { db, templates, out, site_url, tour_base } => {
+            generate::run(&db, &templates, &out, &site_url, &tour_base)
         },
         Cmd::User { step } => match step {
             UserStep::Add { email, password, role, db } => auth::add_user(&db, &email, &password, &role),
             UserStep::Passwd { email, password, db } => auth::set_password(&db, &email, &password),
         },
-        Cmd::Migrate { dump, db, templates, out, site_url, www } => {
+        Cmd::Migrate { dump, db, templates, out, site_url, www, tour_base } => {
             let _ = www; // uploads land in www via admin; migrate only needs db+out
             println!("== import ==");
             import::run(&dump, &db, &db.with_extension("import-report.txt"))?;
@@ -185,7 +197,7 @@ fn main() -> Result<()> {
             auth::add_user(&db, "admin@localhost", password, "admin")?;
             println!("admin user: admin@localhost\npassword: {password}");
             println!("== generate ==");
-            generate::run(&db, &templates, &out, &site_url)?;
+            generate::run(&db, &templates, &out, &site_url, &tour_base)?;
             println!(
                 "== done ==\nnext: rpress serve --bind 127.0.0.1:8400 --db {} --templates {} --out {}\nadmin:  http://127.0.0.1:8400/admin",
                 db.display(),

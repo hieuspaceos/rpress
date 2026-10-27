@@ -22,7 +22,7 @@ fn check(c: &Connection, failed: &mut u32, name: &str, sql: &str, expect: i64) {
 /// Tag-diff parity check: render each manifest page and compare its
 /// structural tag sequence to the reference capture.
 /// cdn-cgi email hashes are normalized (random per fetch).
-pub fn verify_refs(db: &Path, templates: &Path, site_url: &str) -> Result<()> {
+pub fn verify_refs(db: &Path, templates: &Path, site_url: &str, tour_base: &str) -> Result<()> {
     let manifest: &[(&str, &str, Option<(&str, &str, &str)>)] = &[
         ("home", "home.html", Some(("homepage", "fr", "page"))),
         ("tour", "tour.html", Some(("x", "fr", "tour"))),
@@ -49,7 +49,7 @@ pub fn verify_refs(db: &Path, templates: &Path, site_url: &str) -> Result<()> {
             all_ok = false;
             continue;
         };
-        let ours = match crate::render::render_slug(db, templates, slug, lang, kind, site_url) {
+        let ours = match crate::render::render_slug(db, templates, slug, lang, kind, site_url, tour_base) {
             Ok((h, _)) => h,
             Err(e) => {
                 println!("{label:<10} render error: {e}");

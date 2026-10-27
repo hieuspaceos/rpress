@@ -631,7 +631,7 @@ pub(crate) async fn posts_empty(
     // need the DB row to map id → out path.
     if let Ok(ids) = crud::ids_matching(&sc.db, "SELECT id FROM posts WHERE status='trash' AND kind=?1", [kind]) {
         for id in ids {
-            let _ = generate::remove_file_for(&sc.db, &sc.out, id);
+            let _ = generate::remove_file_for(&sc.db, &sc.out, id, &sc.tour_base);
         }
     }
     let _ = crud::empty_trash(&sc.db, kind);
@@ -684,7 +684,7 @@ pub(crate) async fn quick_edit(State(app): State<App>, headers: HeaderMap, Form(
             if let Some((oslug, olang, okind)) = old_rel {
                 let pre = if olang == "es" { "es/" } else { "" };
                 let rel = if okind == "tour" {
-                    format!("{pre}voyage/{oslug}/index.html")
+                    format!("{pre}{}/{oslug}/index.html", sc.tour_base)
                 } else {
                     format!("{pre}{oslug}/index.html")
                 };
@@ -1378,7 +1378,7 @@ pub(crate) async fn save_post(State(app): State<App>, headers: HeaderMap, Form(f
                 if oslug != f.slug || olang != f.lang || okind != f.kind {
                     let pre = if olang == "es" { "es/" } else { "" };
                     let rel = if okind == "tour" {
-                        format!("{pre}voyage/{oslug}/index.html")
+                        format!("{pre}{}/{oslug}/index.html", sc.tour_base)
                     } else {
                         format!("{pre}{oslug}/index.html")
                     };
@@ -1472,7 +1472,7 @@ pub(crate) async fn preview_post(
     let Ok((_s, sc)) = need_auth(&app, &headers) else {
         return Redirect::to("/admin/login").into_response();
     };
-    match crate::render::render_preview(&sc.db, &sc.templates, id, &site_url(sc)) {
+    match crate::render::render_preview(&sc.db, &sc.templates, id, &site_url(sc), &sc.tour_base) {
         Ok(html) => (
             [
                 (header::CONTENT_TYPE, "text/html; charset=utf-8"),

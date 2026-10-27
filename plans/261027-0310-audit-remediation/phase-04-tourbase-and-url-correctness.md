@@ -1,7 +1,7 @@
 ---
 phase: 4
 title: "tour_base & URL correctness"
-status: pending
+status: done
 priority: P1
 effort: "5h"
 dependencies: [1]
@@ -105,11 +105,11 @@ aliases resolve to canonical paths; XML emitters escape.
 
 ## Todo
 
-- [ ] Thread tour_base end-to-end (ctx + fn params + caller sources)
-- [ ] Zero voyage literals incl. widgets.rs and admin invalidation
-- [ ] Deploy URL rewrite on staged/vps copies + domain settings row
-- [ ] xml_esc + CDATA fix
-- [ ] Taxonomy DB lookup; /page/N → 301; menu subtree moves; e2e-site.sh
+- [x] Thread tour_base end-to-end (ctx + fn params + caller sources)
+- [x] Zero voyage literals incl. widgets.rs and admin invalidation
+- [x] Deploy URL rewrite on staged/vps copies + domain settings row
+- [x] xml_esc + CDATA fix
+- [x] Taxonomy DB lookup; /page/N → 301; menu subtree moves; e2e-site.sh
 
 ## Risks
 

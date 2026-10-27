@@ -94,14 +94,14 @@ const ELEMENT_TYPES: &[&str] = &[
     "wordpress-editor-content",
 ];
 
-pub fn run(db: &Path, templates: &Path, slug: &str, out: &Path, site_url: &str) -> Result<()> {
+pub fn run(db: &Path, templates: &Path, slug: &str, out: &Path, site_url: &str, tour_base: &str) -> Result<()> {
     // A leading configured language prefix (e.g. es/, de/) asks for that
     // translation; otherwise the primary language is used.
     let conn = crate::db::conn(db)?;
     let cfg = crate::lang::config(&conn);
     let clean = slug.trim_matches('/');
     let (lang, path) = crate::lang::split_path(&cfg, clean);
-    let (html, _status) = render_slug(db, templates, path, &lang, "", site_url)?;
+    let (html, _status) = render_slug(db, templates, path, &lang, "", site_url, tour_base)?;
     if let Some(parent) = out.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -122,6 +122,7 @@ pub fn render_slug(
     lang: &str,
     kind: &str,
     site_url: &str,
+    tour_base: &str,
 ) -> Result<(String, String)> {
     let conn = crate::db::conn(db)?;
     let lang_cfg = crate::lang::config(&conn);
@@ -160,7 +161,7 @@ pub fn render_slug(
         let (alang_s, path) = crate::lang::split_path(&lang_cfg, clean);
         if path.is_empty() && alang_s != lang_cfg.primary {
             if let Some(front_id) = front_id_for_lang(&conn, &alang_s) {
-                return render_slug_by_id_public(&conn, templates, front_id, site_url);
+                return render_slug_by_id_public(&conn, templates, front_id, site_url, tour_base);
             }
         }
         // Term/archive permalinks (the posts.slug lookup already missed):
@@ -176,7 +177,7 @@ pub fn render_slug(
         let term = match first {
             "etiquette" => crate::render_archive::term_by_path(&conn, "post_tag", leaf),
             "category" => crate::render_archive::term_by_path(&conn, "category", leaf),
-            t if crate::render_archive::is_taxonomy(t) && !leaf.is_empty() => {
+            t if crate::render_archive::is_taxonomy(&conn, t) && !leaf.is_empty() => {
                 crate::render_archive::term_by_path(&conn, t, leaf)
             }
             _ => None,
@@ -191,6 +192,7 @@ pub fn render_slug(
                 body_html: String::new(),
                 body_html_rendered: String::new(),
                 kind: "archive".to_string(),
+                tour_base: tour_base.to_string(),
             };
             let h = crate::render_archive::page(&conn, templates, &ctx, &term)?;
             return Ok((h, "publish".to_string()));
@@ -208,6 +210,7 @@ pub fn render_slug(
                     body_html: String::new(),
                     body_html_rendered: String::new(),
                     kind: "archive".to_string(),
+                    tour_base: tour_base.to_string(),
                 };
                 let h = crate::render_archive::page(&conn, templates, &ctx, &term)?;
                 return Ok((h, "publish".to_string()));
@@ -227,18 +230,19 @@ pub fn render_slug(
                 )
                 .optional()
             {
-                return render_slug_by_id_public(&conn, templates, pid, site_url);
+                return render_slug_by_id_public(&conn, templates, pid, site_url, tour_base);
             }
         }
         anyhow::bail!("slug not found: {slug}");
     };
-    let h = render_row(&conn, templates, id, slug, lang, title, body_json, seo_title, seo_desc, kind, site_url)?;
+    let h = render_row(&conn, templates, id, slug, lang, title, body_json, seo_title, seo_desc, kind, site_url, tour_base)?;
     // Final-stage origin rewrite: element option values, menus, chrome and
     // any other imported markup may carry the source domain — normalize it
     // here so no render path can leak it (filter_content alone missed them).
     let h = crate::render_post::rewrite_origin(&h, site_url, &conn);
     Ok((h, status))
 }
+
 
 /// Apply `navx` menu classes produced by `nav_map` onto the rendered page:
 /// each `{tax}/{slug}`-style key maps to the nav <a> whose href is the
@@ -422,6 +426,7 @@ fn render_row(
     seo_desc: Option<String>,
     kind: String,
     site_url: &str,
+    tour_base: &str,
 ) -> Result<String> {
     let media = media_map(conn)?;
 
@@ -453,8 +458,8 @@ fn render_row(
     let tree: Value = serde_json::from_str(&body_json).context("body_json")?;
     let mut env = load_env(templates)?;
     register_helpers(&mut env, &media, site_url);
-    let site = site_data(&conn, &lang, site_url, &media)?;
-    let body = render_nodes(&mut env, &tree, &media, site_url, &site, &lang, &post_v, Some(&conn), true)?;
+    let site = site_data(&conn, &lang, site_url, &media, tour_base)?;
+    let body = render_nodes(&mut env, &tree, &media, site_url, &site, &lang, &post_v, Some(&conn), true, tour_base)?;
 
     // tour/post kinds get their full single-page scaffolding from dedicated
     // modules (banner, booking bar, breadcrumbs, comments, sidebar…).
@@ -469,6 +474,7 @@ fn render_row(
                 body_html: body_html.clone(),
                 body_html_rendered: body.clone(),
                 kind: kind.clone(),
+                tour_base: tour_base.to_string(),
             };
             return crate::render_tour::page(&conn, templates, &ctx);
         }
@@ -482,6 +488,7 @@ fn render_row(
                 body_html: body_html.clone(),
                 body_html_rendered: body.clone(),
                 kind: kind.clone(),
+                tour_base: tour_base.to_string(),
             };
             return crate::render_post::page(&conn, templates, &ctx);
         }
@@ -489,15 +496,15 @@ fn render_row(
     }
 
     let lang_cfg = crate::lang::config(conn);
-    let mut alternates = translation_urls(conn, id, site_url)?;
-    let mut canonical = crate::lang::page_url(&lang_cfg, site_url, &lang, kind.as_str(), slug, "voyage");
+    let mut alternates = translation_urls(conn, id, site_url, tour_base)?;
+    let mut canonical = crate::lang::page_url(&lang_cfg, site_url, &lang, kind.as_str(), slug, tour_base);
     // Front pages: WP permalinks them at the language root regardless of
     // stored slug; generate one alternate root per configured language.
     if lang_cfg.langs.iter().any(|l| front_id_for_lang(conn, l) == Some(id)) {
-        canonical = crate::lang::page_url(&lang_cfg, site_url, &lang, "page", "", "voyage");
+        canonical = crate::lang::page_url(&lang_cfg, site_url, &lang, "page", "", tour_base);
         alternates = lang_cfg.langs.iter()
             .filter(|l| front_id_for_lang(conn, l).is_some())
-            .map(|l| (l.clone(), crate::lang::page_url(&lang_cfg, site_url, l, "page", "", "voyage")))
+            .map(|l| (l.clone(), crate::lang::page_url(&lang_cfg, site_url, l, "page", "", tour_base)))
             .collect();
     }
     let hreflang_fr = alternates.iter().find(|(l, _)| l == "fr").map(|(_, u)| u.clone()).unwrap_or_default();
@@ -535,6 +542,7 @@ fn render_row(
         &body_html,
         &hreflang_fr,
         &hreflang_es,
+        tour_base,
     )?;
     // Templates use `seo_title` inside <title> and meta content attributes:
     // pre-escape for attribute position (esc_attr covers text too — the
@@ -656,6 +664,7 @@ fn render_by_id(
     id: i64,
     site_url: &str,
     publish_only: bool,
+    tour_base: &str,
 ) -> Result<(String, String)> {
     let (lang, title, body_json, seo_title, seo_desc, kind, status): (
         String,
@@ -692,7 +701,7 @@ fn render_by_id(
     let slug: String = conn
         .query_row("SELECT slug FROM posts WHERE id=?1", [id], |r| r.get(0))
         .unwrap_or_default();
-    let h = render_row(conn, templates, id, &slug, lang, title, body_json, seo_title, seo_desc, kind, site_url)?;
+    let h = render_row(conn, templates, id, &slug, lang, title, body_json, seo_title, seo_desc, kind, site_url, tour_base)?;
     Ok((crate::render_post::rewrite_origin(&h, site_url, conn), status))
 }
 
@@ -704,8 +713,9 @@ pub(crate) fn render_slug_by_id_public(
     templates: &Path,
     id: i64,
     site_url: &str,
+    tour_base: &str,
 ) -> Result<(String, String)> {
-    render_by_id(conn, templates, id, site_url, true)
+    render_by_id(conn, templates, id, site_url, true, tour_base)
 }
 
 /// Canonical URL of a post's translation group for a missed `/{lang}/{slug}`:
@@ -778,9 +788,10 @@ pub fn render_preview(
     templates: &Path,
     post_id: i64,
     site_url: &str,
+    tour_base: &str,
 ) -> Result<String> {
     let conn = crate::db::conn(db)?;
-    let (html, _status) = render_by_id(&conn, templates, post_id, site_url, false)?;
+    let (html, _status) = render_by_id(&conn, templates, post_id, site_url, false, tour_base)?;
     Ok(force_noindex(&html))
 }
 
@@ -885,9 +896,10 @@ pub(crate) fn site_data(
     lang: &str,
     site_url: &str,
     media: &HashMap<i64, (String, String)>,
+    tour_base: &str,
 ) -> Result<JVal> {
     let prefix = if lang == "es" { "/es" } else { "" };
-    let url = |kind: &str, slug: &str| page_url(site_url, lang, kind, slug);
+    let url = |kind: &str, slug: &str| page_url(site_url, lang, kind, slug, tour_base);
     let img = |mid: Option<i64>| -> Value {
         mid.and_then(|m| media.get(&m))
             .map(|(p, _)| json!(format!("{site_url}/wp-content/uploads/{p}")))
@@ -1215,7 +1227,7 @@ pub(crate) fn site_data(
             }
         }
         match sp.and_then(|sid| slug_of(conn, sid)) {
-            Some((slug, kind)) => page_url(site_url, lang, &kind, &slug),
+            Some((slug, kind)) => page_url(site_url, lang, &kind, &slug, tour_base),
             None => format!("{site_url}{prefix}/"),
         }
     };
@@ -1295,8 +1307,8 @@ pub(crate) fn site_data(
         "lang": lang,
         "url_prefix": prefix,
         "site_url": site_url,
-        "tour_base": "voyage",
-        "tour_base_url": format!("{site_url}{prefix}/voyage/"),
+        "tour_base": tour_base,
+        "tour_base_url": format!("{site_url}{prefix}/{tour_base}/"),
         "search_url": search_url,
         "search_months": months,
     })))
@@ -1750,12 +1762,13 @@ pub(crate) fn render_fragment(
     v: &Value,
     media: &HashMap<i64, (String, String)>,
     site_url: &str,
+    tour_base: &str,
 ) -> Result<String> {
     let mut env = load_env(templates)?;
     register_helpers(&mut env, media, site_url);
     let site = JVal::from_serialize(json!({}));
     let post = JVal::from_serialize(json!({}));
-    render_nodes(&mut env, v, media, site_url, &site, "fr", &post, None, false)
+    render_nodes(&mut env, v, media, site_url, &site, "fr", &post, None, false, tour_base)
 }
 
 /// render_fragment with a live DB so dynamic elements (blog, tour,
@@ -1767,12 +1780,13 @@ pub(crate) fn render_fragment_db(
     media: &HashMap<i64, (String, String)>,
     site_url: &str,
     lang: &str,
+    tour_base: &str,
 ) -> Result<String> {
     let mut env = load_env(templates)?;
     register_helpers(&mut env, media, site_url);
-    let site = site_data(conn, lang, site_url, media)?;
+    let site = site_data(conn, lang, site_url, media, tour_base)?;
     let post = JVal::from_serialize(json!({}));
-    render_nodes(&mut env, v, media, site_url, &site, lang, &post, Some(conn), false)
+    render_nodes(&mut env, v, media, site_url, &site, lang, &post, Some(conn), false, tour_base)
 }
 
 thread_local! {
@@ -1793,9 +1807,10 @@ fn render_nodes(
     post: &JVal,
     conn: Option<&Connection>,
     top_level: bool,
+    tour_base: &str,
 ) -> Result<String> {
     RENDER_DEPTH.with(|d| d.set(d.get() + 1));
-    let result = render_nodes_inner(env, v, media, site_url, site, lang, post, conn, top_level);
+    let result = render_nodes_inner(env, v, media, site_url, site, lang, post, conn, top_level, tour_base);
     let depth = RENDER_DEPTH.with(|d| {
         d.set(d.get() - 1);
         d.get()
@@ -1823,6 +1838,7 @@ fn render_nodes_inner(
     post: &JVal,
     conn: Option<&Connection>,
     top_level: bool,
+    tour_base: &str,
 ) -> Result<String> {
     match v {
         Value::Array(a) => {
@@ -1848,7 +1864,7 @@ fn render_nodes_inner(
                         let is_wrapper = matches!(typ, "background" | "normal" | "sidebar");
                         if is_wrapper {
                             close_section(&mut out, &mut section_open);
-                            out.push_str(&render_node(env, m, media, site_url, site, lang, post, false, conn)?);
+                            out.push_str(&render_node(env, m, media, site_url, site, lang, post, false, conn, tour_base)?);
                             col_count = 0;
                             continue;
                         }
@@ -1877,7 +1893,7 @@ fn render_nodes_inner(
                                 }
                             }
                         }
-                        let html = render_node(env, m, media, site_url, site, lang, post, first, conn)?;
+                        let html = render_node(env, m, media, site_url, site, lang, post, first, conn, tour_base)?;
                         // every leaf item rides in <div class="gdlr-core-pbf-element">;
                         // columns carry their own wrapper.
                         if typ == "column" || typ == "flexbox" {
@@ -1886,13 +1902,13 @@ fn render_nodes_inner(
                             out.push_str(&format!("<div class=\"gdlr-core-pbf-element\" >{html}</div>"));
                         }
                     }
-                    _ => out.push_str(&render_nodes(env, x, media, site_url, site, lang, post, conn, false)?),
+                    _ => out.push_str(&render_nodes(env, x, media, site_url, site, lang, post, conn, false, tour_base)?),
                 }
             }
             close_section(&mut out, &mut section_open);
             Ok(out)
         }
-        Value::Object(m) => render_node(env, m, media, site_url, site, lang, post, false, conn),
+        Value::Object(m) => render_node(env, m, media, site_url, site, lang, post, false, conn, tour_base),
         _ => Ok(String::new()),
     }
 }
@@ -1906,10 +1922,11 @@ fn render_node(
     post: &JVal,
     first_col: bool,
     conn: Option<&Connection>,
+    tour_base: &str,
 ) -> Result<String> {
     let typ = m.get("type").and_then(|t| t.as_str()).unwrap_or("unknown");
     let children_val = m.get("items").cloned().unwrap_or(Value::Array(vec![]));
-    let children = render_nodes(env, &children_val, media, site_url, site, lang, post, conn, false)?;
+    let children = render_nodes(env, &children_val, media, site_url, site, lang, post, conn, false, tour_base)?;
     let mut opts = match m.get("value") {
         Some(Value::Object(o)) => o.clone(),
         _ => Map::new(),
@@ -2009,7 +2026,7 @@ fn render_node(
                 String::new()
             } else {
                 conn.map(|c| {
-                    crate::widgets::render_sidebar(c, sb_id, site_url, lang, "")
+                    crate::widgets::render_sidebar(c, sb_id, site_url, lang, "", tour_base)
                         .unwrap_or_default()
                 })
                 .unwrap_or_default()
@@ -2028,7 +2045,7 @@ fn render_node(
         // page language; WP tax_query also covers child terms — we have no
         // parent column, so an empty match falls back to latest posts, which
         // is what the reference homepage shows anyway.
-        let posts = conn.and_then(|c| blog_posts(c, &opts, lang, media, site_url).ok()).unwrap_or_default();
+        let posts = conn.and_then(|c| blog_posts(c, &opts, lang, media, site_url, tour_base).ok()).unwrap_or_default();
         let children = posts;
         let opts_v = JVal::from_serialize(&opts);
         return env
@@ -2116,7 +2133,7 @@ fn render_node(
         .map_err(|e| anyhow::anyhow!("element {typ}: {e}"))
 }
 
-fn translation_urls(conn: &Connection, id: i64, site: &str) -> Result<Vec<(String, String)>> {
+fn translation_urls(conn: &Connection, id: i64, site: &str, tour_base: &str) -> Result<Vec<(String, String)>> {
     let cfg = crate::lang::config(conn);
     let group: Option<String> = conn
         .query_row(
@@ -2135,7 +2152,7 @@ fn translation_urls(conn: &Connection, id: i64, site: &str) -> Result<Vec<(Strin
     let mut out = Vec::new();
     for (lang, pid) in rows {
         if let Some((slug, kind)) = slug_of(conn, pid) {
-            out.push((lang.clone(), crate::lang::page_url(&cfg, site, &lang, &kind, &slug, "voyage")));
+            out.push((lang.clone(), crate::lang::page_url(&cfg, site, &lang, &kind, &slug, tour_base)));
         }
     }
     Ok(out)
@@ -2158,10 +2175,10 @@ fn slug_of(conn: &Connection, id: i64) -> Option<(String, String)> {
     .ok()
 }
 
-pub(crate) fn page_url(site: &str, lang: &str, kind: &str, slug: &str) -> String {
+pub(crate) fn page_url(site: &str, lang: &str, kind: &str, slug: &str, tour_base: &str) -> String {
     let prefix = if lang == "es" { "/es" } else { "" };
     match kind {
-        "tour" => format!("{site}{prefix}/voyage/{slug}/"),
+        "tour" => format!("{site}{prefix}/{tour_base}/{slug}/"),
         _ => format!("{site}{prefix}/{slug}/"),
     }
 }
@@ -2575,7 +2592,7 @@ fn extract_attr(attrs: &str, name: &str) -> Option<String> {
 
 /// Markdown page for one published post (`.md` sibling of the HTML page).
 /// Front-matter + converted body; links/images keep absolute site URLs.
-pub fn post_markdown(conn: &Connection, slug: &str, lang: &str, kind: &str, site_url: &str) -> Option<String> {
+pub fn post_markdown(conn: &Connection, slug: &str, lang: &str, kind: &str, site_url: &str, tour_base: &str) -> Option<String> {
     let (title, body_html, excerpt, published_at, kind, slug, body_json): (String, String, String, String, String, String, String) = conn
         .query_row(sql!("render__select_markdown"), rusqlite::params![slug, lang, kind], |r| {
             Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?))
@@ -2592,7 +2609,7 @@ pub fn post_markdown(conn: &Connection, slug: &str, lang: &str, kind: &str, site
     let mut md = String::new();
     md.push_str("---\n");
     md.push_str(&format!("title: \"{}\"\n", title.replace('"', "\\\"")));
-    md.push_str(&format!("url: {}\n", page_url(site_url.trim_end_matches('/'), lang, &kind, &slug)));
+    md.push_str(&format!("url: {}\n", page_url(site_url.trim_end_matches('/'), lang, &kind, &slug, tour_base)));
     if !published_at.is_empty() { md.push_str(&format!("date: {}\n", iso8601(&published_at))); }
     md.push_str(&format!("type: {kind}\n---\n\n# {title}\n\n"));
     if !excerpt.is_empty() {
@@ -2782,6 +2799,7 @@ pub(crate) fn chrome_vars(
     body_html: &str,
     hreflang_fr: &str,
     hreflang_es: &str,
+    tour_base: &str,
 ) -> Result<Map<String, Value>> {
     let (modified_at, featured_id, excerpt, published_at): (String, Option<i64>, String, String) = conn
         .query_row(sql!("render__select_chrome"), [id], |r| {
@@ -2977,7 +2995,7 @@ pub(crate) fn chrome_vars(
     // wrapper divs.
     for n in 1..=4 {
         let sidebar = format!("footer-{n}-{}", if es { "es" } else { "fr" });
-        let html = crate::widgets::render_sidebar(conn, &sidebar, site_url, lang, slug)?;
+        let html = crate::widgets::render_sidebar(conn, &sidebar, site_url, lang, slug, tour_base)?;
         m.insert(format!("footer_{n}"), json!(html));
     }
     Ok(m)
@@ -3112,7 +3130,7 @@ mod tests {
             };
             register_helpers(&mut env, &media, site_url);
             let post = JVal::from_serialize(json!({"title": "Post", "body_html": "<p>BH</p>", "meta": {"cf":"v"}}));
-            match render_nodes(&mut env, &node, &media, site_url, &dummy_site(), "fr", &post, None, false) {
+            match render_nodes(&mut env, &node, &media, site_url, &dummy_site(), "fr", &post, None, false, "voyage") {
                 Ok(_) => {}
                 Err(err) => {
                     if name == "fallback.html" {
@@ -3413,6 +3431,7 @@ fn blog_posts(
     lang: &str,
     media: &HashMap<i64, (String, String)>,
     site_url: &str,
+    tour_base: &str,
 ) -> Result<String> {
     let num: i64 = opts
         .get("num-fetch")
@@ -3464,7 +3483,7 @@ fn blog_posts(
             .max(0) as usize;
         let mut out = String::new();
         for (i, (_id, slug, title, excerpt, feat_id, _published)) in rows.iter().enumerate() {
-            let url = page_url(site_url.trim_end_matches('/'), lang, "post", slug);
+            let url = page_url(site_url.trim_end_matches('/'), lang, "post", slug, tour_base);
             let img = feat_id
                 .and_then(|fid| media_info(conn, fid).map(|d| (fid, d)))
                 .map(|(fid, d)| {
@@ -3515,7 +3534,7 @@ fn blog_posts(
         "<div class=\"gdlr-core-flexslider flexslider gdlr-core-js-2\" data-type=\"carousel\" data-column=\"4\" data-move=\"3\" data-nav=\"none\" data-nav-parent=\"gdlr-core-blog-item\" ><ul class=\"slides\" >",
     );
     for (id, slug, title, excerpt, feat_id, _published) in rows {
-        let url = page_url(site_url.trim_end_matches('/'), lang, "post", &slug);
+        let url = page_url(site_url.trim_end_matches('/'), lang, "post", &slug, tour_base);
         let img = feat_id
             .and_then(|fid| media.get(&fid).map(|(p, alt)| (fid, p.clone(), alt.clone())))
             .map(|(fid, p, alt)| {
