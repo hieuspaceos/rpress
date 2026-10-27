@@ -1,7 +1,7 @@
 ---
 phase: 4
 title: "Theme-as-data: CAT_TREE / etiquette / ES_ROOTS / seed fixtures"
-status: pending
+status: done
 priority: P2
 effort: "2d"
 dependencies: [1]
@@ -114,12 +114,11 @@ paths), tag pages at `etiquette/{slug}/`, ES category nesting correct,
 sidebar/footer widgets render on fresh `site_init`.
 
 ## Todos
-
-- [ ] `taxonomy_map.json` generated + count-verified
-- [ ] `theme_traveltour` adapter (Data backend, migrate + seeds)
-- [ ] `cat_path`/`cat_path_is_es`/`etiquette` call sites swapped
-- [ ] Seed ownership moved; `site_init` + import apply via adapter
-- [ ] Byte-parity verified; settings row inspected
+- [x] `taxonomy_map.json` generated + count-verified
+- [x] `theme_traveltour` adapter (Data backend, migrate + seeds)
+- [x] `cat_path`/`cat_path_is_es`/`etiquette` call sites swapped
+- [x] Seed ownership moved; `site_init` + import apply via adapter
+- [x] Byte-parity verified; settings row inspected
 
 ## Risks
 

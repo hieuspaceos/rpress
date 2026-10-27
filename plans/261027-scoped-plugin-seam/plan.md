@@ -118,7 +118,7 @@ editor UI cannot be economically reproduced.
 | 01 | [Contract: PluginAdapter + kind registry + settings namespaces](./phase-01-adapter-contract.md) | audit phases 1–7 | 2d | Done |
 | 02 | [Tourmaster adapter registration](./phase-02-tourmaster-adapter.md) | 01 | 1.5d | Done |
 | 03 | [Tour extraction: render/generate/lang/widgets decoupling](./phase-03-tour-extraction.md) | 02 | 3d | Done |
-| 04 | [Theme-as-data: CAT_TREE / etiquette / ES_ROOTS / seeds](./phase-04-theme-data.md) | 01 | 2d | Pending |
+| 04 | [Theme-as-data: CAT_TREE / etiquette / ES_ROOTS / seeds](./phase-04-theme-data.md) | 01 | 2d | Done |
 | 05 | [Back-compat & migration for existing sites](./phase-05-backcompat-migration.md) | 02–04 | 1d | Pending |
 | 06 | [PhpBridge runtime MVP (php-cgi or Playground) + write whitelist](./phase-06-phpbridge-runtime.md) | 01 | 3d | Pending |
 | 07 | [gdlr_pb → PhpBridge cutover](./phase-07-gdlr-bridge.md) | 06 | 3d | Pending |
