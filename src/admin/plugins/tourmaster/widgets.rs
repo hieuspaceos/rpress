@@ -60,12 +60,11 @@ mod seed {
         include_str!("seed/sidebar-tour-tourmaster-widget-tour-category-6.json");
     /// The blog sidebars' live `tour_list` seeds (the frozen captures the
     /// phase-3 upgrade converted to live renderers) — plugin-owned widgets
-    /// seeding core-owned sidebars. Payloads stay in `src/seed/` with the
-    /// rest of the reference-theme set.
+    /// seeding theme-owned sidebars. Payloads moved with the plugin.
     pub const SIDEBAR_POST_FR_CUSTOM_HTML_13: &str =
-        include_str!("../../../seed/sidebar-post-fr-custom_html-13.json");
+        include_str!("seed/sidebar-post-fr-custom_html-13.json");
     pub const SIDEBAR_POST_ES_CUSTOM_HTML_14: &str =
-        include_str!("../../../seed/sidebar-post-es-custom_html-14.json");
+        include_str!("seed/sidebar-post-es-custom_html-14.json");
 }
 
 /// Seed rows this adapter ships (`PluginAdapter::seeds`): the sidebar-tour

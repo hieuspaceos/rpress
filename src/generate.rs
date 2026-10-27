@@ -294,14 +294,14 @@ fn post_out_rel(conn: &Connection, post_id: i64, kind_bases: &KindBases) -> Resu
 
 /// Every `(lang, dir)` a term archive renders at — THE shared mapping
 /// `generate::run` emits and `invalidate_dependents` deletes from
-/// (phase 5): category paths come from the frozen `CAT_TREE`
-/// (`render_post::cat_path`, nested, site-specific debt — a theme swap
-/// must update the map), post tags sit at `etiquette/{slug}`, and other
+/// (phase 5): category paths come from the theme's taxonomy map
+/// (`theme_traveltour::cat_path`, seeded `plugin:theme-traveltour:taxonomy_map`),
+/// post tags sit at `{tag_base}/{slug}`, and other
 /// routable taxonomies at `{tax}/{slug}`; non-primary languages carry
-/// their rel prefix. ES detection uses `cat_path_is_es`/`ES_ROOTS` plus
+/// their rel prefix. ES detection uses `cat_path_is_es` plus
 /// the `-es` taxonomies list, matching the dispatch this replaces.
 /// Languages come from the posts carrying the term (`term_langs`);
-/// termless posts still resolve through the CAT_TREE/-es heuristics.
+/// termless posts still resolve through the taxonomy-map heuristics.
 /// Returns (lang, archive directory) pairs — `dir/index.html` is the file.
 pub(crate) fn term_out_paths(
     conn: &Connection,
@@ -331,19 +331,20 @@ pub(crate) fn term_out_paths(
     if tax_l == "category" || tax_l == "post_tag" {
         let mut langs = term_langs(tax, slug);
         if langs.is_empty() {
-            langs.push(if crate::render_post::cat_path_is_es(slug) {
+            langs.push(if crate::admin::plugins::theme_traveltour::cat_path_is_es(conn, slug) {
                 "es".into()
             } else {
                 "fr".into()
             });
         }
+        let tag_base = crate::admin::plugins::theme_traveltour::tag_base(conn);
         for lang in langs {
             let prefix = crate::lang::rel_prefix(lang_cfg, &lang);
             let prefix = if prefix.is_empty() { String::new() } else { format!("{prefix}/") };
             let path = if tax_l == "category" {
-                format!("{prefix}{}", crate::render_post::cat_path(slug))
+                format!("{prefix}{}", crate::admin::plugins::theme_traveltour::cat_path(conn, slug))
             } else {
-                format!("{prefix}etiquette/{slug}")
+                format!("{prefix}{tag_base}/{slug}")
             };
             out.push((lang, PathBuf::from(path)));
         }

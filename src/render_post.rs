@@ -125,7 +125,7 @@ pub(crate) fn page(conn: &Connection, templates: &Path, ctx: &PostCtx) -> Result
         .iter()
         .map(|(slug, name)| {
             json!({
-                "url": format!("{site}{}/{}/", crate::lang::url_prefix(&lang_cfg, &ctx.lang), cat_path(slug)),
+                "url": format!("{site}{}/{}/", crate::lang::url_prefix(&lang_cfg, &ctx.lang), crate::admin::plugins::theme_traveltour::cat_path(conn, slug)),
                 "name": esc(name),
             })
         })
@@ -137,7 +137,7 @@ pub(crate) fn page(conn: &Connection, templates: &Path, ctx: &PostCtx) -> Result
         .join("");
 
     // Breadcrumb chain: deepest category → walk parents to root.
-    let bc_chain = breadcrumb_chain(&cats);
+    let bc_chain = breadcrumb_chain(conn, &cats);
     let post_url = format!("{site}{}/{}/", crate::lang::url_prefix(&lang_cfg, &ctx.lang), ctx.slug);
     let site_name = conn
         .query_row(
@@ -294,6 +294,7 @@ pub(crate) fn page(conn: &Connection, templates: &Path, ctx: &PostCtx) -> Result
     // attributes and text nodes — pre-escape at the boundary (templates run
     // AutoEscape::None; `|safe` on names marks them intentionally raw).
     let sidebar_post = crate::widgets::render_sidebar(conn, "sidebar-post", site, &ctx.lang, &ctx.slug, &ctx.tour_base)?;
+    let tag_base = crate::admin::plugins::theme_traveltour::tag_base(conn);
     for (k, v) in serde_json::json!({
         "seo_title": esc_attr(&seo_title),
         "seo_desc": seo_desc,
@@ -317,7 +318,7 @@ pub(crate) fn page(conn: &Connection, templates: &Path, ctx: &PostCtx) -> Result
         "article_html": article_html,
         "body": body_rendered,
         "tags": tags.iter().map(|(slug, name)| json!({
-            "url": format!("{site}{}/etiquette/{slug}/", crate::lang::url_prefix(&lang_cfg, &ctx.lang)),
+            "url": format!("{site}{}/{tag_base}/{slug}/", crate::lang::url_prefix(&lang_cfg, &ctx.lang)),
             "name": esc(name),
         })).collect::<Vec<_>>(),
         "prev_url": prev_url,
@@ -438,183 +439,27 @@ pub(crate) fn fr_date_parts(published: &str) -> (String, String, String, String,
     )
 }
 
-/// FR+ES category hierarchy captured from the live site's sidebar widget
-/// (wp_term_taxonomy parents in the dump are scrambled, so this table —
-/// verbatim from reference/post.html's wpcategorieswidget — is the truth).
-const CAT_TREE: &[(&str, &str)] = &[
-    ("conseils-pratiques-vietnam", "guide-de-voyage-vietnam"),
-    ("idees-de-circuit", "guide-de-voyage-vietnam"),
-    ("circuit-au-vietnam", "idees-de-circuit"),
-    ("croisiere", "idees-de-circuit"),
-    ("randonnee-au-vietnam", "idees-de-circuit"),
-    ("top-choses-a-faire-a-voir", "idees-de-circuit"),
-    ("vietnam-en-famille", "idees-de-circuit"),
-    ("voyage-de-luxe-vietnam", "idees-de-circuit"),
-    ("voyage-en-couple-de-noce-vietnam", "idees-de-circuit"),
-    ("ou-dormir", "guide-de-voyage-vietnam"),
-    ("quand-partir-au-vietnam", "guide-de-voyage-vietnam"),
-    ("tout-sur-le-visa-vietnam", "guide-de-voyage-vietnam"),
-    ("voyage-en-asie-du-sud-est", "guide-de-voyage-vietnam"),
-    ("actualites-du-tourisme", "le-vietnam"),
-    ("cuisine-vietnamienne", "le-vietnam"),
-    ("boisson-vietnamienne", "cuisine-vietnamienne"),
-    ("plats-vietnamiens", "cuisine-vietnamienne"),
-    ("adresses-recommandees", "plats-vietnamiens"),
-    ("recettes-faciles", "cuisine-vietnamienne"),
-    ("culture-histoire", "le-vietnam"),
-    ("montagnes-du-nord", "sites-a-explorer"),
-    ("bac-ha", "montagnes-du-nord"),
-    ("ha-giang", "montagnes-du-nord"),
-    ("mai-chau", "montagnes-du-nord"),
-    ("mu-cang-chai", "montagnes-du-nord"),
-    ("sapa", "montagnes-du-nord"),
-    ("station-balneaire-vietnam", "sites-a-explorer"),
-    ("ile-de-con-dao", "station-balneaire-vietnam"),
-    ("nha-trang", "station-balneaire-vietnam"),
-    ("phan-thiet", "station-balneaire-vietnam"),
-    ("phu-quoc", "station-balneaire-vietnam"),
-    ("vung-tau", "station-balneaire-vietnam"),
-    ("vietnam-du-centre", "sites-a-explorer"),
-    ("da-nang", "vietnam-du-centre"),
-    ("hauts-plateaux-vietnam", "vietnam-du-centre"),
-    ("hoian", "vietnam-du-centre"),
-    ("hue", "vietnam-du-centre"),
-    ("quang-binh", "vietnam-du-centre"),
-    ("vietnam-du-nord", "sites-a-explorer"),
-    ("baie-dhalong", "vietnam-du-nord"),
-    ("dien-bien-phu", "vietnam-du-nord"),
-    ("hanoi", "vietnam-du-nord"),
-    ("ninh-binh", "vietnam-du-nord"),
-    ("parc-national-de-cat-ba", "vietnam-du-nord"),
-    ("vietnam-du-sud", "sites-a-explorer"),
-    ("can-tho", "vietnam-du-sud"),
-    ("chau-doc", "vietnam-du-sud"),
-    ("delta-du-mekong", "vietnam-du-sud"),
-    ("dong-nai", "vietnam-du-sud"),
-    ("saigon-ho-chi-minh", "vietnam-du-sud"),
-    ("voyages-au-cambodge", "sites-a-explorer"),
-    ("angkor-siem-reap", "voyages-au-cambodge"),
-    ("battambang", "voyages-au-cambodge"),
-    ("kampot", "voyages-au-cambodge"),
-    ("phnom-penh", "voyages-au-cambodge"),
-    // ES mirror of the same tree (same nesting, ES slugs).
-    ("consejos-practicos-vietnam", "guia-de-viaje-a-vietnam"),
-    ("ideas-de-viajes", "guia-de-viaje-a-vietnam"),
-    ("crucero", "ideas-de-viajes"),
-    ("senderismo-en0vietnam", "ideas-de-viajes"),
-    ("la-mejor-opcion-para-hacer-ver", "ideas-de-viajes"),
-    ("iaje-en-pareja-luna-de-miel-a-ietnam", "ideas-de-viajes"),
-    ("viaje-de-lujo-vietnam", "ideas-de-viajes"),
-    ("alojamiento-es", "guia-de-viaje-a-vietnam"),
-    ("uando-ir-a-vetnam-es", "guia-de-viaje-a-vietnam"),
-    ("odo-sobre-la-visa-de-vietnam-es", "guia-de-viaje-a-vietnam"),
-    ("viaje-al-sudeste-asiatico", "guia-de-viaje-a-vietnam"),
-    ("noticias-de-turismo", "viaje-a-vietnam"),
-    ("la-gastronomia-vietnamita", "viaje-a-vietnam"),
-    ("la-bebida-vietnamita-es", "la-gastronomia-vietnamita"),
-    ("platos-vietnamitas", "la-gastronomia-vietnamita"),
-    ("direcciones-recomendadas", "platos-vietnamitas"),
-    ("recetas-faciles", "platos-vietnamitas"),
-    ("cultura-historia", "viaje-a-vietnam"),
-    ("norte-de-vietnam", "sitios-para-explorar"),
-    ("ha-giang-es", "norte-de-vietnam"),
-    ("mu-cang-chai-es", "norte-de-vietnam"),
-    ("sapa-es", "norte-de-vietnam"),
-    ("resort-de-playa-vietnam", "sitios-para-explorar"),
-    ("nha-trang-es", "resort-de-playa-vietnam"),
-    ("phu-quoc-es", "resort-de-playa-vietnam"),
-    ("centro-de-vietnam", "sitios-para-explorar"),
-    ("da-nang-es", "centro-de-vietnam"),
-    ("tierras-altas-de-vietnam", "centro-de-vietnam"),
-    ("hue-es", "centro-de-vietnam"),
-    ("quang-binh-es", "centro-de-vietnam"),
-    ("el-sur-de-vietnam", "sitios-para-explorar"),
-    ("el-delta-del-mekong", "el-sur-de-vietnam"),
-    ("saigon-ho-chi-minh-es", "el-sur-de-vietnam"),
-    ("viaje-a-camboya", "sitios-para-explorar"),
-    ("la-bahia-de-halong", "norte-de-vietnam"),
-    ("hanoi-es", "norte-de-vietnam"),
-    ("ninh-binh-es", "norte-de-vietnam"),
-    ("parque-nacional-cat-ba", "norte-de-vietnam"),
-];
-
-/// Parent slug of a category (`None` = root or unknown).
-fn cat_parent(slug: &str) -> Option<&'static str> {
-    CAT_TREE.iter().find(|(c, _)| *c == slug).map(|(_, p)| *p)
-}
-
-/// Every category whose `cat_parent` is `slug` — the categories widget
-/// builds its live tree from these edges (phase 3).
-pub(crate) fn cat_children(slug: &str) -> Vec<&'static str> {
-    CAT_TREE
-        .iter()
-        .filter(|(_, p)| *p == slug)
-        .map(|(c, _)| *c)
-        .collect()
-}
-
-/// Full hierarchical archive path for a category slug.
-pub(crate) fn cat_path(slug: &str) -> String {
-    let mut chain = vec![slug.to_string()];
-    let mut cur = slug.to_string();
-    let mut guard = 0;
-    while let Some(p) = cat_parent(&cur) {
-        if p == cur { break; }
-        chain.insert(0, p.to_string());
-        cur = p.to_string();
-        guard += 1;
-        if guard > 6 { break; }
-    }
-    chain.join("/")
-}
-
-/// Whether `cat_path` resolves through the ES category tree (the frozen
-/// parent map holds both; ES slugs chain up to one of the ES roots).
-pub(crate) fn cat_path_is_es(slug: &str) -> bool {
-    const ES_ROOTS: &[&str] = &[
-        "guia-de-viaje-a-vietnam",
-        "viaje-a-vietnam",
-        "sitios-para-explorar",
-    ];
-    let mut cur = slug.to_string();
-    let mut guard = 0;
-    loop {
-        if ES_ROOTS.contains(&cur.as_str()) {
-            return true;
-        }
-        match cat_parent(&cur) {
-            Some(p) if p != cur => {
-                cur = p.to_string();
-            }
-            _ => break,
-        }
-        guard += 1;
-        if guard > 6 {
-            break;
-        }
-    }
-    slug.ends_with("-es")
-}
-
 /// Breadcrumb chain = full root→deepest path of the post's deepest category
-/// (WP picks the primary/longest path).
-fn breadcrumb_chain(cats: &[(String, String)]) -> Vec<(String, String)> {
+/// (WP picks the primary/longest path). Segment list comes from the theme's
+/// taxonomy map via `theme_traveltour::cat_path`.
+fn breadcrumb_chain(conn: &Connection, cats: &[(String, String)]) -> Vec<(String, String)> {
     let mut best: Vec<(String, String)> = Vec::new();
     for (slug, name) in cats {
-        let mut chain = vec![(slug.clone(), name.clone())];
-        let mut cur = slug.clone();
-        let mut guard = 0;
-        while let Some(p) = cat_parent(&cur) {
-            let pname = cats
-                .iter()
-                .find(|(s, _)| *s == p)
-                .map(|(_, n)| n.clone())
-                .unwrap_or_else(|| cat_name(p));
-            chain.insert(0, (p.to_string(), pname));
-            if p == cur { break; }
-            cur = p.to_string();
-            guard += 1;
-            if guard > 6 { break; }
+        let mut chain: Vec<(String, String)> = crate::admin::plugins::theme_traveltour::cat_path(conn, slug)
+            .split('/')
+            .map(|s| {
+                let n = cats
+                    .iter()
+                    .find(|(cs, _)| cs == s)
+                    .map(|(_, n)| n.clone())
+                    .unwrap_or_else(|| cat_name(s));
+                (s.to_string(), n)
+            })
+            .collect();
+        // Deepest segment carries the post's own term name (cat_path only
+        // knows slugs).
+        if let Some(last) = chain.last_mut() {
+            last.1 = name.clone();
         }
         if chain.len() > best.len() {
             best = chain;

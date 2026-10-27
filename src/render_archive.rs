@@ -327,8 +327,8 @@ pub(crate) fn page(
     let prefix = crate::lang::url_prefix(&lang_cfg, lang);
     let term_url_path = |tax: &str, slug: &str, prefix: &str| -> String {
         match tax {
-            "category" => format!("{prefix}/{}/", crate::render_post::cat_path(slug)),
-            "post_tag" => format!("{prefix}/etiquette/{slug}/"),
+            "category" => format!("{prefix}/{}/", crate::admin::plugins::theme_traveltour::cat_path(conn, slug)),
+            "post_tag" => format!("{prefix}/{}/{slug}/", crate::admin::plugins::theme_traveltour::tag_base(conn)),
             t => {
                 let base = tax_adapter
                     .and_then(|a| a.taxonomy_base(t))
@@ -442,7 +442,7 @@ pub(crate) fn page(
             let cat_links: Vec<Value> = pcats
                 .iter()
                 .map(|(s, n)| json!({
-                    "url": format!("{site_url}{prefix}/{}/", crate::render_post::cat_path(s)),
+                    "url": format!("{site_url}{prefix}/{}/", crate::admin::plugins::theme_traveltour::cat_path(conn, s)),
                     "name": esc(n),
                 }))
                 .collect();

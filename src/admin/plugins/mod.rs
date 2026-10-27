@@ -28,6 +28,7 @@ use std::path::Path;
 use std::pin::Pin;
 use std::sync::LazyLock;
 
+pub(crate) mod theme_traveltour;
 pub(crate) mod tourmaster;
 /// Everything a kind editor needs — the four hooks the old `EditorPlugin`
 /// carried, verbatim. `KindDef.editor` is `None` for kinds with no plugin
@@ -324,7 +325,7 @@ static CORE_KINDS: &[KindDef] = &[
 ];
 
 /// Registered adapters — the compile-time plugin list.
-static ADAPTERS: &[&'static dyn PluginAdapter] = &[&tourmaster::ADAPTER];
+static ADAPTERS: &[&'static dyn PluginAdapter] = &[&tourmaster::ADAPTER, &theme_traveltour::ADAPTER];
 
 /// Indexed view over `ADAPTERS` + `CORE_KINDS`, built once.
 struct Registry {

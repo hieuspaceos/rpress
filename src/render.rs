@@ -109,8 +109,9 @@ pub fn render_slug(
         let alang = alang_s.as_str();
         let first = path.split('/').next().unwrap_or("");
         let leaf = path.rsplit('/').next().unwrap_or("");
+        let tag_base = crate::admin::plugins::theme_traveltour::tag_base(&conn);
         let term = match first {
-            "etiquette" => crate::render_archive::term_by_path(&conn, "post_tag", leaf),
+            f if f == tag_base => crate::render_archive::term_by_path(&conn, "post_tag", leaf),
             "category" => crate::render_archive::term_by_path(&conn, "category", leaf),
             t if crate::render_archive::is_taxonomy(&conn, t) && !leaf.is_empty() => {
                 crate::render_archive::term_by_path(&conn, t, leaf)
@@ -118,7 +119,7 @@ pub fn render_slug(
             _ => None,
         };
         if let Some(term) = term {
-            let canonical = term_canonical_path(&lang_cfg, &term, alang);
+            let canonical = term_canonical_path(&conn, &lang_cfg, &term, alang);
             let ctx = crate::admin::plugins::RenderCtx {
                 slug: slug.to_string(),
                 lang: alang.to_string(),
@@ -137,7 +138,7 @@ pub fn render_slug(
         // leaf slug once post and old-slug lookups have missed.
         if !leaf.is_empty() {
             if let Some(term) = crate::render_archive::term_by_path(&conn, "category", leaf) {
-                let canonical = term_canonical_path(&lang_cfg, &term, alang);
+                let canonical = term_canonical_path(&conn, &lang_cfg, &term, alang);
                 let ctx = crate::admin::plugins::RenderCtx {
                     slug: slug.to_string(),
                     lang: alang.to_string(),
@@ -213,19 +214,20 @@ pub(crate) fn post_canonical_path(conn: &Connection, id: i64, tour_base: &str) -
 
 /// Canonical archive path for a resolved term under request language
 /// `lang` — mirrors the emit mapping in `generate::term_out_paths`
-/// (categories nest via cat_path, post_tag at etiquette/, other
-/// taxonomies at {tax}/{slug}, lang rel-prefix). Using the term's own
-/// taxonomy (not the request segment) keeps `/category/x/` → `/x/`.
+/// (categories nest via the theme's cat_path, post_tag under the theme's
+/// tag base, other taxonomies at {tax}/{slug}, lang rel-prefix). Using the
+/// term's own taxonomy (not the request segment) keeps `/category/x/` → `/x/`.
 fn term_canonical_path(
+    conn: &Connection,
     cfg: &crate::lang::LangConfig,
     term: &crate::render_archive::Term,
     lang: &str,
 ) -> String {
     let t = term.taxonomy.to_lowercase();
     let base = if t == "category" {
-        crate::render_post::cat_path(&term.slug)
+        crate::admin::plugins::theme_traveltour::cat_path(conn, &term.slug)
     } else if t == "post_tag" {
-        format!("etiquette/{}", term.slug)
+        format!("{}/{}", crate::admin::plugins::theme_traveltour::tag_base(conn), term.slug)
     } else {
         format!("{t}/{}", term.slug)
     };

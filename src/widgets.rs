@@ -1,11 +1,11 @@
 //! Widget rendering + admin for WP parity.
 //!
-//! SEED_WIDGETS + src/seed/*.json are the REFERENCE THEME's default widget
-//! set (traveltour: sidebar-post-*, sidebar-archive-*, footer-*; the
-//! plugin-owned sidebar seeds ship with their adapter). To ship your own
-//! theme, replace `src/seed/` payloads and the SIDEBARS / SEED_WIDGETS
-//! tables below — the runtime feature (sidebar/widget CRUD, fragment
-//! render, dirty-flag regen) is theme-agnostic.
+//! Sidebar regions and seed payloads are theme/plugin data: the reference
+//! theme's set (traveltour: sidebar-post-*, sidebar-archive-*, footer-*)
+//! ships with the `theme-traveltour` adapter and plugin-owned regions with
+//! their own adapters — both merge via `all_sidebars()` / `seeds()`. The
+//! runtime feature (sidebar/widget CRUD, fragment render, dirty-flag
+//! regen) is theme-agnostic.
 //! Registered sidebars + widget instances — WP widgets.php parity.
 //!
 //! Data model (see plans/261026-0426-wp-parity-widgets/):
@@ -28,12 +28,12 @@
 //!   * settings — `categories` widgets store `{taxonomy, title, order[],
 //!     children{parent: [slug…]}, show_counts}`; adapter-registered types
 //!     keep their own schemas. Categories taxonomy='category' builds its
-//!     hierarchy from `render_post::cat_parent()` (terms.parent_id was
-//!     never imported), counts = COUNT(post_terms JOIN posts
-//!     status='publish'), and `cat-item-N` ids from
-//!     `render_archive::wp_term_id`'s frozen wp map (extracted from the
-//!     wpcategorieswidget-9 capture). FR/ES partitions come from the
-//!     cat_parent tree's root sets.
+//!     hierarchy from the theme taxonomy map (`theme_traveltour::
+//!     cat_children`; terms.parent_id was never imported), counts =
+//!     COUNT(post_terms JOIN posts status='publish'), and `cat-item-N`
+//!     ids from `render_archive::wp_term_id`'s frozen wp map (extracted
+//!     from the wpcategorieswidget-9 capture). FR/ES partitions come from
+//!     the theme map's root sets.
 //!
 //! Lang routing: render-side callers keep asking for the phase-1 base ids
 //! ("sidebar-post", "sidebar-archive"); `resolve_id` maps them to the
@@ -63,51 +63,12 @@ pub(crate) struct Sidebar {
     pub after: &'static str,
 }
 
-const POST_AREA_BEFORE: &str = r#"<div class=" traveltour-sidebar-right traveltour-column-15 traveltour-line-height traveltour-line-height" ><div class="traveltour-sidebar-area traveltour-item-pdlr" >"#;
-const POST_AREA_AFTER: &str = r#"</div></div></div></div>"#;
-
-/// Registered sidebar regions (wp `register_sidebar` equivalents): the
-/// core set — adapter-declared regions merge via `all_sidebars()`. Rows
-/// in the `sidebars` table beyond this set are admin-registered custom
-/// sidebars (the registry = const ∪ adapter ∪ stored).
-pub(crate) const SIDEBARS: &[Sidebar] = &[
-    Sidebar { id: "sidebar-post-fr", name: "Blog sidebar (FR)", lang: "fr",
-        before: POST_AREA_BEFORE,
-        after: POST_AREA_AFTER },
-    Sidebar { id: "sidebar-post-es", name: "Blog sidebar (ES)", lang: "es",
-        before: POST_AREA_BEFORE,
-        after: POST_AREA_AFTER },
-    Sidebar { id: "sidebar-archive-fr", name: "Tour archive sidebar (FR)", lang: "fr",
-        before: r#""#,
-        after: r#""# },
-    Sidebar { id: "sidebar-archive-es", name: "Tour archive sidebar (ES)", lang: "es",
-        before: r#""#,
-        after: r#""# },
-    Sidebar { id: "footer-1-fr", name: "Footer column 1 (FR)", lang: "fr",
-        before: r#""#,
-        after: r#""# },
-    Sidebar { id: "footer-2-fr", name: "Footer column 2 (FR)", lang: "fr",
-        before: r#""#,
-        after: r#""# },
-    Sidebar { id: "footer-3-fr", name: "Footer column 3 (FR)", lang: "fr",
-        before: r#""#,
-        after: r#""# },
-    Sidebar { id: "footer-4-fr", name: "Footer column 4 (FR)", lang: "fr",
-        before: r#""#,
-        after: r#""# },
-    Sidebar { id: "footer-1-es", name: "Footer column 1 (ES)", lang: "es",
-        before: r#""#,
-        after: r#""# },
-    Sidebar { id: "footer-2-es", name: "Footer column 2 (ES)", lang: "es",
-        before: r#""#,
-        after: r#""# },
-    Sidebar { id: "footer-3-es", name: "Footer column 3 (ES)", lang: "es",
-        before: r#""#,
-        after: r#""# },
-    Sidebar { id: "footer-4-es", name: "Footer column 4 (ES)", lang: "es",
-        before: r#""#,
-        after: r#""# },
-];
+/// Registered sidebar regions (wp `register_sidebar` equivalents): none in
+/// core — every region is adapter-declared (`theme-traveltour` ships the
+/// reference theme's set) and merges via `all_sidebars()`. Rows in the
+/// `sidebars` table beyond that set are admin-registered custom sidebars
+/// (the registry = const ∪ adapter ∪ stored).
+pub(crate) const SIDEBARS: &[Sidebar] = &[];
 
 /// Sidebar registry = core const ∪ adapter-declared regions. One flat
 /// list in declared order (core first, then adapters) — callers iterate
@@ -293,105 +254,14 @@ pub(crate) struct Seed {
     pub(crate) settings: &'static str,
 }
 
-/// Verbatim extraction of the pre-registry sources:
-///   sidebar-post-fr ← the old templates/sidebar_post.html FR capture
-///                   (search-4, media_image-4; wpcategorieswidget-9 is now a
-///                   LIVE categories widget — the frozen capture became the
-///                   `category` wp-id map + tree)
-///   sidebar-post-es ← phase-3 hand-translation (NO ES capture exists —
-///                   new content, not byte-parity)
-///   footer-N-{fr,es} ← the traveltour-footer-column blocks in
-///                   templates/base_fr.html / base_es.html
-///   sidebar-archive-{fr,es} ← the WIDGETS const (FR, verbatim) + ES mirror
-/// Plugin-owned seed payloads (sidebar-tour, the blog sidebars' live
-/// list widgets) ship under `admin/plugins/<slug>/seed/` via
-/// `PluginAdapter::seeds`.
-// Reference-theme seed payloads (see file header). Replace for your theme.
-mod seed {
-    pub const SIDEBAR_POST_FR_SEARCH_4: &str = include_str!("seed/sidebar-post-fr-search-4.json");
-    pub const SIDEBAR_POST_FR_WPCATEGORIESWIDGET_9: &str = include_str!("seed/sidebar-post-fr-wpcategorieswidget-9.json");
-    pub const SIDEBAR_POST_FR_MEDIA_IMAGE_4: &str = include_str!("seed/sidebar-post-fr-media_image-4.json");
-    pub const SIDEBAR_POST_ES_SEARCH_5: &str = include_str!("seed/sidebar-post-es-search-5.json");
-    pub const SIDEBAR_POST_ES_WPCATEGORIESWIDGET_10: &str = include_str!("seed/sidebar-post-es-wpcategorieswidget-10.json");
-    pub const SIDEBAR_POST_ES_MEDIA_IMAGE_5: &str = include_str!("seed/sidebar-post-es-media_image-5.json");
-    pub const FOOTER_1_FR_TEXT_1: &str = include_str!("seed/footer-1-fr-text-1.json");
-    pub const FOOTER_2_FR_CUSTOM_HTML_3: &str = include_str!("seed/footer-2-fr-custom_html-3.json");
-    pub const FOOTER_2_FR_TEXT_17: &str = include_str!("seed/footer-2-fr-text-17.json");
-    pub const FOOTER_3_FR_CUSTOM_HTML_5: &str = include_str!("seed/footer-3-fr-custom_html-5.json");
-    pub const FOOTER_3_FR_TEXT_15: &str = include_str!("seed/footer-3-fr-text-15.json");
-    pub const FOOTER_4_FR_CUSTOM_HTML_6: &str = include_str!("seed/footer-4-fr-custom_html-6.json");
-    pub const FOOTER_1_ES_TEXT_20: &str = include_str!("seed/footer-1-es-text-20.json");
-    pub const FOOTER_2_ES_CUSTOM_HTML_9: &str = include_str!("seed/footer-2-es-custom_html-9.json");
-    pub const FOOTER_2_ES_TEXT_21: &str = include_str!("seed/footer-2-es-text-21.json");
-    pub const FOOTER_3_ES_CUSTOM_HTML_10: &str = include_str!("seed/footer-3-es-custom_html-10.json");
-    pub const FOOTER_3_ES_TEXT_22: &str = include_str!("seed/footer-3-es-text-22.json");
-    pub const FOOTER_4_ES_CUSTOM_HTML_11: &str = include_str!("seed/footer-4-es-custom_html-11.json");
-    pub const SIDEBAR_ARCHIVE_FR_WPCATEGORIESWIDGET_5: &str = include_str!("seed/sidebar-archive-fr-wpcategorieswidget-5.json");
-    pub const SIDEBAR_ARCHIVE_FR_WPCATEGORIESWIDGET_7: &str = include_str!("seed/sidebar-archive-fr-wpcategorieswidget-7.json");
-    pub const SIDEBAR_ARCHIVE_FR_WPCATEGORIESWIDGET_8: &str = include_str!("seed/sidebar-archive-fr-wpcategorieswidget-8.json");
-    pub const SIDEBAR_ARCHIVE_FR_WPCATEGORIESWIDGET_6: &str = include_str!("seed/sidebar-archive-fr-wpcategorieswidget-6.json");
-    pub const SIDEBAR_ARCHIVE_ES_WPCATEGORIESWIDGET_11: &str = include_str!("seed/sidebar-archive-es-wpcategorieswidget-11.json");
-    pub const SIDEBAR_ARCHIVE_ES_WPCATEGORIESWIDGET_12: &str = include_str!("seed/sidebar-archive-es-wpcategorieswidget-12.json");
-    pub const SIDEBAR_ARCHIVE_ES_WPCATEGORIESWIDGET_13: &str = include_str!("seed/sidebar-archive-es-wpcategorieswidget-13.json");
-    pub const SIDEBAR_ARCHIVE_ES_WPCATEGORIESWIDGET_14: &str = include_str!("seed/sidebar-archive-es-wpcategorieswidget-14.json");
-}
+/// Widget seed rows are plugin/theme data — core seeds nothing itself;
+/// `seed_widgets` applies every registered adapter's `seeds()`. The
+/// reference theme's rows ship with `theme-traveltour`
+/// (`admin/plugins/theme_traveltour/widgets_theme.rs`); `sidebar-tour` and
+/// the `tour_list` blog seeds ship with `tourmaster`.
+const SEED_WIDGETS: &[Seed] = &[];
 
-const SEED_WIDGETS: &[Seed] = &[
-    Seed { sidebar: "sidebar-post-fr", id: "search-4", typ: "search", title: "",
-        settings: seed::SIDEBAR_POST_FR_SEARCH_4 },
-    Seed { sidebar: "sidebar-post-fr", id: "wpcategorieswidget-9", typ: "categories", title: "Catégories",
-        settings: seed::SIDEBAR_POST_FR_WPCATEGORIESWIDGET_9 },
-    Seed { sidebar: "sidebar-post-fr", id: "media_image-4", typ: "media_image", title: "",
-        settings: seed::SIDEBAR_POST_FR_MEDIA_IMAGE_4 },
-    Seed { sidebar: "sidebar-post-es", id: "search-5", typ: "search", title: "",
-        settings: seed::SIDEBAR_POST_ES_SEARCH_5 },
-    Seed { sidebar: "sidebar-post-es", id: "wpcategorieswidget-10", typ: "categories", title: "Categorías",
-        settings: seed::SIDEBAR_POST_ES_WPCATEGORIESWIDGET_10 },
-    Seed { sidebar: "sidebar-post-es", id: "media_image-5", typ: "media_image", title: "",
-        settings: seed::SIDEBAR_POST_ES_MEDIA_IMAGE_5 },
-    Seed { sidebar: "footer-1-fr", id: "text-1", typ: "text", title: "",
-        settings: seed::FOOTER_1_FR_TEXT_1 },
-    Seed { sidebar: "footer-2-fr", id: "custom_html-3", typ: "custom_html", title: "",
-        settings: seed::FOOTER_2_FR_CUSTOM_HTML_3 },
-    Seed { sidebar: "footer-2-fr", id: "text-17", typ: "text", title: "",
-        settings: seed::FOOTER_2_FR_TEXT_17 },
-    Seed { sidebar: "footer-3-fr", id: "custom_html-5", typ: "custom_html", title: "",
-        settings: seed::FOOTER_3_FR_CUSTOM_HTML_5 },
-    Seed { sidebar: "footer-3-fr", id: "text-15", typ: "text", title: "",
-        settings: seed::FOOTER_3_FR_TEXT_15 },
-    Seed { sidebar: "footer-4-fr", id: "custom_html-6", typ: "custom_html", title: "",
-        settings: seed::FOOTER_4_FR_CUSTOM_HTML_6 },
-    Seed { sidebar: "footer-1-es", id: "text-20", typ: "text", title: "",
-        settings: seed::FOOTER_1_ES_TEXT_20 },
-    Seed { sidebar: "footer-2-es", id: "custom_html-9", typ: "custom_html", title: "",
-        settings: seed::FOOTER_2_ES_CUSTOM_HTML_9 },
-    Seed { sidebar: "footer-2-es", id: "text-21", typ: "text", title: "",
-        settings: seed::FOOTER_2_ES_TEXT_21 },
-    Seed { sidebar: "footer-3-es", id: "custom_html-10", typ: "custom_html", title: "",
-        settings: seed::FOOTER_3_ES_CUSTOM_HTML_10 },
-    Seed { sidebar: "footer-3-es", id: "text-22", typ: "text", title: "",
-        settings: seed::FOOTER_3_ES_TEXT_22 },
-    Seed { sidebar: "footer-4-es", id: "custom_html-11", typ: "custom_html", title: "",
-        settings: seed::FOOTER_4_ES_CUSTOM_HTML_11 },
-    Seed { sidebar: "sidebar-archive-fr", id: "wpcategorieswidget-5", typ: "categories", title: "Voyage par region",
-        settings: seed::SIDEBAR_ARCHIVE_FR_WPCATEGORIESWIDGET_5 },
-    Seed { sidebar: "sidebar-archive-fr", id: "wpcategorieswidget-7", typ: "categories", title: "Voyage par profil",
-        settings: seed::SIDEBAR_ARCHIVE_FR_WPCATEGORIESWIDGET_7 },
-    Seed { sidebar: "sidebar-archive-fr", id: "wpcategorieswidget-8", typ: "categories", title: "Voyage par durée",
-        settings: seed::SIDEBAR_ARCHIVE_FR_WPCATEGORIESWIDGET_8 },
-    Seed { sidebar: "sidebar-archive-fr", id: "wpcategorieswidget-6", typ: "categories", title: "Voyage par styles",
-        settings: seed::SIDEBAR_ARCHIVE_FR_WPCATEGORIESWIDGET_6 },
-    Seed { sidebar: "sidebar-archive-es", id: "wpcategorieswidget-11", typ: "categories", title: "Viaje por región",
-        settings: seed::SIDEBAR_ARCHIVE_ES_WPCATEGORIESWIDGET_11 },
-    Seed { sidebar: "sidebar-archive-es", id: "wpcategorieswidget-12", typ: "categories", title: "Viaje por perfil",
-        settings: seed::SIDEBAR_ARCHIVE_ES_WPCATEGORIESWIDGET_12 },
-    Seed { sidebar: "sidebar-archive-es", id: "wpcategorieswidget-13", typ: "categories", title: "Viaje por duración",
-        settings: seed::SIDEBAR_ARCHIVE_ES_WPCATEGORIESWIDGET_13 },
-    Seed { sidebar: "sidebar-archive-es", id: "wpcategorieswidget-14", typ: "categories", title: "Viaje por estilos",
-        settings: seed::SIDEBAR_ARCHIVE_ES_WPCATEGORIESWIDGET_14 },
-];
-
-/// Phase-3 seed version; bump when SEED_WIDGETS' *shape* changes so the
+/// Phase-3 seed version; bump when the seeded *shape* changes so the
 /// one-time upgrade path re-runs (never re-seeds deleted rows — the
 /// upgrade only converts the two frozen widgets it owns and inserts the
 /// new -es sidebars/widgets with OR IGNORE).
@@ -528,9 +398,9 @@ fn upgrade(conn: &Connection) -> Result<()> {
 
 /// Phase-2 frozen settings_json payloads (verbatim). The upgrade UPDATEs
 /// guard on these so admin-modified fragments are never rewritten.
-const LEGACY_CAT9: &str = include_str!("seed/wpcategorieswidget_9_legacy.json");
+const LEGACY_CAT9: &str = include_str!("admin/plugins/theme_traveltour/seed/wpcategorieswidget_9_legacy.json");
 
-const LEGACY_CH13: &str = include_str!("seed/custom_html_13_legacy.json");
+const LEGACY_CH13: &str = include_str!("admin/plugins/theme_traveltour/seed/custom_html_13_legacy.json");
 
 /// Rows of a sidebar in display order: (id, type, title, settings_json).
 fn rows(conn: &Connection, sidebar_id: &str) -> Result<Vec<(String, String, String, String)>> {
@@ -587,7 +457,7 @@ pub(crate) fn render_fragment(html: &str, site_url: &str, lang: &str) -> Result<
 /// Render a sidebar to HTML: `before` + each widget's output + `after`.
 /// Widget output: a non-empty `html` setting renders verbatim (frozen or
 /// admin override); otherwise the type's live renderer runs — core types
-/// (`categories` builds its tree incl. the cat_parent-derived 'category'
+/// (`categories` builds its tree incl. the taxonomy-map 'category'
 /// hierarchy) or the owning adapter's renderer via `plugin_widget_render`.
 /// `current_slug` marks the current-cat on rendered term lists (live WP
 /// behaviour).
@@ -722,15 +592,17 @@ fn term_names(conn: &Connection, taxonomy: &str) -> Result<HashMap<String, (i64,
 }
 
 /// Build the `category` tree for `lang`. Edge source: the widget's own
-/// `children` map when present (the live capture deviates from cat_parent
-/// in one place — recettes-faciles under cuisine-vietnamienne, not
-/// plats-vietnamiens — so the capture wins per-WP-registered-widget); else
-/// the cat_parent map (the hierarchy of record — terms.parent_id is NULL
-/// on every row). Roots are `order` when given, else the lang roots,
+/// `children` map when present (the live capture deviates from the
+/// taxonomy map in one place — recettes-faciles under
+/// cuisine-vietnamienne, not plats-vietnamiens — so the capture wins
+/// per-WP-registered-widget); else the theme `cat_edges` map (the
+/// hierarchy of record — terms.parent_id is NULL on every row).
+/// Roots are `order` when given, else the lang roots,
 /// name-ordered (WP wp_list_categories orderby=name); children same
 /// ordering. A term renders only when it is registered in `terms` AND
 /// (has published posts or has included descendants) — wp hide_empty.
 fn category_tree(
+    conn: &Connection,
     names: &HashMap<String, (i64, String)>,
     counts: &HashMap<String, i64>,
     es: bool,
@@ -757,10 +629,9 @@ fn category_tree(
                 .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
                 .unwrap_or_default()
         } else {
-            crate::render_post::cat_children(slug)
-                .iter()
-                .map(|s| s.to_string())
-                .collect()
+            // Hierarchy of record: the theme adapter's taxonomy map
+            // (terms.parent_id is NULL on every row).
+            crate::admin::plugins::theme_traveltour::cat_children(conn, slug)
         }
     };
     let display = |slug: &str| -> Option<String> {
@@ -909,7 +780,7 @@ fn render_categories_widget(
     let counts = term_counts(conn, taxonomy, lang)?;
     let mut names = term_names(conn, taxonomy)?;
     let tree = if taxonomy == "category" {
-        category_tree(&names, &counts, es, depth, &order, &children_map)
+        category_tree(conn, &names, &counts, es, depth, &order, &children_map)
     } else {
         settings_tree(&mut names, &counts, taxonomy, &order, &children_map, depth)
     };
@@ -922,11 +793,11 @@ fn render_categories_widget(
         // The node slug slot carries the full link: for 'category' the
         // hierarchical cat_path, for other taxonomies /{tax}/{slug}/.
         let href = if taxonomy == "category" {
-            format!("{site_url}{prefix}/{}/", crate::render_post::cat_path(&n.slug))
+            format!("{site_url}{prefix}/{}/", crate::admin::plugins::theme_traveltour::cat_path(conn, &n.slug))
         } else {
             format!("{site_url}{prefix}/{}/{}/", taxonomy.to_lowercase(), n.slug)
         };
-        emit_top(&mut items, n, &href, taxonomy, show_counts, current_slug, site_url, prefix);
+        emit_top(&mut items, n, &href, taxonomy, show_counts, current_slug, site_url, prefix, conn);
     }
 
     Ok(format!(
@@ -947,6 +818,7 @@ fn emit_top(
     current_slug: &str,
     site_url: &str,
     prefix: &str,
+    conn: &Connection,
 ) {
     out.push_str(&format!(
         "\t<li class=\"cat-item cat-item-{}{}\"><a{} href=\"{}\">{}</a>",
@@ -963,7 +835,7 @@ fn emit_top(
         out.push_str("\n</li>\n");
     } else {
         out.push('\n');
-        emit_tree(out, n, 1, taxonomy, show_counts, current_slug, site_url, prefix);
+        emit_tree(out, n, 1, taxonomy, show_counts, current_slug, site_url, prefix, conn);
         out.push_str("</li>\n");
     }
 }
@@ -977,12 +849,13 @@ fn emit_tree(
     current_slug: &str,
     site_url: &str,
     prefix: &str,
+    conn: &Connection,
 ) {
     let ul_indent = "\t".repeat(li_depth.saturating_sub(1));
     out.push_str(&format!("{ul_indent}<ul class=\"children\">\n"));
     for c in &parent.children {
         let href = if taxonomy == "category" {
-            format!("{site_url}{prefix}/{}/", crate::render_post::cat_path(&c.slug))
+            format!("{site_url}{prefix}/{}/", crate::admin::plugins::theme_traveltour::cat_path(conn, &c.slug))
         } else {
             format!("{site_url}{prefix}/{}/{}/", taxonomy.to_lowercase(), c.slug)
         };
@@ -1001,7 +874,7 @@ fn emit_tree(
             out.push_str("\n</li>\n");
         } else {
             out.push('\n');
-            emit_tree(out, c, li_depth + 1, taxonomy, show_counts, current_slug, site_url, prefix);
+            emit_tree(out, c, li_depth + 1, taxonomy, show_counts, current_slug, site_url, prefix, conn);
             out.push_str("</li>\n");
         }
     }
@@ -1016,7 +889,7 @@ fn emit_tree(
 /// emits `{id, html}` — rendered once, same markup the render_sidebar
 /// path produces. `terms` resolve live from `terms`, `cat-item-N` keeps
 /// wp ids via `render_archive::wp_term_id`, children come from each
-/// widget's `children` map (or cat_parent for taxonomy='category').
+/// widget's `children` map (or the taxonomy map for taxonomy='category').
 pub(crate) fn sidebar_widgets(
     conn: &Connection,
     sidebar_id: &str,

@@ -718,6 +718,14 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
         }
     }
 
+    // Theme seed: `taxonomy_map` is a Data-backend setting the theme
+    // adapter owns — migrate() is idempotent (`INSERT OR IGNORE`), so a
+    // previously seeded or imported row wins.
+    crate::admin::plugins::PluginAdapter::migrate(
+        &crate::admin::plugins::theme_traveltour::ADAPTER,
+        db_path,
+    )?;
+
     if dropped_meta > 0 {
         rep.log(format!(
             "post_meta: {dropped_meta} value(s) dropped — the (post_id,meta_key) \
