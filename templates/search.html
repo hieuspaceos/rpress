@@ -1,4 +1,4 @@
-{% extends "base_fr.html" if lang != 'es' else "base_es.html" %}
+{% extends base %}
 {% block content %}
 <div class="traveltour-page-title-wrap  traveltour-style-large traveltour-center-align"><div class="traveltour-header-transparent-substitute" ></div><div class="traveltour-page-title-overlay" ></div><div class="traveltour-page-title-container traveltour-container" ><div class="traveltour-page-title-content traveltour-item-pdlr" ><h1 class="traveltour-page-title" >{% if lang == 'es' %}Buscar{% else %}Recherche{% endif %}</h1></div></div></div>
 {# data-pagefind-ignore: the search UI itself must never enter its own index #}

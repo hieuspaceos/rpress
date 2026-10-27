@@ -1,7 +1,7 @@
 ---
 phase: 3
 title: "Theme separation: per-stylesheet base resolution + adapter gating"
-status: pending
+status: done
 priority: P1
 effort: "2d"
 dependencies: [2]

@@ -595,6 +595,7 @@ pub fn regen_post(db: &Path, templates: &Path, out: &Path, post_id: i64, tour_ba
 /// have no post row: every var base_fr/base_es reads.
 fn bare_ctx(
     conn: &Connection,
+    templates: &Path,
     site_url: &str,
     lang: &str,
     title: &str,
@@ -665,6 +666,14 @@ fn bare_ctx(
         let html = crate::widgets::render_sidebar(conn, &sidebar, site_url, lang, "", kind_base.unwrap_or_default())?;
         m.insert(format!("footer_{n}"), serde_json::json!(html));
     }
+    {
+        let lang_cfg = crate::lang::config(conn);
+        let theme_dir = crate::render::theme_template_dir(conn, templates);
+        m.insert(
+            "base".into(),
+            json!(crate::lang::template_name(templates, theme_dir.as_deref(), &lang_cfg, lang)),
+        );
+    }
     m.insert("body".into(), json!(""));
     Ok(m)
 }
@@ -672,9 +681,10 @@ fn bare_ctx(
 pub(crate) fn write_404(out: &Path, templates: &Path, conn: &Connection, site_url: &str, kind_bases: &KindBases) -> Result<()> {
     // Real 404 markup from the template — previously this re-emitted the
     // homepage as 404.html.
-    let env = render::load_env(templates)?;
+    let theme_dir = render::theme_template_dir(conn, templates);
+    let env = render::load_env_theme(templates, theme_dir.as_deref())?;
     let site = site_url.trim_end_matches('/');
-    let ctx = bare_ctx(conn, site_url, "fr", "404 — Page introuvable", &format!("{site}/404.html"), plugins::base_for(kind_bases, "tour"))?;
+    let ctx = bare_ctx(conn, templates, site_url, "fr", "404 — Page introuvable", &format!("{site}/404.html"), plugins::base_for(kind_bases, "tour"))?;
     let html = env
         .get_template("404.html")?
         .render(minijinja::Value::from_serialize(serde_json::Value::Object(ctx)))?;
@@ -728,7 +738,8 @@ pub(crate) fn write_search(out: &Path, templates: &Path, conn: &Connection, site
     // run: real pagefind-ui when present, degraded form + notice when not.
     let indexed = out.join("pagefind").join("pagefind-ui.js").is_file()
         && out.join("pagefind").join("pagefind.js").is_file();
-    let env = render::load_env(templates)?;
+    let theme_dir = render::theme_template_dir(conn, templates);
+    let env = render::load_env_theme(templates, theme_dir.as_deref())?;
     let site = site_url.trim_end_matches('/');
     let lang_cfg = crate::lang::config(conn);
     for lang in &lang_cfg.langs {
@@ -736,6 +747,7 @@ pub(crate) fn write_search(out: &Path, templates: &Path, conn: &Connection, site
         let dir = if lp.is_empty() { "recherche".to_string() } else { format!("{lp}/recherche") };
         let mut ctx = bare_ctx(
             conn,
+            templates,
             site_url,
             lang,
             if lang == "es" { "Buscar" } else { "Recherche" },

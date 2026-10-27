@@ -28,6 +28,7 @@ use std::path::Path;
 use std::pin::Pin;
 use std::sync::LazyLock;
 
+pub(crate) mod theme_tevily;
 pub(crate) mod theme_traveltour;
 pub(crate) mod tourmaster;
 pub(crate) mod goodlayers;
@@ -265,6 +266,13 @@ pub(crate) trait PluginAdapter: Sync {
     fn widget_fields(&self, _typ: &str) -> Option<&'static [crate::widgets::FieldSpec]> {
         None
     }
+    /// Theme adapters declare their `ThemeDef` here; every other adapter
+    /// returns `None` (default). Public render reads the seeded values
+    /// through `site.theme.*` settings — this hook only *writes* at
+    /// migrate time and steers `load_env`/`template_name`.
+    fn theme(&self) -> Option<&'static ThemeDef> {
+        None
+    }
     /// Sidebar regions the adapter registers (`sidebar-tour`). Core
     /// merges them with the const `SIDEBARS` list.
     fn sidebars(&self) -> &'static [crate::widgets::Sidebar] {
@@ -361,7 +369,12 @@ static CORE_KINDS: &[KindDef] = &[
 ];
 
 /// Registered adapters — the compile-time plugin list.
-static ADAPTERS: &[&'static dyn PluginAdapter] = &[&tourmaster::ADAPTER, &theme_traveltour::ADAPTER, &goodlayers::ADAPTER];
+static ADAPTERS: &[&'static dyn PluginAdapter] = &[
+    &tourmaster::ADAPTER,
+    &theme_traveltour::ADAPTER,
+    &theme_tevily::ADAPTER,
+    &goodlayers::ADAPTER,
+];
 
 /// Indexed view over `ADAPTERS` + `CORE_KINDS`, built once.
 struct Registry {
@@ -421,6 +434,38 @@ pub(crate) fn adapter_for_kind(kind: &str) -> Option<&'static dyn PluginAdapter>
 /// on the adapter owning a `posts.kind`.
 pub(crate) fn adapters() -> &'static [&'static dyn PluginAdapter] {
     ADAPTERS
+}
+
+/// What a theme adapter contributes to template resolution + chrome.
+/// Only theme adapters return `Some(theme())`; `PluginAdapter::theme`
+/// defaults to `None`.
+#[derive(Clone, Copy)]
+#[allow(dead_code)] // body_suffix/page_title_wrap/preferred_locations are
+                    // consumed by the phase-04/06 chrome+menu work; declared
+                    // now so the contract is stable.
+pub(crate) struct ThemeDef {
+    /// `settings.stylesheet` may be a child theme name
+    /// (`traveltour-child`, `tevily_child`) — the adapter decides.
+    pub matches_stylesheet: fn(&str) -> bool,
+    /// Templates dir under `templates/theme/` probed before the shared
+    /// `templates/` root by `load_env`/`template_name`.
+    pub template_dir: &'static str,
+    /// `site.theme.body_suffix` value seeded into settings at migrate.
+    pub body_suffix: &'static str,
+    /// `site.theme.page_title_wrap` value ("" → no wrap).
+    pub page_title_wrap: &'static str,
+    /// Menu locations this theme prefers, in pick order (phase-01).
+    pub preferred_locations: &'static [&'static str],
+}
+
+/// The adapter carrying this stylesheet's theme, if any.
+/// `stylesheet` may be a child name — matching is the adapter's
+/// `matches_stylesheet`, never a substring guess here.
+pub(crate) fn theme_for_stylesheet(stylesheet: &str) -> Option<&'static ThemeDef> {
+    ADAPTERS
+        .iter()
+        .filter_map(|a| a.theme())
+        .find(|t| (t.matches_stylesheet)(stylesheet))
 }
 
 /// Every registered `KindDef` in declared order: core first, then

@@ -48,7 +48,7 @@ fn fixture(root: &Path) -> PathBuf {
     c.execute_batch(
         "INSERT INTO settings(key,value) VALUES
          ('languages','fr,es'),('primary_lang','fr'),('page_on_front','30'),
-         ('site_url','http://127.0.0.1'),('site_name','TourBaseTest');",
+         ('site_url','http://127.0.0.1'),('site_name','TourBaseTest'),('stylesheet','traveltour');",
     )
     .unwrap();
     post(&c, 30, "accueil", "fr", "Accueil", "publish", "page");

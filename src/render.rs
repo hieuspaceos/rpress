@@ -475,7 +475,8 @@ fn render_row(
         post.insert("meta".into(), Value::Object(meta));
     }
     let post_v = JVal::from_serialize(Value::Object(post));
-    let mut env = load_env(templates)?;
+    let theme_dir = theme_template_dir(&conn, templates);
+    let mut env = load_env_theme(templates, theme_dir.as_deref())?;
     register_helpers(&mut env, &media, site_url);
     let site = site_data_cached(&conn, &lang, site_url, tour_base)?;
     let body = render_nodes(&mut env, &tree, &media, site_url, &site, &lang, &post_v, Some(&conn), true, tour_base)?;
@@ -529,7 +530,7 @@ fn render_row(
             .collect();
     }
     let hreflang_links = hreflang_links(&alternates);
-    let base = crate::lang::template_name(templates, &lang_cfg, &lang);
+    let base = crate::lang::template_name(templates, theme_dir.as_deref(), &lang_cfg, &lang);
     // page templates just wrap body; we inject into base content block directly
     let site_name = conn
         .query_row(
@@ -573,6 +574,7 @@ fn render_row(
     ctx.insert("title".into(), json!(esc(&title)));
     ctx.insert("site_url".into(), json!(site_url));
     ctx.insert("body".into(), json!(body));
+    ctx.insert("base".into(), json!(base));
 
     let navx = match ctx.get("navx") {
         Some(Value::Object(m)) => m.clone(),
@@ -876,7 +878,7 @@ fn count_types(v: &Value, total: &mut u64, covered: &mut u64, by: &mut HashMap<S
 /// process; per-render helpers still register on the clone. Busted by
 /// `env_cache_bust` (admin bust_cache/template edit paths) — a stale
 /// Environment would serve pre-edit template output.
-static ENVS: std::sync::LazyLock<parking_lot::RwLock<std::collections::HashMap<std::path::PathBuf, Environment<'static>>>> =
+static ENVS: std::sync::LazyLock<parking_lot::RwLock<std::collections::HashMap<(std::path::PathBuf, Option<std::path::PathBuf>), Environment<'static>>>> =
     std::sync::LazyLock::new(parking_lot::RwLock::default);
 
 /// Drop all cached environments — call from every cache-bust path.
@@ -884,18 +886,74 @@ pub(crate) fn env_cache_bust() {
     ENVS.write().clear();
 }
 
+/// Templates dir probed before the shared `templates/` root for the
+/// given site — theme adapter's `template_dir` under `templates/theme/`
+/// when `settings.stylesheet` matches a registered theme; `None`
+/// otherwise (or no adapter match — falls back to shared only).
+pub(crate) fn theme_template_dir(conn: &Connection, templates: &Path) -> Option<std::path::PathBuf> {
+    let stylesheet = conn
+        .query_row("SELECT value FROM settings WHERE key='stylesheet'", [], |r| {
+            r.get::<_, String>(0)
+        })
+        .unwrap_or_default();
+    let def = crate::admin::plugins::theme_for_stylesheet(&stylesheet)?;
+    // The matched theme's dir only wins when it actually ships base
+    // templates — an empty dir (tevily stub until phase 06) falls back
+    // to the default theme's bases (traveltour), matching the interim
+    // behavior the phase-03 plan calls for.
+    let has_bases = |d: &Path| {
+        ["base_fr.html", "base_es.html", "base.html"]
+            .iter()
+            .any(|n| d.join(n).is_file())
+    };
+    let themed = templates.join("theme").join(def.template_dir);
+    if has_bases(&themed) {
+        return Some(themed);
+    }
+    let fallback = templates.join("theme").join("traveltour");
+    if has_bases(&fallback) {
+        return Some(fallback);
+    }
+    None
+}
+
 pub(crate) fn load_env(dir: &Path) -> Result<Environment<'static>> {
-    if let Some(env) = ENVS.read().get(dir) {
+    load_env_theme(dir, None)
+}
+
+/// `load_env` with a theme probe dir: `theme/<dir>` first, shared root
+/// second. The env cache keys on (dir, theme_dir) — two sites sharing a
+/// templates root but different themes get distinct environments.
+pub(crate) fn load_env_theme(dir: &Path, theme_dir: Option<&Path>) -> Result<Environment<'static>> {
+    let key = (dir.to_path_buf(), theme_dir.map(|p| p.to_path_buf()));
+    if let Some(env) = ENVS.read().get(&key) {
         return Ok(env.clone());
     }
     let mut env = Environment::new();
-    env.set_loader(minijinja::path_loader(dir));
+    let theme = theme_dir.map(|p| p.to_path_buf());
+    let shared = dir.to_path_buf();
+    env.set_loader(move |name: &str| {
+        if let Some(t) = &theme {
+            let p = t.join(name);
+            if let Ok(src) = std::fs::read_to_string(&p) {
+                return Ok(Some(src));
+            }
+        }
+        match std::fs::read_to_string(shared.join(name)) {
+            Ok(src) => Ok(Some(src)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(minijinja::Error::new(
+                minijinja::ErrorKind::InvalidOperation,
+                format!("read {name}: {e}"),
+            )),
+        }
+    });
     env.set_auto_escape_callback(|_| minijinja::AutoEscape::None);
     env.add_filter("tojson", |v: minijinja::Value| {
         serde_json::to_string(&serde_json::to_value(v).unwrap_or(Value::Null))
             .unwrap_or_else(|_| "null".into())
     });
-    ENVS.write().entry(dir.to_path_buf()).or_insert_with(|| env.clone());
+    ENVS.write().entry(key).or_insert_with(|| env.clone());
     Ok(env)
 }
 

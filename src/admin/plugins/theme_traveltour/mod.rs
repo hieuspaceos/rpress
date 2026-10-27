@@ -22,6 +22,18 @@ pub(crate) mod widgets_theme;
 const TAXONOMY_MAP_JSON: &str = include_str!("taxonomy_map.json");
 
 pub(crate) static ADAPTER: ThemeTraveltour = ThemeTraveltour;
+/// Stylesheet normalization: child-theme dirs (`traveltour-child-*`)
+/// still resolve to the parent's bases.
+fn matches_traveltour(s: &str) -> bool {
+    // Dash + underscore child-theme separators (`traveltour_child`).
+    s == "traveltour"
+        || s == "traveltour-child"
+        || s == "traveltour_child"
+        || s.starts_with("traveltour-child-")
+        || s.starts_with("traveltour_child-")
+        || s.starts_with("traveltour_child_")
+}
+
 pub(crate) struct ThemeTraveltour;
 
 impl PluginAdapter for ThemeTraveltour {
@@ -37,6 +49,14 @@ impl PluginAdapter for ThemeTraveltour {
     /// is left alone).
     fn migrate(&self, db: &Path) -> Result<()> {
         let c = crate::db::conn(db)?;
+        // Seed only when this site's stylesheet claims traveltour — a
+        // tevily/core site gets no traveltour taxonomy_map or widget rows.
+        let stylesheet: String = c
+            .query_row("SELECT value FROM settings WHERE key='stylesheet'", [], |r| r.get(0))
+            .unwrap_or_default();
+        if !matches_traveltour(&stylesheet) {
+            return Ok(());
+        }
         c.execute(
             "INSERT OR IGNORE INTO settings(key, value) VALUES(?1, ?2)",
             rusqlite::params!["plugin:theme-traveltour:taxonomy_map", TAXONOMY_MAP_JSON],
@@ -58,6 +78,18 @@ impl PluginAdapter for ThemeTraveltour {
     fn backend(&self) -> Backend {
         Backend::Data
     }
+    fn theme(&self) -> Option<&'static crate::admin::plugins::ThemeDef> {
+        use crate::admin::plugins::ThemeDef;
+        static DEF: ThemeDef = ThemeDef {
+            matches_stylesheet: matches_traveltour,
+            template_dir: "traveltour",
+            body_suffix: "",
+            page_title_wrap: "",
+            preferred_locations: &["header-navigation", "main-menu", "main_navigation", "primary"],
+        };
+        Some(&DEF)
+    }
+
     /* Theme option rows written inside the bridge (skins persist into
        `traveltour_color`, style settings etc.). Pulled into the
        `plugin:theme-traveltour:` namespace so rpress state mirrors the

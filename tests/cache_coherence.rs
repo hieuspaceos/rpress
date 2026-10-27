@@ -48,7 +48,7 @@ fn fixture(root: &Path) -> PathBuf {
     c.execute_batch(
         "INSERT INTO settings(key,value) VALUES
          ('languages','fr,es'),('primary_lang','fr'),('page_on_front','0'),
-         ('site_url','http://127.0.0.1'),('site_name','CacheTest');",
+         ('site_url','http://127.0.0.1'),('site_name','CacheTest'),('stylesheet','traveltour');",
     )
     .unwrap();
     post(&c, 1, "my-post", "fr", "publish", "post");
@@ -423,5 +423,27 @@ fn concurrent_misses_tmp_names_unique() {
     assert_eq!(status, 301, "alias .html must 301, got {status}");
     assert_eq!(loc, "/my-post/");
     assert!(!out.join("my-post.html").exists(), "alias .html was cached");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn tevily_site_falls_back_to_traveltour_bases() {
+    // A site whose stylesheet is tevily_child has no templates of its own
+    // (the tevily adapter's template dir is empty until phase 06); the
+    // render must still resolve bases via the fallback traveltour dir —
+    // the interim state phase 03 requires.
+    let dir = temp_dir("tevilyfb");
+    let db = fixture(&dir);
+    let c = Connection::open(&db).unwrap();
+    c.execute(
+        "UPDATE settings SET value='tevily_child' WHERE key='stylesheet'",
+        [],
+    )
+    .unwrap();
+    drop(c);
+    let out = dir.join("out");
+    rpress::generate::regen_post(&db, &templates(), &out, 1, "voyage").unwrap();
+    let html = fs::read_to_string(out.join("my-post/index.html")).unwrap();
+    assert!(html.contains("<html"), "tevily site page failed to render through fallback bases");
     let _ = fs::remove_dir_all(&dir);
 }

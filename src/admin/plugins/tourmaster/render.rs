@@ -19,7 +19,7 @@ use serde_json::{json, Value};
 use std::path::Path;
 
 use crate::admin::plugins::RenderCtx;
-use crate::render::load_env;
+use crate::render::load_env_theme;
 
 /// Render one tour single page. `templates` is the template dir (for
 /// `single_tour.html` / base); the booking sidebar comes from the
@@ -83,7 +83,8 @@ pub(crate) fn page(conn: &Connection, templates: &Path, ctx: &RenderCtx) -> Resu
 
     let jsonld = product_jsonld(&ctx.title, ctx.id, &canonical, &description, &price, &featured_img, &site_name_of(conn));
 
-    let env = load_env(templates)?;
+    let theme_dir = crate::render::theme_template_dir(conn, templates);
+    let env = load_env_theme(templates, theme_dir.as_deref())?;
     let site_name = conn
         .query_row(
             "SELECT value FROM settings WHERE key='site_name' LIMIT 1",
@@ -143,6 +144,15 @@ pub(crate) fn page(conn: &Connection, templates: &Path, ctx: &RenderCtx) -> Resu
         tctx.insert(k.clone(), v.clone());
     }
 
+    tctx.insert(
+        "base".into(),
+        serde_json::json!(crate::lang::template_name(
+            templates,
+            theme_dir.as_deref(),
+            &crate::lang::config(conn),
+            &ctx.lang,
+        )),
+    );
     let navx = match tctx.get("navx") {
         Some(serde_json::Value::Object(m)) => m.clone(),
         _ => serde_json::Map::new(),

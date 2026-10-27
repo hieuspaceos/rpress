@@ -94,19 +94,27 @@ pub fn template_for(lang: &str) -> String {
     format!("base_{lang}.html")
 }
 
-pub fn template_name(templates: &std::path::Path, cfg: &LangConfig, lang: &str) -> String {
-    let exact = template_for(lang);
-    if templates.join(&exact).exists() {
-        return exact;
+/// Resolve the base template filename for `lang`: exact `base_{lang}`
+/// → primary-lang base → any base_* in the probe dirs. `theme_dir`
+/// (adapter `template_dir`, may be `None`) is probed before the shared
+/// root — the returned name is dir-relative so `{% extends base %}` and
+/// the loader resolve it the same way.
+pub fn template_name(
+    templates: &std::path::Path,
+    theme_dir: Option<&std::path::Path>,
+    cfg: &LangConfig,
+    lang: &str,
+) -> String {
+    let dirs: Vec<&std::path::Path> = [theme_dir, Some(templates)]
+        .into_iter()
+        .flatten()
+        .collect();
+    for name in [template_for(lang), template_for(&cfg.primary), "base_fr.html".into(), "base_es.html".into()] {
+        if dirs.iter().any(|d| d.join(&name).exists()) {
+            return name;
+        }
     }
-    let primary = template_for(&cfg.primary);
-    if templates.join(&primary).exists() {
-        return primary;
-    }
-    if templates.join("base_fr.html").exists() {
-        return "base_fr.html".to_string();
-    }
-    "base_es.html".to_string()
+    template_for(lang)
 }
 
 pub fn page_url(cfg: &LangConfig, site: &str, lang: &str, kind: &str, slug: &str, kind_base: Option<&str>) -> String {

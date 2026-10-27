@@ -18,7 +18,7 @@ use rusqlite::Connection;
 use serde_json::{json, Value};
 use std::path::Path;
 
-use crate::render::load_env;
+use crate::render::load_env_theme;
 
 /// Placeholder the caller plants in place of the `[wpdiscuz_comments]`
 /// shortcode inside body_json text-boxes before rendering; `page()`
@@ -234,7 +234,8 @@ pub(crate) fn page(conn: &Connection, templates: &Path, ctx: &PostCtx) -> Result
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
 
-    let env = load_env(templates)?;
+    let theme_dir = crate::render::theme_template_dir(conn, templates);
+    let env = load_env_theme(templates, theme_dir.as_deref())?;
     let comments_block = env
         .get_template("comments_wpdiscuz.html")?
         .render(context! {
@@ -333,6 +334,10 @@ pub(crate) fn page(conn: &Connection, templates: &Path, ctx: &PostCtx) -> Result
         tctx.insert(k.clone(), v.clone());
     }
 
+    tctx.insert(
+        "base".into(),
+        serde_json::json!(crate::lang::template_name(templates, theme_dir.as_deref(), &lang_cfg, &ctx.lang)),
+    );
     let navx = match tctx.get("navx") {
         Some(Value::Object(m)) => m.clone(),
         _ => serde_json::Map::new(),

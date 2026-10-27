@@ -25,7 +25,7 @@ use std::path::Path;
 #[allow(unused_imports)] // used by the binary target's copy of this module
 use crate::sql;
 
-use crate::render::load_env;
+use crate::render::load_env_theme;
 
 /// Resolved term for dispatch: `render_slug` calls `term_by_path` first so
 /// an unknown `tax/slug` still reports "slug not found".
@@ -621,7 +621,12 @@ pub(crate) fn page(
         tctx.insert(k.clone(), v.clone());
     }
 
-    let env = load_env(templates)?;
+    let theme_dir = crate::render::theme_template_dir(conn, templates);
+    let env = load_env_theme(templates, theme_dir.as_deref())?;
+    tctx.insert(
+        "base".into(),
+        serde_json::json!(crate::lang::template_name(templates, theme_dir.as_deref(), &crate::lang::config(conn), lang)),
+    );
     let tpl = if is_post_tax { "archive_post.html" } else { "archive.html" };
     let mut html = env
         .get_template(tpl)?
