@@ -1,0 +1,18 @@
+.clear{ display: block; clear: both; visibility: hidden; line-height: 0; height: 0; zoom: 1; }
+.clearfix{ zoom: 1; }
+.clearfix:after{ content: " "; display: block; clear: both; visibility: hidden; line-height: 0; height: 0; }
+
+.gdlr-core-custom-nav-menu-field{ margin-top: 6px; margin-right: 10px }
+.gdlr-core-custom-nav-menu-field label{ font-size: 13px; font-style: italic; }
+.gdlr-core-custom-nav-menu-field input[type="text"],
+.gdlr-core-custom-nav-menu-field select,
+.gdlr-core-custom-nav-menu-field textarea{ margin-top: 5px; width: 100%; }
+.gdlr-core-custom-nav-menu-field[data-depth]{ display: none; }
+.menu-item-depth-0 .gdlr-core-custom-nav-menu-field[data-depth*="0"]{ display: block; }
+.menu-item-depth-1 .gdlr-core-custom-nav-menu-field[data-depth*="1"]{ display: block; }
+.menu-item-depth-2 .gdlr-core-custom-nav-menu-field[data-depth*="2"]{ display: block; }
+.menu-item-depth-3 .gdlr-core-custom-nav-menu-field[data-depth*="3"]{ display: block; }
+
+img.gdlr-core-upload-input-img{ max-width: 80px; vertical-align: bottom; }
+.gdlr-core-upload-button-remove{ display: none; }
+.gdlr-core-upload-button-remove.gdlr-core-active{ display: inline; }

@@ -1,0 +1,23 @@
+.gdlr-core-alert-box-wrapper{ position: fixed; width: 450px; top: 50%; left: 50%; z-index: 99999; color: #fff;
+	background: #000; background: rgba(0, 0, 0, 0.82); text-align: center; padding: 60px 30px;
+	overflow: hidden; border-radius: 3px; -moz-border-radius: 3px; -webkit-border-radius: 3px; }
+.gdlr-core-alert-box-wrapper .gdlr-core-alert-box-icon{ font-size: 20px; line-height: 20px; text-align: center;
+	margin-right: 15px; background: #51b66d; padding: 13px; overflow: hidden; vertical-align: middle; 
+    border-radius: 50%; -moz-border-radius: 50%; -webkit-border-radius: 50%; }
+.gdlr-core-alert-box-wrapper .gdlr-core-alert-box-icon.fa-remove{ background: #B65151; }
+.gdlr-core-alert-box-wrapper .gdlr-core-alert-box-head{ font-size: 17px; font-weight: bold; }
+.gdlr-core-alert-box-wrapper .gdlr-core-alert-box-text{ margin-top: 16px; color: #E2E2E2; }
+
+.gdlr-conform-box-overlay{ position: fixed; z-index: 99998; top: 0px; right: 0px; bottom: 0px; left: 0px; background: #000; }
+.gdlr-core-confirm-box-wrapper { position: fixed; width: 450px; background: #ffffff; 
+	top: 50%; left: 50%; z-index: 99999; text-align: center; font-family: 'Montserrat', sans-serif; }
+.gdlr-core-confirm-box-wrapper .gdlr-core-confirm-box-head { font-size: 13px; text-transform: uppercase; font-weight: bold; 
+    color: #828282; padding: 15px 0px; border-bottom: 1px solid #e8e8e8; }
+.gdlr-core-confirm-box-wrapper .gdlr-core-confirm-box-content-wrapper{ padding: 33px 30px; }
+.gdlr-core-confirm-box-wrapper .gdlr-core-confirm-box-text { font-size: 16px; color: #404040; }
+.gdlr-core-confirm-box-wrapper .gdlr-core-confirm-box-sub { font-size: 12px; margin-top: 11px; color: #b7b7b7; }
+.gdlr-core-confirm-box-wrapper .gdlr-core-confirm-box-button-wrapper{ overflow: hidden; }
+.gdlr-core-confirm-box-wrapper .gdlr-core-confirm-box-button{ width: 50%; text-align: center; float: left; cursor: pointer;
+    color: #fff; padding: 14px 0px; font-weight: bold; font-size: 13px; text-transform: uppercase; }
+.gdlr-core-confirm-box-wrapper .gdlr-core-confirm-box-button.gdlr-core-yes{ background: #f95e5e; }
+.gdlr-core-confirm-box-wrapper .gdlr-core-confirm-box-button.gdlr-core-no{ background: #383838; }

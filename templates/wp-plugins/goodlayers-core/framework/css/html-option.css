@@ -1,0 +1,361 @@
+/* for page option */
+#gdlr-core-page-option .inside,
+#gdlr-core-header-color .inside,
+#gdlr-core-header-typography .inside,
+#gdlr-core-header-settings .inside{ margin: 0px; padding: 0px; background: #f3f3f3; }
+#gdlr-core-page-option h2.hndle,
+#gdlr-core-page-option .handlediv{ display: none; }
+.gdlr-core-page-option-head{ background: #2d9bea; line-height: 20px; color: #fff; overflow: hidden; padding: 22px 30px; }
+.gdlr-core-page-option-head .gdlr-core-page-option-head-title{ font-size: 14px; text-transform: uppercase;
+    font-weight: bold; float: left; padding: 12px 0px 8px; }
+.gdlr-core-page-option-head .gdlr-core-page-option-head-title i{ font-size: 18px; margin-right: 12px; }
+
+.gdlr-core-page-option-tab-head{ background: #e4e4e4; color: #8b8b8b; overflow: hidden; font-family: "Montserrat", sans-serif; }
+.gdlr-core-page-option-tab-head-item{ float: left; padding: 20px 30px; cursor: pointer; 
+	transition: color 200ms, background-color 200ms; -webkit-transition: color 200ms, background-color 200ms;
+	-moz-transition: color 200ms, background-color 200ms; -o-transition: color 200ms, background-color 200ms; }
+.gdlr-core-page-option-tab-head-item.gdlr-core-active{ background: #f3f3f3; color: #212122; }
+
+.gdlr-core-page-option-content{ background: #f3f3f3; padding-bottom: 40px; }	
+.gdlr-core-page-option-tab-content-item{ display: none; }
+.gdlr-core-page-option-tab-content-item.gdlr-core-active{ display: block; }
+
+/* html option */
+.clear{ display: block; clear: both; visibility: hidden; line-height: 0; height: 0; zoom: 1; }
+.rank-math-grid .clear {
+    height: auto;
+    line-height: inherit;
+    visibility: initial;
+}
+.clearfix{ zoom: 1; }
+.clearfix:after{ content: " "; display: block; clear: both; visibility: hidden; line-height: 0; height: 0; }
+
+.ui-sortable:after{ content: " "; display: block; clear: both; }
+.gdlr-core-media-image{ line-height: 0; }
+
+.gdlr-core-noselect{ user-select: none; -webkit-touch-callout: none; -webkit-user-select: none;
+	-khtml-user-select: none; -moz-user-select: none; -ms-user-select: none; }
+
+.gdlr-core-html-option-item{ box-sizing: border-box; -moz-box-sizing: border-box; -webkit-box-sizing: border-box; font-family: "Montserrat", sans-serif; }
+.gdlr-core-html-option-item *,
+.gdlr-core-html-option-item *:before, 
+.gdlr-core-html-option-item *:after { box-sizing: inherit; -moz-box-sizing: inherit; -webkit-box-sizing: inherit; }
+
+body.edit-tags-php .gdlr-core-html-option-item{ padding-left: 0px; }
+
+.gutenberg .gdlr-core-html-option-item{ box-sizing: border-box; -moz-box-sizing: border-box; -webkit-box-sizing: border-box; font-family: "Montserrat", sans-serif; }
+.gutenberg .gdlr-core-html-option-item *,
+.gutenberg .gdlr-core-html-option-item *:before, 
+.gutenberg .gdlr-core-html-option-item *:after { box-sizing: inherit; -moz-box-sizing: inherit; -webkit-box-sizing: inherit; }
+
+.form-table .gdlr-core-html-option-item{ padding: 0; }
+
+.gdlr-core-html-option-item { padding: 27px 30px 32px; border-bottom: 1px solid #eaeaea; }
+.gdlr-core-html-option-item.gdlr-core-fullsize .gdlr-core-html-option-item-input{ width: 100%; padding-right: 0px; }
+.gdlr-core-html-option-item .gdlr-core-html-option-item-title{ font-size: 14px;  margin-bottom: 15px; }
+.gdlr-core-html-option-item .gdlr-core-html-option-item-input{ float: left; width: 50%; padding-right: 15px; }
+.gdlr-core-html-option-item .gdlr-core-html-option-item-description{ float: left; width: 50%; padding-left: 15px; font-size: 11px; color: #8c8c8c; }
+.gdlr-core-html-option-item.gdlr-core-fullsize .gdlr-core-html-option-item-description{ padding-left: 0px; margin-bottom: 20px; }
+
+.gdlr-core-html-option-item .mce-edit-area iframe{ min-height: 150px; }
+.gdlr-core-html-option-item .wp-editor-area{ min-height: 176px; }
+
+/* input */
+.gdlr-core-html-option-item .gdlr-core-html-option-item-input input.gdlr-core-html-option-text,
+.gdlr-core-html-option-item .gdlr-core-html-option-item-input textarea.gdlr-core-html-option-textarea,
+.gdlr-core-html-option-item .gdlr-core-html-option-item-input .gdlr-core-custom-combobox,
+.gdlr-core-html-option-item select.gdlr-core-html-option-multi-combobox{ 
+	border: 1px solid #e4e4e4; background: #f5f5f5; color: #666; font-size: 13px;
+	border-radius: 3px; -moz-border-radius: 3px; -webkit-border-radius: 3px; 
+	box-shadow: inset 0px 0px 6px rgba(0, 0, 0, 0.06); -moz-box-shadow: inset 0px 0px 6px rgba(0, 0, 0, 0.06); -webkit-box-shadow: inset 0px 0px 6px rgba(0, 0, 0, 0.06); }
+.gdlr-core-html-option-item .gdlr-core-html-option-item-input input.gdlr-core-html-option-text:focus,
+.gdlr-core-html-option-item .gdlr-core-html-option-item-input textarea.gdlr-core-html-option-textarea:focus{ 
+	outline: none; box-shadow: none; -moz-box-shadow: none; -webkit-box-shadow: none; }
+
+.gdlr-core-html-option-item .gdlr-core-html-option-item-input input.gdlr-core-html-option-text{ height: 50px; margin: 0px; padding: 16px 18px; width: 100%; }
+.gdlr-core-html-option-item .gdlr-core-html-option-item-input textarea.gdlr-core-html-option-textarea{ padding: 16px 18px; width: 100%; min-height: 120px; }
+.gdlr-core-html-option-item .gdlr-core-html-option-item-input textarea.gdlr-core-html-option-textarea.gdlr-core-extra-large{ height: 300px; }
+
+/* font */
+.gdlr-core-html-option-item .gdlr-core-html-option-font-display{ height: 60px; width: 100%; display: block; 
+	margin-bottom: 20px; border: 2px solid #e5e5e5; }
+
+/* uploader */
+.gdlr-core-html-option-upload-appearance{ width: 193px; height: 120px; position: relative;
+	overflow: hidden; background: url('../images/uploader.png'); 
+	border-radius: 3px; -moz-border-radius: 3px; -webkit-border-radius: 3px;
+	box-shadow: 2px 2px 1px rgba(0, 0, 0, 0.15); -moz-box-shadow: 2px 2px 1px rgba(0, 0, 0, 0.15); -webkit-box-shadow: 2px 2px 1px rgba(0, 0, 0, 0.15); }
+.gdlr-core-html-option-upload-appearance .gdlr-core-upload-image-container{ position: absolute; top: 12px; right: 12px; bottom: 12px; left: 12px; 
+	background-size: cover; background-position: center; }
+.gdlr-core-html-option-upload-appearance .gdlr-core-upload-image-overlay{ position: absolute; top: 12px; right: 12px; bottom: 12px; left: 12px; 
+	transition: background-color 200ms ease-out; -webkit-transition: background-color 200ms ease-out;
+	-moz-transition: background-color 200ms ease-out; -o-transition: background-color 200ms ease-out; } 
+.gdlr-core-html-option-upload-appearance .gdlr-core-upload-image-button-hover{ position: absolute; left: 0px; right: 0px; 
+	text-align: center; top: 50%; margin-top: -18px; line-height: 1; }
+.gdlr-core-html-option-upload-appearance .gdlr-core-upload-image-button{ width: 35px; height: 35px; font-size: 35px;
+	text-align: center; color: #545454; display: inline-block; margin: 0px 18px; cursor: pointer; opacity: 0.20; filter: alpha(opacity=20); 
+	transition: opacity 200ms; -webkit-transition: opacity 200ms;
+	-moz-transition: opacity 200ms; -o-transition: opacity 200ms; }
+.gdlr-core-html-option-upload-appearance .gdlr-core-upload-image-remove{ display: none; }
+.gdlr-core-html-option-upload-appearance:hover .gdlr-core-upload-image-button{ opacity: 0.8; filter: alpha(opacity=80); }
+
+.gdlr-core-html-option-upload-appearance.gdlr-core-active .gdlr-core-upload-image-button{ width: 30px; height: 30px; font-size: 30px; opacity: 0.0; filter: alpha(opacity=0); }
+.gdlr-core-html-option-upload-appearance.gdlr-core-active .gdlr-core-upload-image-button-hover{ margin-top: -15px; }
+.gdlr-core-html-option-upload-appearance.gdlr-core-active .gdlr-core-upload-image-remove{ display: inline-block; }
+
+.gdlr-core-html-option-upload-appearance.gdlr-core-active:hover .gdlr-core-upload-image-overlay{ background-color: rgba(255, 255, 255, 0.7); }
+.gdlr-core-html-option-upload-appearance.gdlr-core-active:hover .gdlr-core-upload-image-button{ opacity: 0.9; filter: alpha(opacity=90); }
+
+/* colorpicker */
+.gdlr-core-html-option-item .wp-color-result.button{ height: 34px; padding-left: 40px; margin-bottom: 0px; border: 2px solid #e5e5e5;
+	border-radius: 0px; -moz-border-radius: 0px; -webkit-border-radius: 0px;
+	box-shadow: none; -moz-box-shadow: none; -webkit-box-shadow: none; }
+.gdlr-core-html-option-item .wp-color-result.button span{ padding-top: 1px; padding-bottom: 1px; 
+	border-radius: 0px; -moz-border-radius: 0px; -webkit-border-radius: 0px; }
+.gdlr-core-html-option-item .wp-color-result:focus,  
+.gdlr-core-html-option-item .wp-color-result:hover { box-shadow: none; -moz-box-shadow: none; -webkit-box-shadow: none; }
+.gdlr-core-html-option-item .wp-color-result:after,
+.gdlr-core-html-option-item .wp-color-result:focus:after,
+.gdlr-core-html-option-item .wp-color-result:hover:after{ background: #f7f7f7; color: #777777; 
+	font-size: 12px; line-height: 22px; padding: 4px 12px;
+    border-color: #e5e5e5; border-style: solid; border-width: 0px 0px 0px 2px; 
+	border-radius: 0; -moz-border-radius: 0; -webkit-border-radius: 0; }
+.gdlr-core-html-option-item .wp-picker-container input[type=text].wp-color-picker{ height: 34px;border: 2px solid #e5e5e5; vertical-align: top; }
+.gdlr-core-html-option-item .wp-picker-container input[type=text].wp-color-picker:focus{ outline: none; box-shadow: none; -moz-box-shadow: none; -webkit-box-shadow: none; }
+.gdlr-core-html-option-item .wp-picker-container input[type=button].wp-picker-default,
+.gdlr-core-html-option-item .wp-picker-container input[type=button].wp-picker-clear { height: 34px; border: 2px solid #e5e5e5; box-shadow: none; }
+.gdlr-core-html-option-item .gdlr-core-html-option-colorpicker-item .button.button-small{ border: 2px solid #e5e5e5; 
+	background: #f7f7f7; color: #777777; font-size: 12px; line-height: 22px; padding: 4px 12px; height: 34px;
+	border-radius: 0; -moz-border-radius: 0; -webkit-border-radius: 0; 
+	box-shadow: none; -moz-box-shadow: none; -webkit-box-shadow: none; }
+.gdlr-core-html-option-item .gdlr-core-html-option-colorpicker-item .button.button-small:active,
+.gdlr-core-html-option-item .gdlr-core-html-option-colorpicker-item .button.button-small:focus{ outline: none; box-shadow: none; -moz-box-shadow: none; -webkit-box-shadow: none;
+	transform: none; -webkit-transform: none; -ms-transform: none; }
+
+.gdlr-core-html-option-item .wp-picker-container{ position: relative; }
+.gdlr-core-html-option-item .wp-picker-container:before{ content: " "; width: 40px; height: 32px; position: absolute; left: 2px; top: 2px;
+    background: url('../images/transparent.png'); }
+.gdlr-core-html-option-item .wp-color-result{ position: relative; }
+.gdlr-core-html-option-item .wp-color-result, 
+.gdlr-core-html-option-item .wp-color-result:hover, 
+.gdlr-core-html-option-item .wp-color-result:focus{ background: transparent; }	
+
+/* fontslider */	
+.gdlr-core-html-option-fontslider-appearance.ui-slider{ position: relative;  height: 8px; background: #ebebeb; cursor: pointer;
+    display: inline-block; width: 228px; vertical-align: middle; margin-right: 20px; border: 0px; border-radius: 0px;
+	box-shadow: inset 0px 2px 3px rgba(0, 0, 0, 0.06); -moz-box-shadow: inset 0px 2px 3px rgba(0, 0, 0, 0.06); -webkit-box-shadow: inset 0px 2px 3px rgba(0, 0, 0, 0.06); }
+.gdlr-core-html-option-fontslider-appearance.ui-slider .ui-slider-handle{ position: relative; cursor: pointer; width: 18px; height: 18px; 
+	display: inline-block; background: #4692b7; top: -5px; margin-left: -9px;
+	border-radius: 50%; -moz-border-radius: 50%; -webkit-border-radius: 50%; }
+.gdlr-core-html-option-fontslider-appearance.ui-slider .ui-slider-range{ height: 8px; position: absolute; top: 0px; left: 0px; background: #aacfe1; }
+.gdlr-core-html-option-fontslider-item .gdlr-core-html-option-fontslider{ margin: 0px; width: 56px; color: #999999;
+	height: 30px; padding: 6px 10px; text-align: center; font-size: 13px; background: #f5f5f5; vertical-align: middle; }
+.gdlr-core-html-option-fontslider-item .gdlr-core-html-option-fontslider,
+.gdlr-core-html-option-fontslider-item .gdlr-core-html-option-fontslider:focus{ outline: none; border: 1px solid #e4e4e4;
+	box-shadow: inset 0px 0px 8px rgba(0, 0, 0, 0.1); -moz-box-shadow: inset 0px 0px 8px rgba(0, 0, 0, 0.1); -webkit-box-shadow: inset 0px 0px 8px rgba(0, 0, 0, 0.1); }
+	
+/* tinymce */
+.gdlr-core-html-option-tinymce-item .gdlr-core-html-option-item-input{ box-sizing: content-box; -moz-box-sizing: content-box; -webkit-box-sizing: content-box; }
+.gdlr-core-html-option-tinymce-item .wp-editor-container { box-sizing: border-box; -moz-box-sizing: border-box; -webkit-box-sizing: border-box; }
+.gdlr-core-html-option-tinymce-item .gdlr-core-html-option-tinymce{ display: none; }
+
+/* checkbox */
+.gdlr-core-html-option-item.gdlr-core-html-option-checkbox-item label{ display: inline-block; }
+.gdlr-core-html-option-item .gdlr-core-html-option-item-input .gdlr-core-html-option-checkbox{ display: none; }
+.gdlr-core-html-option-checkbox-appearance{ height: 50px; width: 100px; overflow: hidden; background: #f5f5f5; white-space: nowrap;
+	border: 1px solid #e4e4e4; border-radius: 3px; -moz-border-radius: 3px; -webkit-border-radius: 3px; 
+	box-shadow: inset 0px 0px 6px rgba(0, 0, 0, 0.06); -moz-box-shadow: inset 0px 0px 6px rgba(0, 0, 0, 0.06); -webkit-box-shadow: inset 0px 0px 6px rgba(0, 0, 0, 0.06); 
+	transition: background-color 200ms; -webkit-transition: background-color 200ms;
+	-moz-transition: background-color 200ms; -o-transition: background-color 200ms; }
+.gdlr-core-html-option-checkbox-appearance .gdlr-core-checkbox-button{ height: 50px; line-height: 18px; width: 75px; text-align: center; padding: 16px 0px; 
+	display: inline-block; font-size: 10px; text-transform: uppercase; font-weight: bold; letter-spacing: 1.5px; color: #bfbfbf; }
+.gdlr-core-html-option-checkbox-appearance .gdlr-core-checkbox-separator{ display: inline-block; line-height: 18px; padding: 16px 0px; vertical-align: middle; width: 7px; }
+.gdlr-core-html-option-checkbox-appearance .gdlr-core-checkbox-separator:before { content: " "; display: block; margin-top: -2px; 
+	height: 10px; width: 1px; background: #cacaca; box-shadow: 3px 0 0 #cacaca, 6px 0 0 #cacaca; }
+		
+.gdlr-core-html-option-checkbox-appearance .gdlr-core-checkbox-button.gdlr-core-on{ margin-left: -57px;
+	transition: margin 200ms, color 200ms; -webkit-transition: margin 200ms, color 200ms;
+	-moz-transition: margin 200ms, color 200ms; -o-transition: margin 200ms, color 200ms; }
+.gdlr-core-html-option-checkbox:checked + .gdlr-core-html-option-checkbox-appearance{ background: #b1e0c6; }	
+.gdlr-core-html-option-checkbox:checked + .gdlr-core-html-option-checkbox-appearance .gdlr-core-checkbox-button.gdlr-core-on{ margin-left: 0px; color: #5f8d74; }
+.gdlr-core-html-option-checkbox:checked + .gdlr-core-html-option-checkbox-appearance .gdlr-core-checkbox-separator:before{ background: #87ba9d; box-shadow: 3px 0 0 #87ba9d, 6px 0 0 #87ba9d; }
+
+/* radio image */
+.gdlr-core-html-option-item.gdlr-core-html-option-radioimage-item label{ display: inline-block; position: relative; 
+	line-height: 0; margin-right: 10px; margin-bottom: 10px; cursor: pointer; max-width: 135px; }
+.gdlr-core-html-option-item.gdlr-core-html-option-radioimage-item label img{ max-width: 100%; }
+.gdlr-core-html-option-item .gdlr-core-html-option-radioimage{ display: none; }
+.gdlr-core-html-option-item .gdlr-core-radioimage-frame{ position: absolute; top: 0px; right: 0px; bottom: 0px; left: 0px; 
+	border: 2px solid #2d9bea; opacity: 0; filter: alpha(opacity=0); 
+	transition: opacity 200ms; -webkit-transition: opacity 200ms;
+	-moz-transition: opacity 200ms; -o-transition: opacity 200ms; }
+.gdlr-core-html-option-item .gdlr-core-radioimage-checked{ position: absolute; bottom: 8px; right: 8px; opacity: 0; filter: alpha(opacity=0);
+	width: 21px; height: 21px; background: url('../images/radio-checked.png') center no-repeat; 
+	transition: opacity 200ms; -webkit-transition: opacity 200ms;
+	-moz-transition: opacity 200ms; -o-transition: opacity 200ms; }
+.gdlr-core-html-option-radioimage:checked + .gdlr-core-radioimage-frame,
+.gdlr-core-html-option-radioimage:checked + .gdlr-core-radioimage-checked{ opacity: 1; filter: alpha(opacity=100); }
+
+/* custom style for combobox */
+.gdlr-core-html-option-item .gdlr-core-custom-combobox{ position: relative; cursor: pointer; }
+.gdlr-core-html-option-item .gdlr-core-custom-combobox:after{ font-family: fontAwesome; content: "\f107"; font-size: 14px;
+	position: absolute; right: 20px; top: 50%; margin-top: -9px; pointer-events: none; }
+.gdlr-core-html-option-item .gdlr-core-custom-combobox select{ font-size: 13px; height: 50px; padding: 0px 14px; margin: 0;
+	position: relative; width: 100%; border: none; background: transparent; color: #666;
+	outline: none; box-shadow: none; -moz-box-shadow: none; -webkit-box-shadow: none;
+	-webkit-appearance: none; -moz-appearance: none; appearance: none; }
+.gdlr-core-html-option-item .gdlr-core-custom-combobox select:focus{ border: none; 
+	outline: none; box-shadow: none; -moz-box-shadow: none; -webkit-box-shadow: none; }	
+.gdlr-core-html-option-item .gdlr-core-custom-combobox select::-ms-value{ background: transparent; color: #666; }
+.gdlr-core-html-option-item .gdlr-core-custom-combobox select::-ms-expand{ display: none; }
+.gdlr-core-html-option-item .gdlr-core-custom-combobox select:-moz-focusring { color: transparent; text-shadow: 0 0 0 #666; }
+
+.gdlr-core-html-option-item select.gdlr-core-html-option-multi-combobox{ width: 100%; height: 130px; padding: 8px 12px; }
+
+/* icons */
+.gdlr-core-html-option-item .gdlr-core-html-option-icons-type{ background: #fff; border: 2px solid #e3e3e3; 
+	padding: 4px 3px; display: inline-block; max-height: 200px; overflow-y: scroll; display: none; }
+.gdlr-core-html-option-item .gdlr-core-html-option-icons-type.gdlr-core-active{ display: block; }
+.gdlr-core-html-option-item .gdlr-core-html-option-icons-type i{ background: #f3f3f3; font-size: 27px; display: inline-block; 
+	line-height: 36px; width: 40px; text-align: center; margin: 1.5px; border: 2px solid #f3f3f3; cursor: pointer;
+	transition: border-color 200ms; -webkit-transition: border-color 200ms;
+	-moz-transition: border-color 200ms; -o-transition: border-color 200ms; }
+.gdlr-core-html-option-item .gdlr-core-html-option-icons-type i:hover,
+.gdlr-core-html-option-item .gdlr-core-html-option-icons-type i.gdlr-core-active{ border-color: #2d9bea; }
+.gdlr-core-html-option-item .gdlr-core-html-option-icons-type-combobox{ width: 35%; }
+.gdlr-core-html-option-item .gdlr-core-html-option-item-input input.gdlr-core-html-option-icons-search{ width: 35%; margin-top: 20px; margin-bottom: 20px; }
+
+.gdlr-core-icon-list-selection-lb{ position: absolute; z-index: 99999; top: 0; left: 0;
+    width: 585px; padding: 20px;  background: #fff; }
+.gdlr-core-icon-list-selection-lb > .gdlr-core-custom-combobox{ float: left; 
+	background: #f5f5f5 !important; border: 0px !important; margin-right: 10px; }
+.gdlr-core-icon-list-selection-lb > .gdlr-core-html-option-icons-search{ float: left; 
+	background: #f5f5f5 !important; margin-top: 0px !important; margin-bottom: 0px !important; }
+.gdlr-core-icon-list-selection-lb > .gdlr-core-html-option-icons-type-wrapper{ clear: both; padding-top: 15px; }
+.gdlr-core-icon-list-selection-lb .gdlr-core-close:before{ width: 16px; height: 2px; background: #aaa; content: " "; display: block;
+    transform: rotateZ(-45deg); -webkit-transform: rotateZ(-45deg); }
+.gdlr-core-icon-list-selection-lb .gdlr-core-close:after{ width: 16px; height: 2px; background: #aaa; content: " "; display: block; margin-top: -2px;
+    transform: rotateZ(45deg); -webkit-transform: rotateZ(45deg); }
+.gdlr-core-icon-list-selection-lb .gdlr-core-close{ position: absolute; right: 10px; top: 20px; cursor: pointer; }
+
+/* custom item */
+.gdlr-core-html-option-item .gdlr-core-html-option-custom-options,
+.gdlr-core-html-option-item .gdlr-core-html-option-custom-value{ display: none; }
+
+/* skin settings */
+.gdlr-core-html-option-item .gdlr-core-html-option-skin-input-wrapper{ margin-bottom: 40px; }
+.gdlr-core-html-option-item .gdlr-core-html-option-skin-input{ width: 50%; float: left; padding-right: 15px; }
+.gdlr-core-html-option-item .gdlr-core-html-option-skin-input input.gdlr-core-html-option-text{ width: 257px; vertical-align: middle; margin-right: 20px; }
+.gdlr-core-html-option-item .gdlr-core-html-option-skin-input-add{ width: 25px; height: 25px; display: inline-block; cursor: pointer; 
+	background: url('../images/button-add.png') center no-repeat; vertical-align: middle; }
+.gdlr-core-html-option-item .gdlr-core-html-option-skin-head{ border: 2px solid #e5e5e5; background: #f7f7f7; overflow: hidden; 
+	padding: 15px 22px; cursor: pointer; }
+.gdlr-core-html-option-item .gdlr-core-html-option-skin-name{ line-height: 25px; float: left; font-size: 13px; font-weight: bold;
+	text-transform: uppercase; color: #525252; }
+.gdlr-core-html-option-item .gdlr-core-html-option-skin-remove{ width: 25px; height: 25px; float: right; cursor: pointer; 
+	background: url('../images/button-remove.png') center no-repeat; vertical-align: middle; }
+.gdlr-core-html-option-item .gdlr-core-html-option-skin-item{ padding: 30px 30px 15px 30px;
+	border-width: 0px 2px 2px; border-style: solid; border-color: #d5d5d5; display: none; zoom: 1; }
+.gdlr-core-html-option-item .gdlr-core-html-option-skin-item:after{ content: " "; display: block; clear: both; visibility: hidden; line-height: 0; height: 0; }
+.gdlr-core-html-option-item .gdlr-core-html-option-skin-item-title{ margin-bottom: 15px; }
+.gdlr-core-html-option-item .gdlr-core-html-option-skin-item-content { margin-bottom: 25px; float: left; width: 33.33%; }
+.gdlr-core-html-option-item .gdlr-core-html-option-skin-template { margin-bottom: 20px; }
+
+.gdlr-core-html-option-item .gdlr-core-html-option-skin-item-section-title{ clear: left; margin-bottom: 25px; font-weight: bold; 
+	text-transform: uppercase; border-bottom: 1px solid #e3e3e3; padding-bottom: 10px; padding-top: 10px; }
+.gdlr-core-html-option-item .gdlr-core-html-option-skin-item-section-title:first-child{ padding-top: 0px; }
+.gdlr-core-html-option-item .gdlr-core-html-option-skin-item .wp-picker-container.wp-picker-active{ width: 284px; z-index: 99; height: 34px; }
+.gdlr-core-html-option-item .gdlr-core-html-option-skin-item .wp-picker-container.wp-picker-active .wp-picker-holder{ position: absolute; }
+
+
+/* font upload */
+.gdlr-core-html-option-item .gdlr-core-html-option-font-upload-container{ padding-top: 6px; }
+.gdlr-core-html-option-item .gdlr-core-html-option-font-upload-add{ width: 25px; height: 25px; display: inline-block; cursor: pointer; 
+	background: url('../images/button-add.png') center no-repeat; vertical-align: middle; margin-left: 16px; }
+.gdlr-core-html-option-item .gdlr-core-html-option-font-upload-none{ color: #c6c6c6; border: 2px solid #e5e5e5;
+    text-align: center; padding: 17px 20px; }
+.gdlr-core-html-option-item .gdlr-core-html-option-font-upload-template{ padding: 35px 30px 15px; border: 2px solid #e5e5e5; position: relative; margin-bottom: 20px; }
+.gdlr-core-html-option-item .gdlr-core-html-option-font-upload-remove{ width: 25px; height: 25px; cursor: pointer; 
+	position: absolute; top: 10px; right: 10px;
+	background: url('../images/button-remove.png') center no-repeat; }
+.gdlr-core-html-option-item .gdlr-core-html-option-font-upload-field{ margin-bottom: 25px; }
+.gdlr-core-html-option-item .gdlr-core-html-option-font-upload-title{ color: #424242; display: inline-block; vertical-align: middle; width: 105px; }
+.gdlr-core-html-option-item .gdlr-core-html-option-font-upload-field input.gdlr-core-html-option-text{ height: 35px; padding: 8px 16px; width: 250px; font-size: 12px; }
+.gdlr-core-html-option-item .gdlr-core-html-option-font-upload-button{ line-height: 19px; display: inline-block; margin-left: 8px;
+    padding: 8px 14px; background: #51b66d; color: #fff; text-transform: uppercase; font-size: 11px; font-weight: bold; 
+    border-radius: 3px; -moz-border-radius: 3px; -webkit-border-radius: 3px; cursor: pointer; }
+.gdlr-core-html-option-item .gdlr-core-html-option-font-upload-button:before{ content: "+"; margin-right: 7px; }
+
+/* thumbnail sizing */
+.gdlr-core-html-option-item .gdlr-core-html-option-thumbnail-sizing-input-add{ font-size: 11px; text-transform: uppercase;
+    font-weight: bold; color: #fff; display:  inline-block; padding: 8px 18px 8px 32px;
+	background: url('../images/icon-plus.png') 16px center no-repeat #51b66d;
+    border-radius: 3px; -moz-border-radius: 3px; -webkit-border-radius: 3px; cursor: pointer; }
+.gdlr-core-html-option-item .gdlr-core-html-option-thumbnail-sizing-input-wrapper { border: 2px solid #e5e5e5; padding: 20px 30px; }
+.gdlr-core-html-option-item .gdlr-core-html-option-thumbnail-sizing-input-description{ color: #51b66d; font-size: 12px; margin-top: 14px; }
+.gdlr-core-html-option-item .gdlr-core-html-option-thumbnail-sizing-template{ position: relative; margin-bottom: 13px; 
+	border: 2px solid #e5e5e5; padding: 16px 25px; }
+.gdlr-core-html-option-item .gdlr-core-html-option-thumbnail-sizing-name .gdlr-core-tail{ color: #aaaaaa; margin-left: 15px;}
+.gdlr-core-html-option-item .gdlr-core-html-option-thumbnail-sizing-name{ font-size: 13px; }
+.gdlr-core-html-option-item .gdlr-core-html-option-thumbnail-sizing-remove{ width: 25px; height: 25px; 
+	cursor: pointer; position: absolute; top: 50%; right: 10px; margin-top: -13px;
+	background: url('../images/button-remove.png') center no-repeat; }
+	
+.gdlr-core-html-option-item .gdlr-core-html-option-item-input input.gdlr-core-html-option-thumbnail-sizing-input{
+    display: inline-block; width: 280px; height: 35px; padding: 8px 12px; }
+.gdlr-core-html-option-item .gdlr-core-html-option-thumbnail-sizing-input-options input.gdlr-core-html-option-thumbnail-sizing-input{ width: 60px; }
+.gdlr-core-html-option-item .gdlr-core-html-option-thumbnail-sizing-input-title{ margin-right: 10px; }
+.gdlr-core-html-option-item .gdlr-core-html-option-thumbnail-sizing-input-name{ margin-bottom: 24px; }
+.gdlr-core-html-option-item .gdlr-core-html-option-thumbnail-sizing-input-options { margin-bottom: 27px; }
+.gdlr-core-html-option-item .gdlr-core-html-option-thumbnail-sizing-input-width,
+.gdlr-core-html-option-item .gdlr-core-html-option-thumbnail-sizing-input-height{ display: inline-block; margin-right: 20px; }
+
+/* padding */
+.gdlr-core-html-option-item .gdlr-core-html-option-padding-item{ display: inline-block; width: 52px; 
+	margin-right: 7px; font-size: 11px; text-align: center; color: #9A9A9A; vertical-align: top; }
+.gdlr-core-html-option-item .gdlr-core-html-option-padding-input{ width: 100%; border: none; padding: 10px 8px; 
+	margin: 0px; font-size: 12px; text-align: center; color: #666666; background: #f5f5f5; border: 1px solid #e4e4e4;
+	border-radius: 3px; -moz-border-radius: 3px; -webkit-border-radius: 3px; 
+    box-shadow: inset 0px 0px 6px rgba(0, 0, 0, 0.06); -moz-box-shadow: inset 0px 0px 6px rgba(0, 0, 0, 0.06); -webkit-box-shadow: inset 0px 0px 6px rgba(0, 0, 0, 0.06); }
+.gdlr-core-html-option-item .gdlr-core-html-option-padding-input:focus{ outline: none; }
+.gdlr-core-html-option-item .gdlr-core-html-option-padding-item span{ margin-top: 4px; display: block; }
+.gdlr-core-html-option-item .gdlr-core-html-option-padding-settings{ display: inline-block; vertical-align: top; padding-left: 2px; }
+.gdlr-core-html-option-item .gdlr-core-html-option-padding-settings i{ font-size: 14px; width: 46px; height: 37px; line-height: 36px;
+    display: inline-block; padding-top: 1px; margin-right: 7px; text-align: center; cursor: pointer; background: #d6d6d6; color: #fff;
+	border-radius: 3px; -moz-border-radius: 3px; -webkit-border-radius: 3px; 
+	transition: background-color 200ms; -webkit-transition: background-color 200ms;
+	-moz-transition: background-color 200ms; -o-transition: background-color 200ms; }
+.gdlr-core-html-option-item .gdlr-core-html-option-padding-settings i.gdlr-core-active{ background: #2d9bea; }
+.gdlr-core-html-option-item.gdlr-core-large .gdlr-core-html-option-padding-item{ width: 130px; }
+
+/* import */
+.gdlr-core-html-option-import .gdlr-core-html-option-import-button,
+.gdlr-core-html-option-export .gdlr-core-html-option-export-button{ font-size: 11px; font-weight: bold; text-transform: uppercase;
+	display: inline-block; margin-bottom: 15px; padding: 10px 25px; background: #51b66d; color: #ffffff; letter-spacing: 0.5px;
+	cursor: pointer; border-radius: 3px; -moz-border-radius: 3px; -webkit-border-radius: 3px; }
+.gdlr-core-html-option-import .gdlr-core-html-option-import-button.gdlr-core-now-loading,
+.gdlr-core-html-option-export .gdlr-core-html-option-export-button.gdlr-core-now-loading{ color: transparent;
+	background-image: url('../images/loading-save.gif'); background-position: center; background-repeat: no-repeat; }
+.gdlr-core-html-option-import .gdlr-core-custom-combobox,
+.gdlr-core-html-option-export .gdlr-core-custom-combobox{ margin-bottom: 20px; margin-top: 10px; }
+.gdlr-core-html-option-import .gdlr-core-html-option-import-file{ display: block; margin-bottom: 17px; margin-top: 10px; }
+.gdlr-core-html-option-import .gdlr-core-html-option-import-file:focus{ outline: none; box-shadow: none; }
+
+/* tabs */
+.gdlr-core-html-option-item .gdlr-core-html-option-tabs-add{ width: 25px; height: 25px; display: inline-block; cursor: pointer; 
+	background: url('../images/button-add.png') center no-repeat; vertical-align: middle; margin-left: 16px; }
+.gdlr-core-html-option-item .gdlr-core-html-option-tabs-remove{ width: 25px; height: 25px; cursor: pointer; 
+	position: absolute; top: 50%; right: 10px; margin-top: -13px;
+	background: url('../images/button-remove.png') center no-repeat; }
+.gdlr-core-html-option-item .gdlr-core-html-option-tabs-template{ margin-bottom: 10px; }
+.gdlr-core-html-option-item .gdlr-core-html-option-tabs-template-title{ background: #fff; border: 2px solid #e5e5e5; 
+	padding: 16px 23px; font-weight: bold; color: #7b7b7b; cursor: pointer; position: relative; }
+.gdlr-core-html-option-item .gdlr-core-html-option-tabs-template-content{ padding: 23px 23px 13px; border: 2px solid #e5e5e5; 
+	border-top: none; display: none; }
+.gdlr-core-html-option-item .gdlr-core-html-option-tabs-input-title{ margin-bottom: 13px; display: block; font-weight: bold; color: #828282; }
+.gdlr-core-html-option-item .gdlr-core-html-option-tabs-field{ margin-bottom: 20px; }
+.gdlr-core-html-option-item .gdlr-core-html-option-tabs-field .gdlr-core-html-option-tinymce{ display: none; }
+.gdlr-core-html-option-item .gdlr-core-html-option-tabs-template-title span.gdlr-core-head span{ margin-left: 18px; color: #b5b5b5; font-weight: 600; }
+
+.gdlr-core-html-option-item .iris-picker{ -moz-box-sizing: content-box; -webkit-box-sizing: content-box; box-sizing: content-box; }
+.gdlr-core-html-option-tabs-field .wp-switch-editor{ height: 29px}

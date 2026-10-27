@@ -1,0 +1,327 @@
+<wpml-config>
+    <custom-fields>
+        <custom-field action="translate">gdlr-core-page-builder</custom-field>
+    </custom-fields>
+    <custom-fields-texts>
+        <key name="gdlr-core-page-builder">
+            <key name="*">
+				<key name="value">
+                    <key name="column-link" translate_link_target="1" />
+                    <key name="link-url" translate_link_target="1" />
+                    <key name="title"/>
+                    <key name="content"/>
+                    <key name="caption"/>
+                    <key name="title-link" translate_link_target="1" />
+                    <key name="title-link-text"/>
+                    <key name="delicious"/>
+                    <key name="email"/>
+                    <key name="deviantart"/>
+                    <key name="digg"/>
+                    <key name="facebook"/>
+                    <key name="flickr"/>
+                    <key name="youtube"/>
+                    <key name="skype"/>
+                    <key name="heading-text"/>
+                    <key name="bar-text"/>
+                    <key name="button-text"/>
+                    <key name="button-link" translate_link_target="1" />
+                    <key name="button2-text"/>
+                    <key name="read-more-text"/>
+                    <key name="read-more-link" translate_link_target="1" />
+                    <key name="read-more-button-text"/>
+                    <key name="b-title"/>
+                    <key name="b-content"/>
+                    <key name="b-caption"/>
+                    <key name="b-button-text"/>
+                    <key name="b-button-link" translate_link_target="1" />
+                    <key name="tabs">
+                        <key name="*">
+                            <key name="heading-text"/>
+                            <key name="head-text"/>
+                            <key name="bar-text"/>
+                            <key name="title"/>
+                            <key name="caption"/>
+                            <key name="content"/>
+                            <key name="button-text"/>
+                            <key name="data"/>
+                            <key name="link-url" translate_link_target="1" />
+                        </key>
+                    </key>
+                    <key name="port-info">
+                        <key name="*">
+                            <key name="key"/>
+                            <key name="value"/>
+                        </key>
+                    </key>
+				</key>
+                <key name="items">
+                    <key name="*">
+						<key name="value">
+                            <key name="column-link" translate_link_target="1" />
+                            <key name="link-url" translate_link_target="1" />
+                            <key name="title"/>
+                            <key name="content"/>
+                            <key name="caption"/>
+                            <key name="title-link" translate_link_target="1" />
+                            <key name="title-link-text"/>
+                            <key name="delicious"/>
+                            <key name="email"/>
+                            <key name="deviantart"/>
+                            <key name="digg"/>
+                            <key name="facebook"/>
+                            <key name="flickr"/>
+                            <key name="youtube"/>
+                            <key name="skype"/>
+                            <key name="heading-text"/>
+                            <key name="bar-text"/>
+                            <key name="button-text"/>
+                            <key name="button-link" translate_link_target="1" />
+                            <key name="button2-text"/>
+                            <key name="read-more-text"/>
+                            <key name="read-more-link" translate_link_target="1"/>
+                            <key name="read-more-button-text"/>
+                            <key name="b-title"/>
+                            <key name="b-content"/>
+                            <key name="b-caption"/>
+                            <key name="b-button-text"/>
+                            <key name="b-button-link" translate_link_target="1"/>
+                            <key name="tabs">
+                                <key name="*">
+                                    <key name="heading-text"/>
+									<key name="head-text"/>
+                                    <key name="bar-text"/>
+                                    <key name="title"/>
+                                    <key name="caption"/>
+                                    <key name="content"/>
+                                    <key name="button-text"/>
+                                    <key name="data"/>
+                                    <key name="link-url" translate_link_target="1" />
+                                </key>
+                            </key>
+                            <key name="port-info">
+                                <key name="*">
+                                    <key name="key"/>
+                                    <key name="value"/>
+                                </key>
+                            </key>
+						</key>
+                        <key name="items">
+                            <key name="*">
+                                <key name="value">
+                                    <key name="column-link" translate_link_target="1" />
+                                    <key name="link-url" translate_link_target="1" />
+                                    <key name="title"/>
+                                    <key name="content"/>
+                                    <key name="caption"/>
+                                    <key name="title-link" translate_link_target="1" />
+                                    <key name="delicious"/>
+                                    <key name="email"/>
+                                    <key name="deviantart"/>
+                                    <key name="digg"/>
+                                    <key name="facebook"/>
+                                    <key name="flickr"/>
+                                    <key name="youtube"/>
+                                    <key name="skype"/>
+                                    <key name="heading-text"/>
+                                    <key name="bar-text"/>
+                                    <key name="button-text"/>
+                                    <key name="button-link" translate_link_target="1" />
+                                    <key name="button2-text"/>
+                                    <key name="read-more-text"/>
+                                    <key name="read-more-link" translate_link_target="1" />
+                                    <key name="read-more-button-text"/>
+                                    <key name="b-title"/>
+                                    <key name="b-content"/>
+                                    <key name="b-caption"/>
+                                    <key name="b-button-text"/>
+                                    <key name="b-button-link" translate_link_target="1" />
+                                    <key name="tabs">
+                                        <key name="*">
+                                            <key name="heading-text"/>
+											<key name="head-text"/>
+                                            <key name="bar-text"/>
+                                            <key name="title"/>
+											<key name="caption"/>
+                                            <key name="content"/>
+                                            <key name="button-text"/>
+                                            <key name="data"/>
+                                            <key name="link-url" translate_link_target="1" />
+                                        </key>
+                                    </key>
+                                    <key name="port-info">
+                                        <key name="*">
+                                            <key name="key"/>
+                                            <key name="value"/>
+                                        </key>
+                                    </key>
+                                </key>
+                            </key>
+                        </key>
+                    </key>
+                </key>
+            </key>
+        </key>
+    </custom-fields-texts>
+        <admin-texts>
+        <key name="gdlr-core-pb-sync-template" >
+            <key name="*">
+		        <key name="value">
+                    <key name="value">
+                        <key name="column-link" translate_link_target="1" />
+                        <key name="link-url" translate_link_target="1" />
+                        <key name="title"/>
+                        <key name="content"/>
+                        <key name="caption"/>
+                        <key name="title-link" translate_link_target="1" />
+                        <key name="title-link-text" />
+                        <key name="delicious"/>
+                        <key name="email"/>
+                        <key name="deviantart"/>
+                        <key name="digg"/>
+                        <key name="facebook"/>
+                        <key name="flickr"/>
+                        <key name="youtube"/>
+                        <key name="skype"/>
+                        <key name="heading-text"/>
+                        <key name="bar-text"/>
+                        <key name="button-text"/>
+                        <key name="button-link" translate_link_target="1" />
+                        <key name="button2-text"/>
+                        <key name="read-more-text"/>
+                        <key name="read-more-link" translate_link_target="1" />
+                        <key name="read-more-button-text"/>
+                        <key name="b-title"/>
+                        <key name="b-content"/>
+                        <key name="b-caption"/>
+                        <key name="b-button-text"/>
+                        <key name="b-button-link" translate_link_target="1" />
+                        <key name="tabs">
+                            <key name="*">
+                                <key name="heading-text"/>
+                                <key name="head-text"/>
+                                <key name="bar-text"/>
+                                <key name="title"/>
+                                <key name="caption"/>
+                                <key name="content"/>
+                                <key name="button-text"/>
+                                <key name="data"/>
+                                <key name="link-url" translate_link_target="1" />
+                            </key>
+                        </key>
+                        <key name="port-info">
+                            <key name="*">
+                                <key name="key"/>
+                                <key name="value"/>
+                            </key>
+                        </key>
+                    </key>
+                    <key name="items">
+                        <key name="*">
+                            <key name="value">
+                                <key name="column-link" translate_link_target="1" />
+                                <key name="link-url" translate_link_target="1" />
+                                <key name="title"/>
+                                <key name="content"/>
+                                <key name="caption"/>
+                                <key name="title-link" translate_link_target="1" />
+                                <key name="title-link-text"/>
+                                <key name="delicious"/>
+                                <key name="email"/>
+                                <key name="deviantart"/>
+                                <key name="digg"/>
+                                <key name="facebook"/>
+                                <key name="flickr"/>
+                                <key name="youtube"/>
+                                <key name="skype"/>
+                                <key name="heading-text"/>
+                                <key name="bar-text"/>
+                                <key name="button-text"/>
+                                <key name="button-link" translate_link_target="1" />
+                                <key name="button2-text"/>
+                                <key name="read-more-text"/>
+                                <key name="read-more-link" translate_link_target="1" />
+                                <key name="read-more-button-text"/>
+                                <key name="b-title"/>
+                                <key name="b-content"/>
+                                <key name="b-caption"/>
+                                <key name="b-button-text"/>
+                                <key name="b-button-link" translate_link_target="1" />
+                                <key name="tabs">
+                                    <key name="*">
+                                        <key name="heading-text"/>
+                                        <key name="head-text"/>
+                                        <key name="bar-text"/>
+                                        <key name="title"/>
+                                        <key name="caption"/>
+                                        <key name="content"/>
+                                        <key name="button-text"/>
+                                        <key name="data"/>
+                                        <key name="link-url" translate_link_target="1" />
+                                    </key>
+                                </key>
+                                <key name="port-info">
+                                    <key name="*">
+                                        <key name="key"/>
+                                        <key name="value"/>
+                                    </key>
+                                </key>
+                            </key>
+                            <key name="items">
+                                <key name="*">
+                                    <key name="value">
+                                        <key name="column-link" translate_link_target="1" />
+                                        <key name="link-url" translate_link_target="1" />
+                                        <key name="title"/>
+                                        <key name="content"/>
+                                        <key name="caption"/>
+                                        <key name="title-link" translate_link_target="1" />
+                                        <key name="delicious"/>
+                                        <key name="email"/>
+                                        <key name="deviantart"/>
+                                        <key name="digg"/>
+                                        <key name="facebook"/>
+                                        <key name="flickr"/>
+                                        <key name="youtube"/>
+                                        <key name="skype"/>
+                                        <key name="heading-text"/>
+                                        <key name="bar-text"/>
+                                        <key name="button-text"/>
+                                        <key name="button-link" translate_link_target="1" />
+                                        <key name="button2-text"/>
+                                        <key name="read-more-text"/>
+                                        <key name="read-more-link" translate_link_target="1" />
+                                        <key name="read-more-button-text"/>
+                                        <key name="b-title"/>
+                                        <key name="b-content"/>
+                                        <key name="b-caption"/>
+                                        <key name="b-button-text"/>
+                                        <key name="b-button-link" translate_link_target="1" />
+                                        <key name="tabs">
+                                            <key name="*">
+                                                <key name="heading-text"/>
+                                                <key name="head-text"/>
+                                                <key name="bar-text"/>
+                                                <key name="title"/>
+                                                <key name="caption"/>
+                                                <key name="content"/>
+                                                <key name="button-text"/>
+                                                <key name="data"/>
+                                                <key name="link-url" translate_link_target="1" />
+                                            </key>
+                                        </key>
+                                        <key name="port-info">
+                                            <key name="*">
+                                                <key name="key"/>
+                                                <key name="value"/>
+                                            </key>
+                                        </key>
+                                    </key>
+                                </key>
+                            </key>
+                        </key>
+                    </key>
+                </key>
+            </key>
+        </key>
+    </admin-texts>
+</wpml-config>

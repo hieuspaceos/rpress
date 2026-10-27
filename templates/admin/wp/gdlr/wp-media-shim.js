@@ -3,7 +3,7 @@
    `.on('select', fn)` and reads `frame.state().get('selection').first().toJSON()`
    expecting {id, url}. We can't re-create the WP media grid inside rpress, so
    the shim exposes a small attachment picker backed by rpress's media library:
-   GET /admin/api/media/list returns [{id, url}] (JSON); clicking a tile fires
+   GET /api/v1/gdlr/media returns [{id, url}] (JSON); clicking a tile fires
    the frame's 'select' callback with a Backbone-free selection object. */
 (function () {
   'use strict';

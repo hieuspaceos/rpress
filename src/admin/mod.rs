@@ -277,8 +277,7 @@ pub async fn serve(db: PathBuf, templates: PathBuf, out: PathBuf, www: PathBuf, 
             loop {
                 tokio::time::sleep(Duration::from_secs(60)).await;
                 for sc in sites.values() {
-                    let mut map = sc.bridges.lock();
-                    for k in bridge::reap(&mut map, bridge::TTL_IDLE) {
+                    for k in bridge::reap(&sc.bridges, bridge::TTL_IDLE) {
                         eprintln!("bridge: idle kill {k}");
                     }
                 }
@@ -1434,6 +1433,7 @@ async fn bridge_dispatch(
     let site = sc.slug.clone();
     let www = sc.www.clone();
     let db = sc.db.clone();
+    let tpl = sc.templates.clone();
     /* The bridge's wp.db hosts every mounted plugin AND the site's theme —
        writes can land in keys owned by other adapters (e.g. skins write
        `traveltour_color` — the theme's option, not `gdlr-core-%`). Pull with
@@ -1446,14 +1446,16 @@ async fn bridge_dispatch(
     let path = adapter.bridge_path(rest);
     let bridges = sc.bridges.clone();
     // T25: the post being edited is the last numeric path segment
-    // (e.g. `/admin/plugins/gdlr/page-builder/edit/42` → 42). No match
+    // (e.g. `/admin/plugins/goodlayers/page-builder/edit/42` → 42). No match
     // → empty wp.db: the plugin screens that need no post context.
     let post_id = rest
         .rsplit('/')
         .find_map(|seg| seg.parse::<i64>().ok());
     let resp = tokio::task::spawn_blocking(move || {
-        let mut map = bridges.lock();
-        let st = bridge::bridge_for(&mut map, &site, slug, bridge::RuntimeKind::Playground, &www, &db, post_id, adapter.wp_plugin_file())?;
+        let h = bridge::bridge_for(&bridges, &site, slug, bridge::RuntimeKind::Playground, &www, &db, post_id, adapter.wp_plugin_file(), &tpl)?;
+        // Entry mutex serializes this bridge's runtime; the global map
+        // lock is already released — other sites' bridge traffic flows.
+        let mut st = h.lock();
         let token = st.token.clone();
         let mut fwd = hdrs.clone();
         fwd.push(("X-Rpress-Bridge".into(), token));

@@ -52,6 +52,7 @@ pub(crate) fn spawn(
     rpress_db: &Path,
     post_id: Option<i64>,
     plugin_file: &str,
+    templates: &Path,
 ) -> Result<BridgeState> {
     let dir = www.join("bridge").join(slug);
     if dir.exists() {
@@ -82,6 +83,19 @@ pub(crate) fn spawn(
                 }
             } else if e.path().is_dir() && name != "database" {
                 mounts.push((e.path(), format!("/wordpress/wp-content/{name}")));
+            }
+        }
+    }
+    /* Bundled plugin fallback: the PB editor is format-universal — sites
+       whose origin never had goodlayers-core (blueskies/dmc/imagedmc run
+       tevily) still need it inside the bridge after the Rust port's
+       deletion. Ship it under templates/wp-plugins/ and mount when the
+       site's own copy is absent; a site copy always wins. */
+    if let Some(bundle) = plugin_file.split('/').next() {
+        if !wp_content.join("plugins").join(bundle).exists() {
+            let bundled = templates.join("wp-plugins").join(bundle);
+            if bundled.is_dir() {
+                mounts.push((bundled, format!("/wordpress/wp-content/plugins/{bundle}")));
             }
         }
     }
@@ -122,11 +136,32 @@ pub(crate) fn spawn(
        registration) only exist while it's active. Settings key is the raw
        WP `stylesheet` option (kept verbatim by import). */
     if let Ok(c) = crate::db::conn(rpress_db) {
-        let theme: Option<String> = c
-            .query_row("SELECT value FROM settings WHERE key='stylesheet'", [], |r| r.get(0))
-            .ok()
-            .filter(|s: &String| !s.trim().is_empty());
-        if let Some(theme) = theme {
+        /* Pre-cutover DBs may lack stylesheet/active_plugins (imported
+           before the allowlist grew them). Fall back to the site's
+           `dump.sql` — same rows, already on disk — then seed the
+           resolved values back into settings so the fallback runs once
+           per site, not per spawn. */
+        let dump = www.parent().map(|w| w.join("dump.sql"));
+        let opt = |key: &str| -> Option<String> {
+            let row: Option<String> = c
+                .query_row("SELECT value FROM settings WHERE key=?1", [key], |r| r.get(0))
+                .ok()
+                .filter(|s: &String| !s.trim().is_empty());
+            match row {
+                Some(v) => Some(v),
+                None => {
+                    let v = option_from_dump(dump.as_deref(), key);
+                    if let Some(v) = &v {
+                        let _ = c.execute(
+                            "INSERT OR REPLACE INTO settings(key,value) VALUES(?1,?2)",
+                            rusqlite::params![key, v],
+                        );
+                    }
+                    v
+                }
+            }
+        };
+        if let Some(theme) = opt("stylesheet") {
             args.push("--define".into());
             args.push("RPRESS_BRIDGE_THEME".into());
             args.push(theme);
@@ -139,9 +174,7 @@ pub(crate) fn spawn(
            302 every bridge request; activating nothing loses the tour
            element class → options lightbox 500s. Scan mounted plugin
            dirs for the registration call. */
-        if let Ok(raw) = c.query_row::<String, _, _>(
-            "SELECT value FROM settings WHERE key='active_plugins'", [], |r| r.get(0),
-        ) {
+        if let Some(raw) = opt("active_plugins") {
             if let Ok(list) = crate::php_serialize::unserialize(raw.as_bytes()) {
                 if let serde_json::Value::Array(items) = list {
                     let mut active: Vec<String> = items
@@ -191,6 +224,7 @@ pub(crate) fn spawn(
     Ok(BridgeState {
         rt: Box::new(Playground { child, port }),
         last_used: Instant::now(),
+        spawned_at: Instant::now(),
         token,
         wp_db,
     })
@@ -308,4 +342,45 @@ fn dir_provides_pb_element(dir: &std::path::Path) -> bool {
         false
     }
     walk(dir, 0)
+}
+
+/// Read `key`'s option value straight out of the site's `dump.sql` — used
+/// as a fallback when `settings` lacks the row (DBs imported before the
+/// option entered the import allowlist). Reuses `sqldump::rows`, so SQL
+/// escapes are already handled. Missing dump → `None`, silent.
+fn option_from_dump(dump: Option<&Path>, key: &str) -> Option<String> {
+    let dump = dump?;
+    if !dump.is_file() {
+        return None;
+    }
+    let want = key.to_string();
+    let mut out = None;
+    let _ = crate::sqldump::rows(dump, &["wp_options"], |_, v| {
+        if v.len() > 2 && v[1].to_string_lossy().as_deref() == Some(want.as_str()) {
+            out = v[2].to_string_lossy();
+        }
+        Ok(())
+    });
+    out
+}
+
+#[cfg(test)]
+mod tests2 {
+    use super::*;
+    #[test]
+    fn option_from_dump_reads_row() {
+        let dir = std::env::temp_dir().join(format!("rpress-od-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dump = dir.join("dump.sql");
+        std::fs::write(&dump,
+            "INSERT INTO `wp_options` VALUES (1,'siteurl','http://x',0),\
+             (2,'stylesheet','tevily_child',0),\
+             (3,'active_plugins','a:1:{i:0;s:9:\"a/a.php\";}',0);\n").unwrap();
+        assert_eq!(option_from_dump(Some(&dump), "stylesheet").as_deref(), Some("tevily_child"));
+        assert!(option_from_dump(Some(&dump), "active_plugins").unwrap().starts_with("a:1:"));
+        assert_eq!(option_from_dump(Some(&dump), "nope"), None);
+        assert_eq!(option_from_dump(None, "stylesheet"), None);
+        assert_eq!(option_from_dump(Some(&dir.join("missing.sql")), "x"), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

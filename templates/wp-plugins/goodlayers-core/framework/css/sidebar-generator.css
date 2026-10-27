@@ -1,0 +1,36 @@
+.gdlr-core-sidebar-generator-wrapper{ box-sizing: border-box; -moz-box-sizing: border-box; -webkit-box-sizing: border-box; font-family: "Montserrat", sans-serif; }
+.gdlr-core-sidebar-generator-wrapper *,
+.gdlr-core-sidebar-generator-wrapper *:before, 
+.gdlr-core-sidebar-generator-wrapper *:after { box-sizing: inherit; -moz-box-sizing: inherit; -webkit-box-sizing: inherit; }
+
+.gdlr-core-sidebar-generator-wrapper{ font-family: "Montserrat", sans-serif; width: 450px; 
+	    background: #fff; padding: 30px; margin-top: 20px; text-align: center;  margin-left: auto; margin-right: auto;
+		box-shadow: 0px 0px 4px rgba(0, 0, 0, 0.1); }
+.gdlr-core-sidebar-generator-wrapper .gdlr-core-sidebar-generator-title{ font-size: 14px; color: #2a2a2a; margin-bottom: 16px; }
+.gdlr-core-sidebar-generator-wrapper input[type="text"]{ display: block; height: 38px; width: 100%; max-width: 290px;
+	margin: 0px auto 16px; padding: 6px 18px;  text-align: center;
+	border: 1px solid #e4e4e4; background: #f9f9f9; color: #666; font-size: 13px;
+	border-radius: 3px; -moz-border-radius: 3px; -webkit-border-radius: 3px; 
+	box-shadow: inset 0px 0px 3px rgba(0, 0, 0, 0.06); -moz-box-shadow: inset 0px 0px 3px rgba(0, 0, 0, 0.06); -webkit-box-shadow: inset 0px 0px 3px rgba(0, 0, 0, 0.06); }
+.gdlr-core-sidebar-generator-wrapper input[type="submit"]{ display: block; margin: 0px auto; padding: 10px 16px 10px 32px;
+    font-size: 11px; text-transform: uppercase; color: #fff; 
+	background: url('../images/icon-plus.png') 16px center no-repeat #51b66d;
+    border-radius: 3px; -moz-border-radius: 3px; -webkit-border-radius: 3px; cursor: pointer;
+	border: none; outline: none; box-shadow: none; -moz-box-shadow: none; -webkit-box-shadow: none; }	
+.sidebar-gdlr-core-dynamic-widget .gdlr-core-delete-sidebar{ width: 18px; height: 18px; line-height: 17px; text-align: center;
+	background: #e85050; color: #fff; position: absolute; right: 120px; top: 50%; right: 38px; margin-top: -9px;  }
+.sidebar-gdlr-core-dynamic-widget .gdlr-core-delete-sidebar:before { content: "\f00d"; font-family: fontAwesome; }
+	
+.components-panel__body-title .gdlr-core-delete-sidebar{ width: 18px; height: 18px; line-height: 17px; text-align: center;
+	background: #e85050; color: #fff; position: absolute; right: 50px !important; top: 50%; right: 38px; margin-top: -9px; cursor:  pointer; }
+.components-panel__body-title .gdlr-core-delete-sidebar:before { content: "\f00d"; font-family: fontAwesome; }
+	
+
+/* center the wordpress sidebar nav */
+.sidebar-name .sidebar-name-arrow:before{ margin-top: 3px; }	
+
+.gdlr-core-widget-upload-thumbnail { margin: 11px 0px; background: #f3f3f3; min-height: 50px; width: 223px; }
+
+@media only screen and (min-width: 1250px){
+	.gdlr-core-sidebar-generator-wrapper{ max-width: 100%; }
+}

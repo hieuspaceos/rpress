@@ -316,11 +316,32 @@ fn animation_atts(m: &Map<String, Value>) -> String {
 
 fn defs(sc: &SiteCtx) -> (Value, Value) {
     let dir = sc.templates.join("admin/wp/gdlr");
-    let e = std::fs::read_to_string(dir.join("elements.json"))
+    let mut e: Value = std::fs::read_to_string(dir.join("elements.json"))
         .ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_else(|| json!({}));
-    let w = std::fs::read_to_string(dir.join("wrappers.json"))
+    let mut w: Value = std::fs::read_to_string(dir.join("wrappers.json"))
         .ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_else(|| json!({}));
+    strip_origin_urls(&mut e);
+    strip_origin_urls(&mut w);
     (e, w)
+}
+
+/// These JSONs are dumps captured off a live WP — thumbnail/image strings
+/// may still carry `http://<host>/wp-content/plugins/goodlayers-core/…`.
+/// Rewrite to the root-relative tail so `GDLR_URL` prepending lands on the
+/// vendored asset namespace; external URLs (docs links, CDNs) untouched.
+fn strip_origin_urls(v: &mut Value) {
+    match v {
+        Value::String(s) => {
+            if s.starts_with("http://") || s.starts_with("https://") {
+                if let Some(i) = s.find("/wp-content/plugins/goodlayers-core") {
+                    *s = s[i + "/wp-content/plugins/goodlayers-core".len()..].to_string();
+                }
+            }
+        }
+        Value::Array(a) => a.iter_mut().for_each(strip_origin_urls),
+        Value::Object(o) => o.values_mut().for_each(strip_origin_urls),
+        _ => {}
+    }
 }
 
 fn icons(sc: &SiteCtx) -> Value {

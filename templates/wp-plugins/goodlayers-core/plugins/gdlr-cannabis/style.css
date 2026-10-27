@@ -1,0 +1,267 @@
+@font-face {
+  font-family: 'gdl-cannabis';
+  src:  url('fonts/gdl-cannabis.eot?br56c2');
+  src:  url('fonts/gdl-cannabis.eot?br56c2#iefix') format('embedded-opentype'),
+    url('fonts/gdl-cannabis.ttf?br56c2') format('truetype'),
+    url('fonts/gdl-cannabis.woff?br56c2') format('woff'),
+    url('fonts/gdl-cannabis.svg?br56c2#gdl-cannabis') format('svg');
+  font-weight: normal;
+  font-style: normal;
+  font-display: block;
+}
+
+[class^="gdl-cannabis-"], [class*="gdl-cannabis-"] {
+  /* use !important to prevent issues with browser extensions that change fonts */
+  font-family: 'gdl-cannabis' !important;
+  speak: never;
+  font-style: normal;
+  font-weight: normal;
+  font-variant: normal;
+  text-transform: none;
+  line-height: 1;
+
+  /* Better Font Rendering =========== */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.gdl-cannabis-chocolate:before {
+  content: "\e900";
+}
+.gdl-cannabis-heart-rate:before {
+  content: "\e901";
+}
+.gdl-cannabis-bag:before {
+  content: "\e902";
+}
+.gdl-cannabis-cancer:before {
+  content: "\e903";
+}
+.gdl-cannabis-molecule:before {
+  content: "\e904";
+}
+.gdl-cannabis-Marijuana:before {
+  content: "\e905";
+}
+.gdl-cannabis-olive-oil:before {
+  content: "\e906";
+}
+.gdl-cannabis-diagram:before {
+  content: "\e907";
+}
+.gdl-cannabis-bong:before {
+  content: "\e908";
+}
+.gdl-cannabis-bud:before {
+  content: "\e909";
+}
+.gdl-cannabis-cupcake:before {
+  content: "\e90a";
+}
+.gdl-cannabis-heart:before {
+  content: "\e90b";
+}
+.gdl-cannabis-candy:before {
+  content: "\e90c";
+}
+.gdl-cannabis-brownie:before {
+  content: "\e90d";
+}
+.gdl-cannabis-cream:before {
+  content: "\e90e";
+}
+.gdl-cannabis-online:before {
+  content: "\e90f";
+}
+.gdl-cannabis-scales:before {
+  content: "\e910";
+}
+.gdl-cannabis-certification:before {
+  content: "\e911";
+}
+.gdl-cannabis-pipe:before {
+  content: "\e912";
+}
+.gdl-cannabis-book:before {
+  content: "\e913";
+}
+.gdl-cannabis-pills:before {
+  content: "\e914";
+}
+.gdl-cannabis-greenhouse:before {
+  content: "\e915";
+}
+.gdl-cannabis-placeholder:before {
+  content: "\e916";
+}
+.gdl-cannabis-cultivation:before {
+  content: "\e917";
+}
+.gdl-cannabis-can:before {
+  content: "\e918";
+}
+.gdl-cannabis-vape:before {
+  content: "\e919";
+}
+.gdl-cannabis-cookies:before {
+  content: "\e91a";
+}
+.gdl-cannabis-oil:before {
+  content: "\e91b";
+}
+.gdl-cannabis-hydrophonics:before {
+  content: "\e91c";
+}
+.gdl-cannabis-medicine:before {
+  content: "\e91d";
+}
+.gdl-cannabis-magnifying-glass:before {
+  content: "\e91e";
+}
+.gdl-cannabis-Marijuana1:before {
+  content: "\e91f";
+}
+.gdl-cannabis-sleep:before {
+  content: "\e920";
+}
+.gdl-cannabis-Marijuana2:before {
+  content: "\e921";
+}
+.gdl-cannabis-shop:before {
+  content: "\e922";
+}
+.gdl-cannabis-shopping-bag:before {
+  content: "\e923";
+}
+.gdl-cannabis-tea:before {
+  content: "\e924";
+}
+.gdl-cannabis-extraction:before {
+  content: "\e925";
+}
+.gdl-cannabis-joint:before {
+  content: "\e926";
+}
+.gdl-cannabis-legal:before {
+  content: "\e927";
+}
+.gdl-cannabis-medal:before {
+  content: "\e928";
+}
+.gdl-cannabis-cigar:before {
+  content: "\e929";
+}
+.gdl-cannabis-flask:before {
+  content: "\e92a";
+}
+.gdl-cannabis-tincture:before {
+  content: "\e92b";
+}
+.gdl-cannabis-stethoscope:before {
+  content: "\e92c";
+}
+.gdl-cannabis-no-thc:before {
+  content: "\e92d";
+}
+.gdl-cannabis-card:before {
+  content: "\e92e";
+}
+.gdl-cannabis-prescription:before {
+  content: "\e92f";
+}
+.gdl-cannabis-body-lotion:before {
+  content: "\e930";
+}
+.gdl-cannabis-inhaler:before {
+  content: "\e931";
+}
+.gdl-cannabis-cannabis-oil:before {
+  content: "\e932";
+}
+.gdl-cannabis-research:before {
+  content: "\e933";
+}
+.gdl-cannabis-scales1:before {
+  content: "\e934";
+}
+.gdl-cannabis-seeds:before {
+  content: "\e935";
+}
+.gdl-cannabis-serum:before {
+  content: "\e936";
+}
+.gdl-cannabis-stock:before {
+  content: "\e937";
+}
+.gdl-cannabis-store:before {
+  content: "\e938";
+}
+.gdl-cannabis-t-shirt:before {
+  content: "\e939";
+}
+.gdl-cannabis-tea1:before {
+  content: "\e93a";
+}
+.gdl-cannabis-test-tube:before {
+  content: "\e93b";
+}
+.gdl-cannabis-watering:before {
+  content: "\e93c";
+}
+.gdl-cannabis-lips:before {
+  content: "\e93d";
+}
+.gdl-cannabis-cannabis-law:before {
+  content: "\e93e";
+}
+.gdl-cannabis-slow:before {
+  content: "\e93f";
+}
+.gdl-cannabis-bored:before {
+  content: "\e940";
+}
+.gdl-cannabis-leaf:before {
+  content: "\e941";
+}
+.gdl-cannabis-bong1:before {
+  content: "\e942";
+}
+.gdl-cannabis-chocolate1:before {
+  content: "\e943";
+}
+.gdl-cannabis-cream1:before {
+  content: "\e944";
+}
+.gdl-cannabis-cupcake1:before {
+  content: "\e945";
+}
+.gdl-cannabis-delivery-truck:before {
+  content: "\e946";
+}
+.gdl-cannabis-cold-drink:before {
+  content: "\e947";
+}
+.gdl-cannabis-medicine1:before {
+  content: "\e948";
+}
+.gdl-cannabis-planting:before {
+  content: "\e949";
+}
+.gdl-cannabis-growing-plant:before {
+  content: "\e94a";
+}
+.gdl-cannabis-envelope:before {
+  content: "\e94b";
+}
+.gdl-cannabis-pot:before {
+  content: "\e94c";
+}
+.gdl-cannabis-body-lotion1:before {
+  content: "\e94d";
+}
+.gdl-cannabis-medical:before {
+  content: "\e94e";
+}
+.gdl-cannabis-medical1:before {
+  content: "\e94f";
+}

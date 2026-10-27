@@ -13,9 +13,8 @@
 //!    capability (same write the Rust port made — render authority
 //!    stays `body_json`).
 //!
-//! `/admin/api/gdlr/ajax` 307s here only when the slug is opted in
-//! (see `gdlr_ajax` in `admin::mod`); otherwise the legacy Rust
-//! dispatch answers — parity fallback until the port is deleted.
+//! `/admin/api/gdlr/ajax` 307s to this screen for every site — the
+//! goodlayers bridge is always-on (no non-bridge PB path remains).
 
 use super::{Backend, PluginAdapter};
 use crate::admin::bridge::pull::{PullTable, WriteSpec};
