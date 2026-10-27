@@ -73,6 +73,104 @@ pub fn setting_json_put_conn(conn: &rusqlite::Connection, key: &str, value: &ser
     Ok(())
 }
 
+/// Namespaced settings key for plugin options: `plugin:<slug>:<key>`.
+/// The `plugin:` prefix is the write-whitelist boundary the PhpBridge
+/// write path (phase 06) enforces mechanically — plugin writes can never
+/// touch `posts`, `users`, `sessions`, core `settings` keys, or another
+/// plugin's namespace.
+pub fn plugin_setting_key(slug: &str, key: &str) -> String {
+    format!("plugin:{slug}:{key}")
+}
+
+/// Read a plugin option: `plugin:<slug>:<key>` first, legacy bare `key`
+/// fallback (transition window until phase 05 migrates existing keys).
+pub fn plugin_setting_json_value_conn(conn: &rusqlite::Connection, slug: &str, key: &str) -> serde_json::Value {
+    let namespaced = plugin_setting_key(slug, key);
+    let get = |k: &str| conn.query_row("SELECT value FROM settings WHERE key=?1", [k], |r| r.get::<_, String>(0));
+    // Fall back to the legacy bare key only on a clean miss — a transient
+    // error (BUSY/IO) must not make a live option look absent.
+    let raw = match get(&namespaced) {
+        Err(rusqlite::Error::QueryReturnedNoRows) => get(key),
+        other => other,
+    };
+    raw.ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or(serde_json::Value::Null)
+}
+
+/// Write a plugin option under its namespace — new writes never touch
+/// legacy bare keys.
+pub fn plugin_setting_json_put_conn(conn: &rusqlite::Connection, slug: &str, key: &str, value: &serde_json::Value) -> Result<()> {
+    setting_json_put_conn(conn, &plugin_setting_key(slug, key), value)
+}
+
+/// Raw-string variant for non-JSON option blobs (php-serialized values
+/// like `tourmaster_general`). Same dual-read order.
+pub fn plugin_setting_raw_conn(conn: &rusqlite::Connection, slug: &str, key: &str) -> Option<String> {
+    let namespaced = plugin_setting_key(slug, key);
+    let get = |k: &str| conn.query_row("SELECT value FROM settings WHERE key=?1", [k], |r| r.get::<_, String>(0));
+    match get(&namespaced) {
+        Err(rusqlite::Error::QueryReturnedNoRows) => get(key),
+        other => other,
+    }
+    .ok()
+}
+
+/// `BTreeMap` variant for map-shaped plugin options (tourmaster's
+/// `tour_custom_taxs` slug→label dict). Same dual-read order.
+pub fn plugin_setting_json_map(db: &Path, slug: &str, key: &str) -> std::collections::BTreeMap<String, String> {
+    crate::db::conn(db)
+        .ok()
+        .and_then(|c| {
+            let namespaced = plugin_setting_key(slug, key);
+            let get = |k: &str| c.query_row("SELECT value FROM settings WHERE key=?1", [k], |r| r.get::<_, String>(0));
+            match get(&namespaced) {
+                Err(rusqlite::Error::QueryReturnedNoRows) => get(key),
+                other => other,
+            }
+            .ok()
+        })
+        .and_then(|v| serde_json::from_str(&v).ok())
+        .unwrap_or_default()
+}
+
+/// Map-shaped plugin-option write — namespaced key only.
+pub fn plugin_setting_json_put_map(db: &Path, slug: &str, key: &str, value: &std::collections::BTreeMap<String, String>) -> Result<()> {
+    setting_put(db, &plugin_setting_key(slug, key), &serde_json::to_string(value)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn conn() -> rusqlite::Connection {
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        c.execute("CREATE TABLE settings(key TEXT PRIMARY KEY, value TEXT)", []).unwrap();
+        c
+    }
+
+    #[test]
+    fn plugin_settings_dual_read() {
+        let c = conn();
+        // Namespaced write lands under plugin:{slug}:, never the bare key.
+        plugin_setting_json_put_conn(&c, "goodlayers", "skins", &serde_json::json!({"a":1})).unwrap();
+        assert_eq!(
+            c.query_row::<String, _, _>("SELECT value FROM settings WHERE key='plugin:goodlayers:skins'", [], |r| r.get(0)).unwrap(),
+            r#"{"a":1}"#
+        );
+        assert!(c.query_row::<String, _, _>("SELECT value FROM settings WHERE key='skins'", [], |r| r.get(0)).is_err());
+        // Read order: namespaced wins; bare key only as fallback.
+        c.execute("INSERT INTO settings(key,value) VALUES('gdlr-x','\"legacy\"')", []).unwrap();
+        assert_eq!(plugin_setting_json_value_conn(&c, "goodlayers", "gdlr-x"), serde_json::json!("legacy"));
+        c.execute("INSERT INTO settings(key,value) VALUES('plugin:goodlayers:gdlr-x','\"new\"')", []).unwrap();
+        assert_eq!(plugin_setting_json_value_conn(&c, "goodlayers", "gdlr-x"), serde_json::json!("new"));
+        // Raw variant for non-JSON blobs (php-serialized options).
+        c.execute("INSERT INTO settings(key,value) VALUES('tourmaster_general','a:1:{}')", []).unwrap();
+        assert_eq!(plugin_setting_raw_conn(&c, "tourmaster", "tourmaster_general").as_deref(), Some("a:1:{}"));
+        assert!(plugin_setting_raw_conn(&c, "tourmaster", "missing").is_none());
+    }
+}
+
 pub fn setting_json_map(db: &Path, key: &str) -> std::collections::BTreeMap<String, String> {
     crate::db::conn(db)
         .ok()

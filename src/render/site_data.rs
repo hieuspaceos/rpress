@@ -345,13 +345,7 @@ pub(crate) fn site_data(
 
     // tourmaster_general options: search page url + month filter list, both
     // consumed by elements/tour_search.html.
-    let general: Option<Value> = conn
-        .query_row(
-            sql!("render__select_value_from_settings"),
-            ["tourmaster_general"],
-            |r| r.get::<_, String>(0),
-        )
-        .ok()
+    let general: Option<Value> = crate::db::plugin_setting_raw_conn(&conn, "tourmaster", "tourmaster_general")
         .and_then(|raw| crate::php_serialize::unserialize(raw.as_bytes()).ok());
     let gen_opt = |key: &str| -> Option<String> {
         general

@@ -162,8 +162,8 @@ pub fn load_post(db: &Path, id: i64) -> Result<Option<PostForm>> {
             .collect::<Vec<_>>()
             .join("\n");
     }
-    if let Some(p_plugin) = crate::admin::plugins::find(&p.kind) {
-        (p_plugin.load)(&c, id, &mut p)?;
+    if let Some(e) = crate::admin::plugins::editor_for(&p.kind) {
+        (e.load)(&c, id, &mut p)?;
     }
     // body_json stays builder/layout data — the editor's `#content` is the
     // WP post_content stored in body_html (loaded in the SELECT above),
@@ -1118,8 +1118,8 @@ fn save_post_on(db: &Path, c: &Connection, f: &PostForm) -> Result<i64> {
         )?;
         c.last_insert_rowid()
     };
-    if let Some(p_plugin) = crate::admin::plugins::find(&f.kind) {
-        (p_plugin.save)(c, id, f)?;
+    if let Some(e) = crate::admin::plugins::editor_for(&f.kind) {
+        (e.save)(c, id, f)?;
     }
     let es: Option<i64> = f.es_post_id.trim().parse().ok();
     c.execute(sql!("posts__delete_from_post_translations"), [id])?;

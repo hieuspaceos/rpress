@@ -32,7 +32,7 @@ pub(crate) async fn revisions_page(
     if rows.is_empty() {
         rows.push_str(r#"<tr class="no-items"><td colspan="3">No revisions yet — one is captured on each save.</td></tr>"#);
     }
-    let kind_label = posts::spec_for_kind(&p.kind).noun;
+    let kind_label = posts::spec_for_kind(&p.kind).map(|k| k.noun).unwrap_or(&p.kind);
     let body = format!(
         r#"<div class="wrap"><h1 class="wp-heading-inline">Revisions for “{}”</h1>
 <a href="/admin/edit/{id}" class="page-title-action">Back to {kind_label}</a>
@@ -43,7 +43,7 @@ pub(crate) async fn revisions_page(
 <p class="description">Each save snapshots title + content. Restore copies a revision back — the current content is snapshotted first, so restores are themselves undoable.</p></div>"#,
         esc(&p.title),
     );
-    html_page(&s, "Revisions", &format!("{}{}", chrome(posts::spec_for_kind(&p.kind).section, &s), body), false).into_response()
+    html_page(&s, "Revisions", &format!("{}{}", chrome(posts::spec_for_kind(&p.kind).map(|k| k.section).unwrap_or("posts"), &s), body), false).into_response()
 }
 
 /// `GET /admin/revisions/{rid}` — diff the revision against the *current*
@@ -93,7 +93,7 @@ td.rev-ins ins{{background:#abdfad;text-decoration:none}}
         esc(&p.title),
         esc(&saved),
     );
-    html_page(&s, "Compare Revisions", &format!("{}{}", chrome(posts::spec_for_kind(&p.kind).section, &s), body), false).into_response()
+    html_page(&s, "Compare Revisions", &format!("{}{}", chrome(posts::spec_for_kind(&p.kind).map(|k| k.section).unwrap_or("posts"), &s), body), false).into_response()
 }
 
 /// `POST /admin/revisions/{rid}/restore` — snapshot current, copy the

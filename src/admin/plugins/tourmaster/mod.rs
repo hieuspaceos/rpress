@@ -9,19 +9,65 @@ pub(crate) mod elements;
 pub(crate) mod save;
 pub(crate) mod schema;
 
-use super::{EditorPlugin, PostForm, Sess, SiteCtx};
+use super::{Backend, EditorHooks, KindDef, PluginAdapter, PostForm, Sess, SiteCtx};
 use crate::php_serialize::unserialize;
 use anyhow::Result;
 use rusqlite::{params, Connection};
 use serde_json::{Map, Value};
 
-pub(crate) static PLUGIN: EditorPlugin = EditorPlugin {
-    kind: "tour",
+/// Editor half of the tourmaster adapter — the old `EditorPlugin` fields.
+pub(crate) static EDITOR: EditorHooks = EditorHooks {
     load,
     metabox,
     assets,
     save: save::save,
 };
+
+const HEAD_TOUR: &str = r#"<tr><td class="manage-column column-cb check-column"></td><th scope="col" class="manage-column column-title column-primary">Title</th><th scope="col">Durée</th><th scope="col">Región</th><th scope="col">Style</th><th scope="col">Profil</th><th scope="col">Views</th><th scope="col" class="rm-seo-col">SEO Details</th></tr>"#;
+
+fn tour_row_cols(r: &crate::admin::crud::AdminListRow, _kind: &str) -> String {
+    format!(
+        "<td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td>",
+        crate::admin::posts::dash(&r.duree),
+        crate::admin::posts::dash(&r.region),
+        crate::admin::posts::dash(&r.style),
+        crate::admin::posts::dash(&r.profil),
+        r.views,
+    )
+}
+
+static KINDS: &[KindDef] = &[KindDef {
+    kind: "tour",
+    section: "tours",
+    noun: "Tour",
+    list_title: "Tour",
+    add_label: "Add New Tour",
+    head: HEAD_TOUR,
+    row_cols: tour_row_cols,
+    url_base_key: Some("tour_base"),
+    taxonomies: &[
+        "duree", "duracion", "region", "region-es", "style", "estilo",
+        "profil", "perfil", "activites", "Activites", "pays", "Pays",
+        "tour-activity", "tour-age", "viet",
+    ],
+    editor: Some(&EDITOR),
+}];
+
+pub(crate) struct Tourmaster;
+
+impl PluginAdapter for Tourmaster {
+    fn slug(&self) -> &'static str {
+        "tourmaster"
+    }
+    fn kinds(&self) -> &'static [KindDef] {
+        KINDS
+    }
+    fn backend(&self) -> Backend {
+        Backend::Rust
+    }
+}
+
+pub(crate) static ADAPTER: Tourmaster = Tourmaster;
 
 /// Hydrate `f.extra["tourmaster-tour-option"]` with the stored dict merged
 /// with the single-value metas (so `get_val()` field hydration sees every

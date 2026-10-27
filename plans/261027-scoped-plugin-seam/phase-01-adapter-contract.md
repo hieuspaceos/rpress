@@ -1,7 +1,7 @@
 ---
 phase: 1
 title: "Adapter contract + kind registry + settings namespaces"
-status: pending
+status: done
 priority: P1
 effort: "2d"
 dependencies: ["audit phases 1-7"]
@@ -115,12 +115,41 @@ Manual: `/admin/posts`, `/admin/pages`, `/admin/tours` lists render;
 
 ## Todos
 
-- [ ] `PluginAdapter`/`Backend`/`KindDef`/`ScreenDef`/`ImportHooks` defined
-- [ ] Registry indexed by kind + slug; core kinds built-in
-- [ ] `spec_for_kind`/`spec_for_section` → `Option`, callers updated
-- [ ] `setting_key` namespace helpers; gdlr + tourmaster_general dual-read
-- [ ] `tax_menu` registry-driven
-- [ ] Tests: unknown kind 404, dual-read settings, registry lookup
+- [x] `PluginAdapter`/`Backend`/`KindDef`/`ScreenDef`/`ImportHooks` defined
+- [x] Registry indexed by kind + slug; core kinds built-in
+- [x] `spec_for_kind`/`spec_for_section` → `Option`, callers updated
+- [x] `setting_key` namespace helpers; gdlr + tourmaster_general dual-read
+- [x] `tax_menu` registry-driven
+- [x] Tests: unknown kind 404, dual-read settings, registry lookup
+
+## Implementation notes (2026-10-27)
+
+- `EditorPlugin`/`find`/`KindSpec`/`KINDS` fully deleted (clean cutover,
+  no shims): `plugins::editor_for(kind)` serves both `db::posts` hook
+  sites and the edit-page metabox.
+- `tax_section` fallback = `tours` (old "everything else" catch-all),
+  not `posts` — preserves phase-01's no-behavior-change rule for
+  unclaimed taxonomies (portfolio_category, wpcode_*, nav_menu…).
+  `Activites`/`Pays` are stored capitalized in real DBs and are listed
+  capitalized on `KindDef.taxonomies`.
+- `/admin/new/bogus` → 404 verified by live smoke on aucoeur-test
+  (route-level check; unit test covers `kind_def("bogus").is_none()`).
+- Review (code-reviewer subagent): 1 HIGH (taxonomy case mismatch —
+  fixed), 1 MEDIUM (catch-all deviation — reverted to parity), 4 LOW
+  (dead TOUR_TAXS literal removed; spec bound once in posts_empty;
+  render_list Option fallbacks kept as defense-in-depth).
+
+Second audit pass (2026-10-27): 6 findings — fixed: dual-read falls
+back only on `QueryReturnedNoRows` (BUSY no longer masquerades as
+missing); `tax_section` iterates declared order (CORE→ADAPTERS), not
+HashMap; `tour_custom_taxs` namespaced under `plugin:tourmaster:`
+(read+write, `list_taxonomies` dual-read); `save_tour_option` resolves
+via `editor_for(kind)` instead of naming `tourmaster::save::save`;
+capitalized-taxonomy test asserts membership, not just the default.
+Deferred to phase 03: `import.rs` `kind_of` emits unregistered kind
+`site-review` — needs a KindDef or mapping (contract violation noted).
+Residual: gdlr ajax can write arbitrary keys inside `plugin:goodlayers:*`
+(namespace-bounded; phase-06 whitelist should bound key suffixes).
 
 ## Risks
 

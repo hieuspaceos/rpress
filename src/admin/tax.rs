@@ -27,10 +27,11 @@ fn tax_labels(tax: &str) -> (String, String) {
 }
 
 /// Custom tour taxonomies created via "Add New Filter", stored as
-/// settings.tour_custom_taxs = {slug: label} (tourmaster's
-/// `tourmaster_custom_tour_taxs` option equivalent; hierarchy always on).
+/// `plugin:tourmaster:tour_custom_taxs` = {slug: label} (tourmaster's
+/// `tourmaster_custom_tour_taxs` option equivalent; hierarchy always
+/// on). Dual-reads the legacy bare `tour_custom_taxs` until phase 05.
 fn custom_taxs(db: &std::path::Path) -> std::collections::BTreeMap<String, String> {
-    crud::setting_json_map(db, "tour_custom_taxs")
+    crud::plugin_setting_json_map(db, "tourmaster", "tour_custom_taxs")
 }
 
 fn new_filter_html(s: &Sess) -> String {
@@ -72,7 +73,7 @@ pub(crate) async fn tax_new_filter(State(app): State<App>, headers: HeaderMap, F
     }
     let mut taxs = custom_taxs(&sc.db);
     taxs.insert(slug.clone(), f.label.trim().to_string());
-    let _ = crud::setting_json_put_map(&sc.db, "tour_custom_taxs", &taxs);
+    let _ = crud::plugin_setting_json_put_map(&sc.db, "tourmaster", "tour_custom_taxs", &taxs);
     Redirect::to(&format!("/admin/tax/{slug}")).into_response()
 }
 #[derive(Deserialize)]
@@ -455,13 +456,11 @@ document.addEventListener('click',function(e){{
         count_col = col("count"),
     )
 }
-/// Menu section a taxonomy belongs under: post taxonomies → Posts,
-/// everything else → Tour (tourmaster fields + ES variants live there).
+/// Menu section a taxonomy belongs under: routed by the owning kind's
+/// `KindDef.taxonomies` (tourmaster's fields live under Tours); core
+/// post taxonomies → Posts.
 fn tax_menu(tax: &str) -> &'static str {
-    match tax {
-        "category" | "post_tag" => "posts",
-        _ => "tours",
-    }
+    crate::admin::plugins::tax_section(tax)
 }
 
 pub(crate) async fn tax_page(State(app): State<App>, headers: HeaderMap, Path(tax): Path<String>, Query(q): Query<HashMap<String, String>>) -> Response {

@@ -277,17 +277,10 @@ pub fn list_taxonomies(db: &Path) -> Result<Vec<String>> {
         "SELECT DISTINCT taxonomy FROM terms UNION SELECT DISTINCT taxonomy FROM post_terms",
     )?;
     let mut v: Vec<String> = s.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
-    if let Ok(raw) = c.query_row(
-        "SELECT value FROM settings WHERE key='tour_custom_taxs'",
-        [],
-        |r| r.get::<_, String>(0),
-    ) {
-        if let Ok(extra) = serde_json::from_str::<std::collections::BTreeMap<String, String>>(&raw) {
-            for k in extra.keys() {
-                if !v.iter().any(|x| x == k) {
-                    v.push(k.clone());
-                }
-            }
+    let extra = crate::db::misc::plugin_setting_json_map(db, "tourmaster", "tour_custom_taxs");
+    for k in extra.keys() {
+        if !v.iter().any(|x| x == k) {
+            v.push(k.clone());
         }
     }
     const ORDER: &[&str] = &[

@@ -2,50 +2,19 @@
 use crate::sql;
 use super::*;
 
-/// Content-type registry: section slug → kind + labels.
-/// Adding a CPT = one entry + `posts.kind` values start flowing.
-pub(crate) struct KindSpec {
-    pub(crate) section: &'static str,
-    /// Extra <td> columns after the Title cell.
-    pub(crate) row_cols: fn(&crud::AdminListRow, &str) -> String,
-    pub(crate) kind: &'static str,
-    /// Singular noun for the editor heading ("Edit Page").
-    pub(crate) noun: &'static str,
-    pub(crate) list_title: &'static str,
-    pub(crate) add_label: &'static str,
-    /// <thead> for the list table.
-    pub(crate) head: &'static str,
+/// Content-type registry: kind/section → `plugins::KindDef`.
+/// Adding a CPT = one `KindDef` on a `PluginAdapter`; core `post`/`page`
+/// are registry built-ins. Unknown kinds are `None` — callers 404.
+pub(crate) fn spec_for_kind(kind: &str) -> Option<&'static plugins::KindDef> {
+    plugins::kind_def(kind)
 }
 
-const HEAD_POST: &str = r#"<tr><td class="manage-column column-cb check-column"></td><th scope="col" class="manage-column column-title column-primary">Title</th><th scope="col">Author</th><th scope="col">Categories</th><th scope="col">FR / ES</th><th scope="col">Comments</th><th scope="col" class="rm-seo-col">SEO Details</th></tr>"#;
-const HEAD_PAGE: &str = r#"<tr><td class="manage-column column-cb check-column"></td><th scope="col" class="manage-column column-title column-primary">Title</th><th scope="col">Author</th><th scope="col">FR / ES</th><th scope="col">Comments</th><th scope="col" class="rm-seo-col">SEO Details</th></tr>"#;
-const HEAD_TOUR: &str = r#"<tr><td class="manage-column column-cb check-column"></td><th scope="col" class="manage-column column-title column-primary">Title</th><th scope="col">Durée</th><th scope="col">Región</th><th scope="col">Style</th><th scope="col">Profil</th><th scope="col">Views</th><th scope="col" class="rm-seo-col">SEO Details</th></tr>"#;
-
-pub(crate) const KINDS: &[KindSpec] = &[
-    KindSpec { section: "posts", kind: "post", noun: "Post", list_title: "Posts", add_label: "Add Post", head: HEAD_POST,
-        row_cols: |r, kind| format!(
-            "<td>—</td><td class=\"categories\">{}</td><td class=\"pll\">{}</td><td class=\"comments\">{}</td>",
-            dash(&r.categories), pll_cell(r, kind), r.comments) },
-    KindSpec { section: "pages", kind: "page", noun: "Page", list_title: "Pages", add_label: "Add Page", head: HEAD_PAGE,
-        row_cols: |r, kind| format!(
-            "<td>—</td><td class=\"pll\">{}</td><td class=\"comments\">{}</td>",
-            pll_cell(r, kind), r.comments) },
-    KindSpec { section: "tours", kind: "tour", noun: "Tour", list_title: "Tour",  add_label: "Add New Tour", head: HEAD_TOUR,
-        row_cols: |r, _kind| format!(
-            "<td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td>",
-            dash(&r.duree), dash(&r.region), dash(&r.style), dash(&r.profil), r.views) },
-];
-
-pub(crate) fn spec_for_kind(kind: &str) -> &'static KindSpec {
-    KINDS.iter().find(|k| k.kind == kind).unwrap_or(&KINDS[0])
+pub(crate) fn spec_for_section(section: &str) -> Option<&'static plugins::KindDef> {
+    plugins::kind_for_section(section)
 }
 
-pub(crate) fn spec_for_section(section: &str) -> &'static KindSpec {
-    KINDS.iter().find(|k| k.section == section).unwrap_or(&KINDS[0])
-}
-
-pub(crate) fn kind_for(section: &str) -> Option<&'static KindSpec> {
-    KINDS.iter().find(|k| k.section == section)
+pub(crate) fn kind_for(section: &str) -> Option<&'static plugins::KindDef> {
+    plugins::kind_for_section(section)
 }
 
 pub(crate) async fn section(
@@ -238,7 +207,7 @@ pub(crate) fn render_list(
         qs(status, lang, tax, (page + 1).min(pages)),
         qs(status, lang, tax, pages),
     );
-    let head = spec_for_section(section).head;
+    let head = spec_for_section(section).map(|k| k.head).unwrap_or("");
     let mut body = String::new();
     for r in rows {
         let title = if r.title.is_empty() {
@@ -267,7 +236,7 @@ pub(crate) fn render_list(
         );
         let extra = format!(
             "{}{}",
-            (spec_for_section(section).row_cols)(r, kind),
+            spec_for_section(section).map(|k| (k.row_cols)(r, kind)).unwrap_or_default(),
             // SEO cell is filled lazily by /admin/seo/cell/{id} —
             // running seo_analysis per row here made list pages slow.
             format!(
@@ -672,7 +641,10 @@ pub(crate) async fn posts_empty(
         .or_else(|| f.get("kind"))
         .map(|s| s.as_str())
         .unwrap_or("post");
-    let kind = spec_for_kind(kind).kind;
+    let Some(spec) = spec_for_kind(kind) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let kind = spec.kind;
     // 1. Snapshot doomed id → file-variant paths while the rows exist.
     // A snapshot failure means files would be orphaned silently — fail
     // loudly and skip the delete rather than strand stale pages.
@@ -725,7 +697,7 @@ pub(crate) async fn posts_empty(
         eprintln!("empty_trash: {} file(s) survived removal — busting cache", remaining.len());
         admin::bust_cache(&sc);
     }
-    Redirect::to(&format!("/admin/{}?status=trash", spec_for_kind(kind).section)).into_response()
+    Redirect::to(&format!("/admin/{}?status=trash", spec.section)).into_response()
 }
 
 #[derive(Deserialize)]
@@ -819,21 +791,19 @@ pub(crate) async fn clone_post(State(app): State<App>, headers: HeaderMap, Form(
 
 /// `/admin/new/{kind}` accepts either the section slug (`tours`) or the
 /// kind itself (`tour`) — sidebar links use both spellings.
-pub(crate) fn kind_from_section(s: &str) -> &'static str {
-    KINDS.iter()
-        .find(|k| k.section == s || k.kind == s)
-        .map(|k| k.kind)
-        .unwrap_or("post")
+pub(crate) fn kind_from_section(s: &str) -> Option<&'static str> {
+    plugins::kind_for_section(s).map(|k| k.kind).or_else(|| plugins::kind_def(s).map(|k| k.kind))
 }
 
 pub(crate) async fn new_post(State(app): State<App>, headers: HeaderMap, Path(kind): Path<String>) -> Response {
     let Ok((s, sc)) = need_auth(&app, &headers) else {
         return Redirect::to("/admin/login").into_response();
     };
-    let k = kind_from_section(&kind);
+    let Some(k) = kind_from_section(&kind) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
     let f = crud::PostForm { kind: k.into(), lang: "fr".into(), status: "draft".into(), body_json: "[]".into(), ..Default::default() };
     html_admin(&s, "New", &edit_html(sc, &s, &f), true, "post-php").into_response()
-
 }
 
 pub(crate) async fn edit_post(State(app): State<App>, headers: HeaderMap, Path(id): Path<i64>) -> Response {
@@ -980,14 +950,16 @@ pub(crate) fn edit_html(sc: &SiteCtx, s: &Sess, f: &crud::PostForm) -> String {
     } else {
         format!(r#"<input type="hidden" name="id" value="{id}">"#)
     };
-    let kind_label = spec_for_kind(&f.kind).noun;
-    let add_kind = spec_for_kind(&f.kind).kind;
+    // Unregistered kind (plugin removed, row survived): label degrades to
+    // the raw kind string — the record still renders, never post-ifies.
+    let kind_label = spec_for_kind(&f.kind).map(|k| k.noun).unwrap_or(&f.kind);
+    let add_kind = spec_for_kind(&f.kind).map(|k| k.kind).unwrap_or(&f.kind);
     let h1 = if f.id.is_some() {
         format!("Edit {kind_label}")
     } else {
         format!("Add New {kind_label}")
     };
-    let menu = spec_for_kind(&f.kind).section;
+    let menu = spec_for_kind(&f.kind).map(|k| k.section).unwrap_or("posts");
     let permalink = public_path(sc, &f.lang, &f.kind, &f.slug);
     let permalink_base = {
         let origin = site_url(sc).trim_end_matches('/').to_string();
@@ -1249,8 +1221,8 @@ return false">Add</button>
         format!(r#"<a href="/admin/edit/{}">Edit</a>"#, esc(&f.es_post_id))
     };
 
-    let (tour, plugin_assets) = match plugins::find(&f.kind) {
-        Some(p) => ((p.metabox)(sc, s, f), (p.assets)()),
+    let (tour, plugin_assets) = match plugins::editor_for(&f.kind) {
+        Some(e) => ((e.metabox)(sc, s, f), (e.assets)()),
         None => (String::new(), ""),
     };
     format!(
@@ -1539,7 +1511,12 @@ pub(crate) async fn save_tour_option(
         // tx wrap: the plugin save writes several tour-meta rows — a failure
         // mid-save must roll back, not leave a half-updated option blob.
         let tx = c.unchecked_transaction().map_err(|e| e.to_string())?;
-        plugins::tourmaster::save::save(&tx, f.post_id, &pf).map_err(|e| e.to_string())?;
+        // Save through the registered kind's editor hooks — core never
+        // names the plugin (the owning adapter may change its save fn).
+        let Some(e) = plugins::editor_for(&kind) else {
+            return Err(format!("no editor registered for kind {kind}"));
+        };
+        (e.save)(&tx, f.post_id, &pf).map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())
     })();
     let out = match out {

@@ -319,11 +319,14 @@ fn icons(sc: &SiteCtx) -> Value {
         .ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_else(|| json!({}))
 }
 
+// GoodLayers options live under the `plugin:goodlayers:` settings
+// namespace; reads fall back to the legacy bare key until phase 05's
+// key migration (write whitelist boundary, phase 06).
 fn get_setting(conn: &Connection, key: &str) -> Value {
-    crate::db::setting_json_value_conn(conn, key)
+    crate::db::plugin_setting_json_value_conn(conn, "goodlayers", key)
 }
 fn put_setting(conn: &Connection, key: &str, v: &Value) {
-    let _ = crate::db::setting_json_put_conn(conn, key, v);
+    let _ = crate::db::plugin_setting_json_put_conn(conn, "goodlayers", key, v);
 }
 
 /* ================= canvas templates (pb-*.php get_template) ================= */
