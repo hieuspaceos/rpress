@@ -1,7 +1,7 @@
 ---
 phase: 7
 title: "Performance, i18n & structural"
-status: pending
+status: done
 priority: P3
 effort: "1-2d"
 dependencies: [1, 4, 5]

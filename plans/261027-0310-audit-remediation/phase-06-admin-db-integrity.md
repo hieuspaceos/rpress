@@ -1,7 +1,7 @@
 ---
 phase: 6
 title: "Admin & DB integrity"
-status: pending
+status: done
 priority: P2
 effort: "7h"
 dependencies: [5]

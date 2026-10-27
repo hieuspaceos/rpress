@@ -43,8 +43,8 @@ commit it as part of that phase).
 | 3 | [Import & dump correctness](./phase-03-import-and-dump-correctness.md) | Done |
 | 4 | [tour_base & URL correctness](./phase-04-tourbase-and-url-correctness.md) | Done |
 | 5 | [Cache & regen consistency](./phase-05-cache-and-regen-consistency.md) | Done |
-| 6 | [Admin & DB integrity](./phase-06-admin-db-integrity.md) | Pending |
-| 7 | [Performance, i18n & structural](./phase-07-perf-i18n-structural.md) | Pending |
+| 6 | [Admin & DB integrity](./phase-06-admin-db-integrity.md) | Done |
+| 7 | [Performance, i18n & structural](./phase-07-perf-i18n-structural.md) | Done |
 
 | 8 | [Core/plugin seam](../261027-scoped-plugin-seam/plan.md) | Follow-up plan (not part of this audit) |
 
