@@ -108,3 +108,120 @@ pub fn template_name(templates: &std::path::Path, cfg: &LangConfig, lang: &str) 
 pub fn page_url(cfg: &LangConfig, site: &str, lang: &str, kind: &str, slug: &str, tour_base: &str) -> String {
     format!("{}{}", site.trim_end_matches('/'), page_path(cfg, lang, kind, slug, tour_base))
 }
+
+/// Flag asset filename for a language code. The vendored Polylang flag set
+/// is country-coded (ISO-3166), not language-coded (ISO-639) — `en` renders
+/// `us.svg`, `vi` renders `vn.svg`, and `en.svg`/`vi.svg` don't exist.
+/// Fallback is the lang code itself (works for fr/es/de/nl/pt/th/… whose
+/// codes coincide).
+pub fn flag_file(lang: &str) -> String {
+    let code = match lang {
+        "en" => "us",
+        "vi" => "vn",
+        "ja" => "jp",
+        "zh" | "zh-cn" | "zh-hans" => "cn",
+        "zh-tw" | "zh-hant" => "tw",
+        "ko" => "kr",
+        "el" => "gr",
+        "he" => "il",
+        "uk" => "ua",
+        "da" => "dk",
+        "cs" => "cz",
+        "et" => "ee",
+        "fa" => "ir",
+        "hi" => "in",
+        "hy" => "am",
+        "ka" => "ge",
+        "ms" => "my",
+        "nb" | "nn" => "no",
+        "sl" => "si",
+        "sq" => "al",
+        "sv" => "se",
+        "ur" => "pk",
+        "ar" => "ar.lang", // Polylang ships ar.lang.svg for Arabic
+        l => l,
+    };
+    format!("{code}.svg")
+}
+
+/// BCP-47-ish locale for `lang` (`fr`→`fr-FR`, `es`→`es-ES`, `en`→`en-US`).
+/// Unknown codes map to `{lang}-{lang upper}` which is the WP locale shape
+/// for most languages (de-DE, it-IT, pt-PT).
+pub fn html_lang(lang: &str) -> String {
+    match lang {
+        "en" => "en-US".into(),
+        "es" => "es-ES".into(),
+        "fr" => "fr-FR".into(),
+        other => format!("{other}-{}", other.to_uppercase()),
+    }
+}
+
+/// Capitalized month names for `date_i18n('F Y')`-style output (tour_search
+/// 'month' combobox). French is the fallback — the reference site emits it
+/// for the primary language and the combobox is a UI nicety, not a locale
+/// guarantee.
+pub fn month_names(lang: &str) -> &'static [&'static str; 12] {
+    const FR: [&str; 12] = [
+        "Janvier", "Février", "Mars", "Avril", "Mai", "Juin",
+        "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre",
+    ];
+    const ES: [&str; 12] = [
+        "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
+        "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre",
+    ];
+    const EN: [&str; 12] = [
+        "January", "February", "March", "April", "May", "June",
+        "July", "August", "September", "October", "November", "December",
+    ];
+    const DE: [&str; 12] = [
+        "Januar", "Februar", "März", "April", "Mai", "Juni",
+        "Juli", "August", "September", "Oktober", "November", "Dezember",
+    ];
+    match lang {
+        "es" => &ES,
+        "en" => &EN,
+        "de" => &DE,
+        _ => &FR,
+    }
+}
+
+/// Theme UI strings keyed by name — the N-lang replacement for the old
+/// `if es { .. } else { .. }` literals in chrome_vars/reading_time.
+/// Fallback is French (the reference primary).
+pub fn t(lang: &str, key: &str) -> &'static str {
+    let table: &[(&str, &str)] = match lang {
+        "es" => &[
+            ("written_by", "Escrito por"),
+            ("reading_time", "Tiempo de lectura"),
+            ("under_minute", "Menos de un minuto"),
+            ("minutes", "minutos"),
+            ("from", "Desde"),
+        ],
+        "en" => &[
+            ("written_by", "Written by"),
+            ("reading_time", "Reading time"),
+            ("under_minute", "Under a minute"),
+            ("minutes", "minutes"),
+            ("from", "From"),
+        ],
+        "de" => &[
+            ("written_by", "Geschrieben von"),
+            ("reading_time", "Lesezeit"),
+            ("under_minute", "Weniger als eine Minute"),
+            ("minutes", "Minuten"),
+            ("from", "Ab"),
+        ],
+        _ => &[
+            ("written_by", "Écrit par"),
+            ("reading_time", "Temps de lecture"),
+            ("under_minute", "Moins d’une minute"),
+            ("minutes", "minutes"),
+            ("from", "De"),
+        ],
+    };
+    table
+        .iter()
+        .find(|(k, _)| *k == key)
+        .map(|(_, v)| *v)
+        .unwrap_or("")
+}

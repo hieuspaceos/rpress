@@ -428,6 +428,9 @@ pub fn invalidate_dependents(
         }
     };
     let lang_cfg = crate::lang::config(conn);
+    // site_data materializes every published post/tour for element widgets —
+    // a post-level save must drop it or cache-miss renders serve the old row.
+    crate::render::site_data_bust();
     // The post's own variants (canonical + alias copies).
     if let Ok(rel) = post_out_rel(conn, post_id, tour_base) {
         let post_lang: String = conn
@@ -615,10 +618,11 @@ fn bare_ctx(
     m.insert("rest_url".into(), json!(""));
     m.insert("shortlink".into(), json!(""));
     m.insert("canonical".into(), json!(canonical));
-    m.insert("hreflang_fr".into(), json!(""));
-    m.insert("hreflang_es".into(), json!(""));
-    m.insert("flag_fr_url".into(), json!(site_url));
-    m.insert("flag_es_url".into(), json!(format!("{}/es/", site_url.trim_end_matches('/'))));
+    let lang_cfg = crate::lang::config(conn);
+    m.insert("flags".into(), json!(lang_cfg.langs.iter().map(|l| {
+        let root = format!("{}{}/", site_url.trim_end_matches('/'), crate::lang::url_prefix(&lang_cfg, l));
+        json!({"lang": l, "url": root, "flag": format!("{l}.svg")})
+    }).collect::<Vec<_>>()));
     m.insert("hreflang_links".into(), json!(""));
     m.insert("navx".into(), serde_json::Value::Object(serde_json::Map::new()));
     m.insert("page_title_html".into(), json!(""));

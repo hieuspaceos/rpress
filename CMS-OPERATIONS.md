@@ -23,6 +23,11 @@ Public surface: HTML permalink → `cache/<slug>/index.html`; markdown
 sibling `cache/<slug>/index.md` for `GET /{slug}.md` and for
 `Accept: text/markdown`. `rpress generate` writes utility files with atomic
 sibling tmp+rename writes so live readers never see partial output.
+Templates are compiled once per templates-dir (cached Environment) and
+`site_data` is cached per (site_url, lang). Both bust on any admin save /
+template edit — but **editing template files on disk while `serve` runs
+does NOT invalidate**: restart serve or touch any admin save to pick up
+disk-level edits.
 
 `www/wp-content` is not self-healing: if a media/font/plugin asset is missing
 on disk, `public_page` issues a 307 to the configured asset origin. Images
@@ -51,8 +56,10 @@ peer IP.
 
 ## nginx (public host)
 
-Static files are served from `cache/` + `www/`; comment/review/form POSTs and
-the admin must proxy to the `rpress serve` process:
+Static HTML resolves through `rpress serve` from `cache/`; shared assets
+(`front.css`/`nav.js`, `llms.txt`, `wp-content/`, `wp-includes/`) resolve
+from `www/` — nginx may front either root directly. Comment/review/form
+POSTs and the admin must proxy to the `rpress serve` process:
 
 ```
 location ~ ^/(comment|review|form/|intake/|admin|api/) {
@@ -109,3 +116,16 @@ time; an unparseable template is rejected on save (`msg=badsyntax`).
   tables, applies seed upgrades (e.g. `-fr`/`-es` sidebar split), and seeds
   only when both tables are empty — a full `TRUNCATE sidebars; TRUNCATE widgets`
   is the only way back to defaults.
+
+## post_meta uniqueness (import + admin)
+
+- `post_meta` has `UNIQUE(post_id, meta_key)`. WP allows multiple values per
+  key; rpress collapses them — every reader takes `LIMIT 1`, and the kept row
+  is `MIN(meta_value)` (what the covering index serves). On `rpress import`,
+  extra values are `INSERT OR IGNORE`d and the count is logged in the import
+  report (`post_meta: N value(s) dropped`). Admin writes go through
+  `INSERT OR REPLACE`, so a second value overwrites rather than errors.
+- `serve` startup runs the dedupe migration first: pre-existing duplicate
+  rows are reduced to the `MIN(meta_value)` keeper before the unique index
+  is created; migration failure aborts startup rather than serving on a
+  wrong schema.

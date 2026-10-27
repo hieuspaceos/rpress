@@ -137,16 +137,16 @@ ids can't race; session/CSRF contract is explicit.
 
 ## Todo
 
-- [ ] users_delete full cascade + honest content handling
-- [ ] delete_term post_terms cascade; tm.taxonomy fix
-- [ ] last_insert_rowid (4 sites) + intake exemption note
-- [ ] php_serialize guards; reparent loops bounded (both sites)
-- [ ] body_html COALESCE + quick_update/bulk revisions (crud layer)
-- [ ] flatten→collect sweep; save_tour_option tx
-- [ ] forms_editor 3 fixes; gdlr_pb decode + depth cap
-- [ ] Schema: pre-DDL dedupe + unique post_meta + lookup indexes
-- [ ] Sessions: persisted csrf + transient HMAC + rotation + const-time
-- [ ] Small wins (dates, widgets, pager, dead code)
+- [x] users_delete full cascade + honest content handling
+- [x] delete_term post_terms cascade; tm.taxonomy fix
+- [x] last_insert_rowid (4 sites) + intake exemption note
+- [x] php_serialize guards; reparent loops bounded (both sites)
+- [x] body_html COALESCE + quick_update/bulk revisions (crud layer)
+- [x] flatten→collect sweep; save_tour_option tx
+- [x] forms_editor 3 fixes; gdlr_pb decode + depth cap
+- [x] Schema: pre-DDL dedupe + unique post_meta + lookup indexes
+- [x] Sessions: persisted csrf + transient HMAC + rotation + const-time
+- [x] Small wins (dates, widgets, pager, dead code)
 
 ## Risks
 

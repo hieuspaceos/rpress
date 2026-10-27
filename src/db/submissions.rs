@@ -44,8 +44,9 @@ pub fn counts(db: &Path) -> Result<HashMap<String, i64>> {
     let c = crate::db::conn(db)?;
     let mut st = c.prepare(sql!("submissions__count_by_status"))?;
     let mut out: HashMap<String, i64> = HashMap::new();
-    for r in st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?.flatten() {
-        *out.entry(r.0).or_default() += r.1;
+    for r in st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
+        let (k, v) = r?;
+        *out.entry(k).or_default() += v;
     }
     Ok(out)
 }
@@ -55,8 +56,9 @@ pub fn form_counts(db: &Path) -> Result<HashMap<String, i64>> {
     let c = crate::db::conn(db)?;
     let mut st = c.prepare(sql!("submissions__count_per_form"))?;
     let mut out: HashMap<String, i64> = HashMap::new();
-    for r in st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?.flatten() {
-        *out.entry(r.0).or_default() += r.1;
+    for r in st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
+        let (k, v) = r?;
+        *out.entry(k).or_default() += v;
     }
     Ok(out)
 }
@@ -112,8 +114,7 @@ pub fn list(db: &Path, f: &Filter) -> Result<(Vec<Submission>, i64)> {
     let mut st = c.prepare(&sql)?;
     let rows = st
         .query_map(params![f.form_slug, f.s, f.kind, f.from, f.to, f.limit, f.offset], map_row)?
-        .flatten()
-        .collect();
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok((rows, total))
 }
 
@@ -155,8 +156,7 @@ pub fn export_csv(db: &Path, f: &Filter, cap: i64) -> Result<String> {
     let mut st = c.prepare(&sql)?;
     let rows: Vec<Submission> = st
         .query_map(params![f.form_slug, f.s, f.kind, f.from, f.to, cap], map_row)?
-        .flatten()
-        .collect();
+        .collect::<rusqlite::Result<Vec<_>>>()?;
 
     let mut out = String::from(
         "\"id\",\"date\",\"kind\",\"form\",\"subject\",\"from_name\",\"from_email\",\"page\",\"tour\",\"rating\",\"ip\",\"status\",\"fields_json\"\r\n",
@@ -217,22 +217,3 @@ pub fn get(db: &Path, id: i64) -> Result<Option<Submission>> {
     Ok(c.query_row(sql!("submissions__get_one"), [id], map_row).optional()?)
 }
 
-/// Direct status write — used by callers that bypass `intake::moderate`.
-#[allow(dead_code)]
-pub fn set_status(db: &Path, id: i64, status: &str) -> Result<()> {
-    anyhow::ensure!(
-        matches!(status, "new" | "pending" | "approved" | "spam" | "trash"),
-        "bad submission status"
-    );
-    let c = crate::db::conn(db)?;
-    c.execute(sql!("submissions__set_status"), params![status, id])?;
-    Ok(())
-}
-
-/// Permanent delete ("Delete Permanently" row/bulk action).
-#[allow(dead_code)]
-pub fn purge(db: &Path, id: i64) -> Result<()> {
-    let c = crate::db::conn(db)?;
-    c.execute(sql!("submissions__delete_one"), [id])?;
-    Ok(())
-}

@@ -78,8 +78,7 @@ pub fn list_menus(db: &Path) -> Result<Vec<Menu>> {
         .query_map([], |r| {
             Ok(Menu { id: r.get(0)?, name: r.get(1)?, lang: r.get(2)?, location: r.get(3)?, auto_add: r.get(4)? })
         })?
-        .flatten()
-        .collect();
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
 }
 
@@ -124,8 +123,7 @@ pub fn list_items(db: &Path, menu_id: i64) -> Result<Vec<MenuItem>> {
                 description: r.get(20)?,
             })
         })?
-        .flatten()
-        .collect();
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
 }
 
@@ -206,8 +204,7 @@ pub fn move_item(db: &Path, menu_id: i64, id: i64, dir: &str) -> Result<bool> {
         let mut st = tx.prepare(sql!("menus__items"))?;
         let rows = st
             .query_map([menu_id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1)?)))?
-            .flatten()
-            .collect::<Vec<(i64, Option<i64>)>>();
+            .collect::<rusqlite::Result<Vec<(i64, Option<i64>)>>>()?;
         rows
     };
     let Some(idx) = flat.iter().position(|(iid, _)| *iid == id) else {
@@ -351,8 +348,7 @@ pub fn panel_posts(db: &Path, kind: &str, lang: &str, recent_only: bool) -> Resu
     let mut st = c.prepare(sql)?;
     let rows = st
         .query_map(params![kind, lang], |r| Ok((r.get(0)?, r.get(1)?)))?
-        .flatten()
-        .collect();
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
 }
 
@@ -385,8 +381,7 @@ pub fn list_locations(db: &Path, locations: &[String]) -> Result<Vec<(String, Op
     let mut st = c.prepare(sql!("menus__locations_list"))?;
     let mut cur: std::collections::HashMap<String, Option<i64>> = st
         .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<i64>>(1)?)))?
-        .flatten()
-        .collect();
+        .collect::<rusqlite::Result<std::collections::HashMap<String, Option<i64>>>>()?;
     Ok(locations
         .iter()
         .map(|loc| (loc.clone(), cur.remove(loc).flatten()))
@@ -421,7 +416,7 @@ pub fn auto_add_page(db: &Path, post_id: i64) -> Result<()> {
     let menu_ids: Vec<i64> = {
         let mut st = c.prepare(sql!("menus__auto_add_menus"))?;
         let rows = st.query_map([], |r| r.get(0))?;
-        rows.flatten().collect::<Vec<i64>>()
+        rows.collect::<rusqlite::Result<Vec<i64>>>()?
     };
     for menu_id in menu_ids {
         let has: i64 = c.query_row(sql!("menus__auto_add_exists"), params![menu_id, post_id], |r| r.get(0))?;

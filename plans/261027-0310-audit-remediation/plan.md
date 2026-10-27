@@ -1,7 +1,7 @@
 ---
 title: "Audit Remediation"
 description: "Fix all defects found in the 2026-10-27 full-repo audit of rpress (2 critical, 15 high, 22 medium, ~15 low)"
-status: in_progress
+status: done
 priority: P1
 effort: "3-5d"
 tags: [audit, security, correctness, cache, import]
@@ -143,11 +143,11 @@ modified, 1 rejected.
 
 ## Success Criteria
 
-- [ ] Every finding in `reports/audit-2026-10-27.md` either fixed or
+- [x] Every finding in `reports/audit-2026-10-27.md` either fixed or
       explicitly documented as wontfix in the phase file.
-- [ ] `cargo check` + `cargo test` clean; new regression tests for the
+- [x] `cargo check` + `cargo test` clean; new regression tests for the
       critical/high fixes.
-- [ ] `rpress site serve --smoke` on an existing site (e.g. blueskies env)
+- [x] `rpress site serve --smoke` on an existing site (e.g. blueskies env)
       still passes end-to-end.
 
 <!-- slug: audit-remediation -->

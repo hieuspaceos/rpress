@@ -1,26 +1,6 @@
-mod auth;
-mod db;
-mod generate;
-mod import;
-mod intake;
-mod lang;
-mod forms_markup;
-mod php_serialize;
-mod render;
-mod render_archive;
-mod render_post;
-mod render_tour;
-mod schema;
-mod widgets;
-mod admin;
-mod site;
-mod site_build;
-mod site_init;
-mod site_deploy;
-mod site_serve;
-mod sitefx;
-mod sqldump;
-mod verify;
+// Single module list: the binary consumes the `rpress` library crate so
+// the two targets can't drift on module visibility (module hygiene L).
+use rpress::{admin, auth, generate, import, render, site_build, site_deploy, site_init, site_serve, verify};
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};

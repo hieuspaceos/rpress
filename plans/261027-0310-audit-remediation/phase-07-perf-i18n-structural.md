@@ -98,13 +98,13 @@ what gets cached — no speculative invalidation machinery.
 
 ## Todo
 
-- [ ] LazyLock regexes; cached Environment; lazy media_map
-- [ ] Benchmark + gated decision on nav/site_data caching
-- [ ] spawn_blocking heavy paths
-- [ ] Generic i18n vars
-- [ ] Dedup helpers; dead code; module hygiene
-- [ ] Release profile; docs; cattest assertions
-- [ ] render.rs split (final commit)
+- [x] LazyLock regexes; cached Environment; lazy media_map
+- [x] Benchmark + gated decision on nav/site_data caching
+- [x] spawn_blocking heavy paths
+- [x] Generic i18n vars
+- [x] Dedup helpers; dead code; module hygiene
+- [x] Release profile; docs; cattest assertions
+- [x] render.rs split (final commit)
 
 ## Risks
 

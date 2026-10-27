@@ -40,7 +40,7 @@ const MSG_KEYS: &[(&str, &str)] = &[
 fn tabs(slug: &str, active: &str) -> String {
     let mk = |key: &str, label: &str| {
         let cls = if key == active { "nav-tab nav-tab-active" } else { "nav-tab" };
-        format!("<a class=\"{cls}\" href=\"/admin/contact/form/{slug}/edit?tab={key}\">{label}</a>")
+        format!("<a class=\"{cls}\" href=\"/admin/contact/form/{}/edit?tab={key}\">{label}</a>", esc(slug))
     };
     format!(
         "<nav class=\"nav-tab-wrapper wp-clearfix\">{}{}{}{}</nav>",
@@ -310,24 +310,14 @@ pub(crate) async fn form_save(
     Path(slug): Path<String>,
     Form(f): Form<HashMap<String, String>>,
 ) -> Response {
-    let Ok((_s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers) else {
         return Redirect::to("/admin/login").into_response();
     };
-    // CSRF — session-bound token must match.
-    let Some(sess_csrf) = headers
-        .get(axum::http::header::COOKIE)
-        .and_then(|c| c.to_str().ok())
-        .and_then(|c| {
-            c.split(';')
-                .find_map(|p| p.trim().strip_prefix(&format!("{}=", SESSION_COOKIE)))
-                .map(|s| s.to_string())
-        })
-        .and_then(|tok| app.sessions.lock().get(&tok).map(|s| s.csrf.clone()))
-    else {
-        return StatusCode::FORBIDDEN.into_response();
-    };
-    if f.get("csrf").map(|s| s.as_str()) != Some(sess_csrf.as_str()) {
-        return StatusCode::FORBIDDEN.into_response();
+    // CSRF via the same session path as every other handler — the old
+    // hand-rolled cookie→map lookup bypassed get_sess's DB rehydration and
+    // 403'd mid-form after a restart (M16).
+    if let Err(r) = check_csrf(&s, f.get("csrf").map(|x| x.as_str()).unwrap_or("")) {
+        return r;
     }
 
     let Ok(Some(mut r)) = fdb::get_by_slug(&sc.db, &slug) else {
@@ -363,7 +353,7 @@ pub(crate) async fn form_save(
         if let Err(e) = forms_markup::validate(
             &r.markup, &r.mail_to, &r.mail_from, &r.mail_subject, &r.mail_body,
         ) {
-            let enc = urlencoding(&e);
+            let enc = urlenc(&e);
             return Redirect::to(&format!(
                 "/admin/contact/form/{slug}/edit?tab={tab}&error={enc}"
             ))
@@ -383,24 +373,22 @@ pub(crate) async fn form_save(
     Redirect::to(&format!("/admin/contact/form/{slug}/edit?tab={tab}&saved=1")).into_response()
 }
 
-fn urlencoding(s: &str) -> String {
-    s.chars()
-        .flat_map(|c| match c {
-            'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' | '.' | '~' => {
-                vec![c]
-            }
-            _ => format!("%{:02X}", c as u32).chars().collect(),
-        })
-        .collect()
-}
+// Percent-encoding for redirect params uses the shared byte-wise `urlenc`
+// (mod.rs) — the old codepoint-based copy produced mojibake on non-ASCII
+// error text (M16).
 
 /// GET `/admin/contact/new` — create a new contact form.
-pub(crate) async fn form_new(State(app): State<App>, headers: HeaderMap) -> Response {
+pub(crate) async fn form_new(State(app): State<App>, headers: HeaderMap, Query(q): Query<HashMap<String, String>>) -> Response {
     let Ok((s, _sc)) = need_auth(&app, &headers) else {
         return Redirect::to("/admin/login").into_response();
     };
+    let notice = q
+        .get("error")
+        .map(|e| format!("<div class=\"notice notice-error\"><p>{}</p></div>", esc(e)))
+        .unwrap_or_default();
     let body = format!(
         r#"{}<div class="wrap"><h1>Add New Contact Form</h1>
+{notice}
 <form method="post" action="/admin/contact/create">
 <input type="hidden" name="csrf" value="{}">
 <table class="form-table"><tbody>
@@ -414,6 +402,7 @@ pub(crate) async fn form_new(State(app): State<App>, headers: HeaderMap) -> Resp
 </form></div>"#,
         chrome("contact", &s),
         s.csrf,
+        notice = notice,
     );
     html_admin(&s, "Add Contact Form", &body, true, "edit-php").into_response()
 }
@@ -434,7 +423,22 @@ pub(crate) async fn form_create(
     let title = f.get("title").cloned().unwrap_or_default();
     let lang = f.get("lang").cloned().unwrap_or_else(|| "fr".into());
     let kind = f.get("kind").cloned().unwrap_or_else(|| "form".into());
-    if slug.is_empty() || title.is_empty() {
+    // Slug becomes a URL path segment + UNIQUE column: reject anything
+    // outside [a-z0-9-] and duplicates, with a visible error instead of a
+    // silent list bounce (M16).
+    let valid_slug = !slug.is_empty()
+        && slug.len() <= 64
+        && slug
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+    if !valid_slug {
+        return Redirect::to(&format!(
+            "/admin/contact/new?error={}",
+            urlenc("Invalid slug — use lowercase letters, digits and dashes only.")
+        ))
+        .into_response();
+    }
+    if title.is_empty() {
         return Redirect::to("/admin/contact").into_response();
     }
     let default_markup = "<label> Your name\n    [text* your-name] </label>\n\
@@ -443,6 +447,12 @@ pub(crate) async fn form_create(
         [submit \"Send\"]\n";
     let msgs = r#"{"success":"Thank you for your message. It has been sent."}"#;
     let body = "From: [your-name] <[your-email]>\n\n[your-message]\n";
-    let _ = fdb::insert(&sc.db, &slug, &title, &lang, &kind, default_markup, "", "[your-email]", "", body, msgs);
+    if fdb::insert(&sc.db, &slug, &title, &lang, &kind, default_markup, "", "[your-email]", "", body, msgs).is_err() {
+        return Redirect::to(&format!(
+            "/admin/contact/new?error={}",
+            urlenc(&format!("A form named '{slug}' already exists."))
+        ))
+        .into_response();
+    }
     Redirect::to(&format!("/admin/contact/form/{slug}/edit")).into_response()
 }

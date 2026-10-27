@@ -281,11 +281,12 @@ pub fn submit_comment(db: &Path, fields: &HashMap<String, String>, ip: &str) -> 
         "approved"
     };
 
-    let next: i64 = c.query_row(sql!("intake__select_coalesce_max_3"), [], |r| r.get(0))?;
+    // Runtime comment intake (concurrent writer): SQLite assigns the id —
+    // the offline-import `MAX(id)+1` pattern races here (audit M12). The
+    // new comment's id is never read back, so no last_insert_rowid() needed.
     c.execute(
         sql!("intake__insert_comment"),
         params![
-            next,
             post_id,
             if parent == 0 { None } else { Some(parent) },
             name,
@@ -387,11 +388,11 @@ pub fn moderate(db: &Path, id: i64, action: &str) -> Result<i64> {
                     let post_id = resolve_page(&c, &page)?;
                     dirty_post = post_id;
                     let parent: i64 = map.get("parent").and_then(|s| s.parse().ok()).unwrap_or(0);
-                    let next: i64 = c.query_row(sql!("intake__select_coalesce_max_3"), [], |r| r.get(0))?;
+                    // SQLite assigns the comment id — MAX(id)+1 raced under
+                    // concurrent writers (audit M12).
                     c.execute(
                         sql!("intake__insert_into_comments"),
                         params![
-                            next,
                             post_id,
                             if parent == 0 { None } else { Some(parent) },
                             name,
@@ -405,25 +406,35 @@ pub fn moderate(db: &Path, id: i64, action: &str) -> Result<i64> {
                 "review" => {
                     let post_id = resolve_page(&c, &page).unwrap_or(0);
                     dirty_post = post_id;
-                    let next: i64 = c.query_row(sql!("intake__select_coalesce_max_5"), [], |r| r.get(0))?;
-                    let rating: i64 = map.get("rating").and_then(|s| s.parse().ok()).unwrap_or(5);
                     let body = serde_json::json!([{
                         "template":"element",
                         "type":"text-box",
                         "value":{"content": map.get("review").cloned().unwrap_or_default()}
                     }])
                     .to_string();
-                    c.execute(
-                        sql!("intake__insert_into_posts_6"),
-                        params![next, format!("review-{next}"), name, body],
-                    )?;
-                    if post_id > 0 {
-                        c.execute(
-                            sql!("intake__insert_or_ignore_7"),
-                            params![next, post_id],
+                    // SQLite assigns the post id — MAX(id)+1 raced under
+                    // concurrent writers (audit M12); slug stamped after.
+                    // tx: a failed slug UPDATE must not leave a review post
+                    // parked on the shared placeholder slug.
+                    {
+                        let tx = c.unchecked_transaction()?;
+                        tx.execute(
+                            sql!("intake__insert_into_posts_6"),
+                            params![name, body],
                         )?;
+                        let next = tx.last_insert_rowid();
+                        tx.execute(
+                            "UPDATE posts SET slug=?1 WHERE id=?2",
+                            params![format!("review-{next}"), next],
+                        )?;
+                        if post_id > 0 {
+                            tx.execute(
+                                sql!("intake__insert_or_ignore_7"),
+                                params![next, post_id],
+                            )?;
+                        }
+                        tx.commit()?;
                     }
-                    let _ = rating;
                 }
                 _ => {}
             }

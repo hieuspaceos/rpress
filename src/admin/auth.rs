@@ -143,6 +143,13 @@ pub(crate) async fn login(
         return login_html(sc, "Invalid credentials").into_response();
 
     }
+    // Session invalidation on login (M20): the cookie's prior session dies
+    // before the new one is issued — a stale cookie can never be pinned to
+    // a different user, and re-login rotates the csrf.
+    if let Some(old) = cookie(&headers, SESSION_COOKIE) {
+        app.sessions.lock().remove(&old);
+        let _ = udb::session_delete(&sc.db, &old);
+    }
     let mut tok = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut tok);
     let tok = hex(&tok);
@@ -164,18 +171,20 @@ pub(crate) async fn login(
 
             role,
             db: sc.db.clone(),
-            csrf,
+            csrf: csrf.clone(),
             exp: Instant::now() + Duration::from_secs(ttl),
+            touched: Instant::now(),
         },
     );
     // Sessions persist to the `sessions` table (decision B) so the
-    // user-edit Sessions screen and post-restart rehydration have data.
+    // user-edit Sessions screen and post-restart rehydration have data;
+    // csrf rides the row so a mid-edit form survives a restart (M20).
     let ua = headers
         .get(header::USER_AGENT)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_string();
-    let _ = udb::session_put(&sc.db, &tok, id, &ua, &ip);
+    let _ = udb::session_put(&sc.db, &tok, id, &ua, &ip, &csrf, ttl as i64);
     Response::builder()
         .status(StatusCode::SEE_OTHER)
         .header(header::LOCATION, "/admin")
@@ -249,8 +258,9 @@ fn b64_decode(s: &str) -> Option<Vec<u8>> {
 /// WP Application Passwords fallback for `need_auth`: `Authorization: Basic
 /// base64(email:xxxx xxxx …)` → SHA-256(spaces stripped) → `app_passwords`
 /// lookup. On a hit, `last_used`/`last_ip` are stamped and a transient
-/// `Sess` is returned — it is NOT inserted into `app.sessions` and carries
-/// a fresh per-request csrf, so mutating POSTs still need a real session.
+/// `Sess` is returned — it is NOT inserted into `app.sessions`, so its csrf
+/// can't be a stored value: it's HMAC(server_key, user_id:app_pass_hash),
+/// deterministic per credential and stable across requests (M20).
 pub(crate) fn app_pass_sess(sc: &SiteCtx, headers: &HeaderMap) -> Option<Sess> {
     let hv = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
     let blob = hv.strip_prefix("Basic ")?;
@@ -260,11 +270,11 @@ pub(crate) fn app_pass_sess(sc: &SiteCtx, headers: &HeaderMap) -> Option<Sess> {
     let email = email.trim().to_lowercase();
     // WP generates `xxxx xxxx xxxx …`; clients may send it spaced or bare.
     let compact: String = pass.chars().filter(|c| !c.is_whitespace()).collect();
+    let pass_hash = sha256_hex(&compact);
     let (ap_id, user_id, uemail, role) =
-        udb::app_pass_lookup(&sc.db, &sha256_hex(&compact), &email).ok().flatten()?;
+        udb::app_pass_lookup(&sc.db, &pass_hash, &email).ok().flatten()?;
     let _ = udb::app_pass_touch(&sc.db, ap_id, &client_ip(headers, None));
-    let mut csrf = [0u8; 16];
-    rand::thread_rng().fill_bytes(&mut csrf);
+    let csrf = hmac_sha256_hex(&server_key(&sc.db), &format!("{user_id}:{pass_hash}"));
     Some(Sess {
         site: sc.slug.clone(),
         site_name: sc.name.clone(),
@@ -272,13 +282,10 @@ pub(crate) fn app_pass_sess(sc: &SiteCtx, headers: &HeaderMap) -> Option<Sess> {
         email: uemail,
         role,
         db: sc.db.clone(),
-        csrf: hex(&csrf),
+        csrf,
         exp: Instant::now() + Duration::from_secs(12 * 3600),
+        touched: Instant::now()
     })
 }
 
-// Dashboard widgets live in `dashboard.rs`, textually included here so the
-// file split lands without touching `mod.rs` — promote to `mod dashboard;`
-// (route paths become `dashboard::…`) when the router may be edited.
-include!("dashboard.rs");
 

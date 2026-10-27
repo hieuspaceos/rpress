@@ -215,9 +215,11 @@ pub fn run(db: &Path) -> Result<()> {
     }
 
     println!("\n== integrity ==");
-    check(&c, &mut failed, "id == wp_id (posts)", "SELECT COUNT(*) FROM posts WHERE id != wp_id", 0);
-    check(&c, &mut failed, "id == wp_id (comments)", "SELECT COUNT(*) FROM comments WHERE id != wp_id", 0);
-    check(&c, &mut failed, "id == wp_id (media)", "SELECT COUNT(*) FROM media WHERE id != wp_id", 0);
+    // wp_id IS NULL on runtime-created rows (last_insert_rowid convention,
+    // M12) — the id==wp_id invariant only applies to imported rows.
+    check(&c, &mut failed, "id == wp_id (posts)", "SELECT COUNT(*) FROM posts WHERE wp_id IS NOT NULL AND id != wp_id", 0);
+    check(&c, &mut failed, "id == wp_id (comments)", "SELECT COUNT(*) FROM comments WHERE wp_id IS NOT NULL AND id != wp_id", 0);
+    check(&c, &mut failed, "id == wp_id (media)", "SELECT COUNT(*) FROM media WHERE wp_id IS NOT NULL AND id != wp_id", 0);
     check(&c, &mut failed, "comments join posts.id",
         "SELECT COUNT(*) FROM comments cm WHERE NOT EXISTS (SELECT 1 FROM posts p WHERE p.id=cm.post_id)", 0);
     check(&c, &mut failed, "menu parent join items.id",

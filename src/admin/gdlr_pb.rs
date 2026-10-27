@@ -374,9 +374,8 @@ fn element_template(conn: &Connection, defs_e: &Value, n: &Map<String, Value>) -
 /// and identical to what the public site outputs).
 fn element_preview_html(conn: &Connection, typ: &str, value: &Value) -> String {
     let node = json!({"template": "element", "type": typ, "value": value});
-    let media = crate::render::media_map(conn).unwrap_or_default();
     let tour_base = PB_TOUR_BASE.with(|t| t.borrow().clone());
-    crate::render::render_fragment_db(conn, &std::path::PathBuf::from("templates"), &node, &media, "", "fr", &tour_base)
+    crate::render::render_fragment_db(conn, &std::path::PathBuf::from("templates"), &node, "", "fr", &tour_base)
         .unwrap_or_default()
 }
 // Site tour_base for element previews — set alongside PB_DEFS by callers
@@ -1358,6 +1357,7 @@ fn combobox_options(conn: &Connection, st: &Map<String, Value>) -> Map<String, V
                 if let Ok(mut stmt) = conn.prepare("SELECT id, title FROM posts WHERE post_type=?1 ORDER BY title") {
                     let typ = if pt.is_empty() { "page".to_string() } else { pt };
                     if let Ok(rows) = stmt.query_map([typ], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))) {
+                        // Option dropdown builder is best-effort; skipped rows omit one option.
                         for r in rows.flatten() { n.insert(r.0.to_string(), json!(r.1)); }
                     }
                 }
@@ -1368,6 +1368,7 @@ fn combobox_options(conn: &Connection, st: &Map<String, Value>) -> Map<String, V
                 let mut n = Map::new();
                 if let Ok(mut stmt) = conn.prepare("SELECT id, name FROM terms WHERE taxonomy=?1 ORDER BY name") {
                     if let Ok(rows) = stmt.query_map([tax], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))) {
+                        // Same best-effort option-builder contract as post_type above.
                         for r in rows.flatten() { n.insert(r.0.to_string(), json!(r.1)); }
                     }
                 }
@@ -1498,7 +1499,7 @@ fn option_element(conn: &Connection, icons_val: &Value, st_in: &Map<String, Valu
         "font" => {
             let v = opt_val(&st);
             let v = if is_empty(Some(&v)) { "Helvetica, sans-serif".into() } else { val_str(&v) };
-            let display_url = format!("{GDLR_URL}/font-preview?family={}", urlencoding_simple(&v));
+            let display_url = format!("{GDLR_URL}/font-preview?family={}", urlenc(&v));
             ret += &format!("<iframe class=\"gdlr-core-html-option-font-display\" src=\"{}\" data-base-url=\"{}\" ></iframe>", esc(&display_url), esc(&format!("{GDLR_URL}/font-preview")));
             ret += "<div class=\"gdlr-core-custom-combobox\" >";
             ret += &format!("<select class=\"gdlr-core-html-option-font\" data-type=\"font\" data-slug=\"{}\" >", esc(&slug));
@@ -1628,9 +1629,8 @@ fn icon_font_title(t: &str) -> String {
         _ => t,
     }.to_string()
 }
-fn urlencoding_simple(s: &str) -> String {
-    s.chars().map(|c| if c.is_alphanumeric() || "-_.~".contains(c) { c.to_string() } else { format!("%{:02X}", c as u32) }).collect()
-}
+// byte-wise encoding shared via `urlenc` (mod.rs) — `urlencoding_simple`
+// encoded code points not UTF-8 bytes (M16-adjacent mojibake).
 
 const FONT_LIST: &[&str] = &[
     "Helvetica, sans-serif", "Georgia, serif", "Palatino, serif",
@@ -1992,15 +1992,18 @@ pub(crate) fn parse_form_nested(raw: &str) -> Map<String, Value> {
         let mut it = pair.splitn(2, '=');
         let k_enc = it.next().unwrap_or("");
         let v_enc = it.next().unwrap_or("");
-        let k = url_decode(k_enc);
-        let v = url_decode(&v_enc.replace('+', " "));
-        // split into segments: base[a][b]
+        let k = url_decode(k_enc.as_bytes());
+        let v = url_decode(v_enc.replace('+', " ").as_bytes());
+        // split into segments: base[a][b] — bracket depth capped at 8:
+        // deeper nesting recursed `insert_nested` past stack limits (M21);
+        // legitimate jQuery form keys never go past ~4.
         let mut segs: Vec<String> = Vec::new();
         let rest = k.as_str();
         if let Some(i) = rest.find('[') {
             segs.push(rest[..i].to_string());
             let mut tail = &rest[i..];
-            while let Some(stripped) = tail.strip_prefix('[') {
+            while segs.len() <= 8 {
+                let Some(stripped) = tail.strip_prefix('[') else { break };
                 if let Some(j) = stripped.find(']') {
                     segs.push(stripped[..j].to_string());
                     tail = &stripped[j + 1..];
@@ -2008,6 +2011,9 @@ pub(crate) fn parse_form_nested(raw: &str) -> Map<String, Value> {
             }
         } else {
             segs.push(rest.to_string());
+        }
+        if segs.is_empty() || segs.len() > 8 {
+            continue; // malformed/over-deep key — skip, don't recurse
         }
         insert_nested(&mut root, &segs, Value::String(v));
     }
@@ -2041,13 +2047,18 @@ fn collapse_numeric(v: &mut Value) {
         _ => {}
     }
 }
-fn url_decode(s: &str) -> String {
-    let b = s.as_bytes();
+/// `%XX` percent-decode on raw bytes — the old &str slice (`s[i+1..i+3]`)
+/// panicked when a `%` sat mid-UTF-8-sequence (M21). `+` is handled by the
+/// caller (form values) since raw JSON payloads must keep literal pluses.
+fn url_decode(b: &[u8]) -> String {
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
     while i < b.len() {
         if b[i] == b'%' && i + 2 < b.len() {
-            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+            if let Ok(v) = u8::from_str_radix(
+                std::str::from_utf8(&b[i + 1..i + 3]).unwrap_or(""),
+                16,
+            ) {
                 out.push(v); i += 3; continue;
             }
         }
@@ -2072,7 +2083,7 @@ pub(crate) fn process_post_data(v: Value) -> Value {
         Value::String(s) => {
             // jQuery posts raw JSON — no stripslashes (WP's version mangles
             // legit \\" inside content). Try parse, else keep string.
-            let dec = url_decode(s);
+            let dec = url_decode(s.as_bytes());
             serde_json::from_str(&dec).unwrap_or_else(|_| {
                 serde_json::from_str(s).unwrap_or(Value::String(dec))
             })
@@ -2105,8 +2116,18 @@ pub async fn ajax(State(app): State<App>, headers: HeaderMap, body: String) -> R
     if check_csrf(&sess, &s(&form, "security")).is_err() {
         return fail("Invalid Nonce", "Please refresh the page and try again.");
     }
-    let conn = match crate::db::conn(&sc.db) { Ok(c) => c, Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response() };
-    ajax_dispatch(&conn, sc, &form)
+    // ajax_dispatch does synchronous rusqlite + element previews that run
+    // the full render pipeline — heavy enough to move off the worker (H14).
+    let sc2 = sc.clone();
+    tokio::task::spawn_blocking(move || {
+        let conn = match crate::db::conn(&sc2.db) {
+            Ok(c) => c,
+            Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        };
+        ajax_dispatch(&conn, &sc2, &form)
+    })
+    .await
+    .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
 /// Real dispatcher taking the parsed form map.

@@ -37,7 +37,7 @@ fn require_admin(s: &Sess) -> Result<(), StatusCode> {
 }
 
 fn csrf_ok(s: &Sess, map: &HashMap<String, String>) -> bool {
-    map.get("csrf").map(|x| x.as_str()) == Some(s.csrf.as_str())
+    ct_eq(s.csrf.as_bytes(), map.get("csrf").map(|x| x.as_str()).unwrap_or("").as_bytes())
 }
 
 /// `.widgets-holder-wrap` — wp widgets.php sidebar box chrome: a
@@ -85,6 +85,7 @@ fn sidebar_ids(conn: &Connection) -> Vec<String> {
     let mut v: Vec<String> = Vec::new();
     if let Ok(mut st) = conn.prepare("SELECT id FROM sidebars ORDER BY rowid") {
         if let Ok(rows) = st.query_map([], |r| r.get::<_, String>(0)) {
+            // Sidebar list is best-effort (no Result channel): skip bad rows.
             v.extend(rows.flatten());
         }
     }
@@ -140,6 +141,7 @@ pub(crate) async fn widgets_page(
                 st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
             {
                 v.extend(rows.flatten());
+                // Best-effort sidebar labels — skipped rows show fewer names.
             }
         }
         v
@@ -159,6 +161,7 @@ pub(crate) async fn widgets_page(
                 r.get::<_, String>(4)?,
             ))
         }) {
+            // Best-effort widget map: skipped rows just render missing widgets.
             for w in rows.flatten() {
                 by_sidebar.entry(w.1.clone()).or_default().push(w);
             }
@@ -1015,9 +1018,13 @@ pub(crate) async fn widgets_order(
         };
         ids.swap(pos, j);
         for (i, wid) in ids.iter().enumerate() {
-            let _ = crud::widget_set_ord(&tx, wid, i as i64, Some(&scope_sidebar));
+            if crud::widget_set_ord(&tx, wid, i as i64, Some(&scope_sidebar)).is_err() {
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
         }
-        let _ = tx.commit();
+        if tx.commit().is_err() {
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
         mark_dirty(&sc.db);
         return Redirect::to(&format!("/admin/widgets?msg=moved#w-{}", esc(&id)))
             .into_response();
@@ -1030,9 +1037,15 @@ pub(crate) async fn widgets_order(
     // the posted sidebar.
     if let Ok(tx) = conn.unchecked_transaction() {
         for (i, wid) in ordered.iter().enumerate() {
-            let _ = crud::widget_set_ord(&tx, wid, i as i64, apply_sidebar.as_deref());
+            if crud::widget_set_ord(&tx, wid, i as i64, apply_sidebar.as_deref()).is_err() {
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
         }
-        let _ = tx.commit();
+        if tx.commit().is_err() {
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    } else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
     mark_dirty(&sc.db);
     let anchor = map

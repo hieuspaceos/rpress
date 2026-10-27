@@ -27,3 +27,10 @@ flate2 = "1"
 [lib]
 name = "rpress"
 path = "src/lib.rs"
+
+[profile.release]
+# Release profile (audit L): thin LTO + single codegen unit for the
+# hot render loop; strip drops the symbol table out of the deployed bin.
+lto = "thin"
+codegen-units = 1
+strip = true

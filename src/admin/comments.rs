@@ -15,17 +15,6 @@ use super::*;
 
 type Cmt = crud::comments::CommentRow;
 
-/// Percent-encode a query-string value (list::urlenc is private).
-fn urlenc(s: &str) -> String {
-    let mut out = String::new();
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
-}
 
 /// `esc` plus `&#10;`/`&#13;` for newlines — attribute values carrying
 /// multiline comment bodies (HTML normalizes raw CR/LF to spaces in attrs).
@@ -72,6 +61,7 @@ fn notice_html(q: &HashMap<String, String>) -> String {
         "edited" => ("notice-success", "Comment updated".to_string()),
         "empty" => ("notice-error", "Comment is empty".to_string()),
         "gone" => ("notice-error", "Comment not found".to_string()),
+        "baddate" => ("notice-error", "Invalid date — comment not saved.".to_string()),
         _ => return String::new(),
     };
     format!("<div class=\"notice {class}\"><p>{}</p></div>", esc(&text))
@@ -636,7 +626,7 @@ pub(crate) async fn comment_action(
     let Ok((s, sc)) = need_auth(&app, &headers) else {
         return Redirect::to("/admin/login").into_response();
     };
-    if f.get("csrf").map(|x| x.as_str()) != Some(s.csrf.as_str()) {
+    if !ct_eq(s.csrf.as_bytes(), f.get("csrf").map(|x| x.as_str()).unwrap_or("").as_bytes()) {
         return StatusCode::FORBIDDEN.into_response();
     }
     let back = list::back_or(&f, "/admin/comments");
@@ -689,7 +679,7 @@ pub(crate) async fn comments_bulk(
     let Ok((s, sc)) = need_auth(&app, &headers) else {
         return Redirect::to("/admin/login").into_response();
     };
-    if f.get("csrf").map(|x| x.as_str()) != Some(s.csrf.as_str()) {
+    if !ct_eq(s.csrf.as_bytes(), f.get("csrf").map(|x| x.as_str()).unwrap_or("").as_bytes()) {
         return StatusCode::FORBIDDEN.into_response();
     }
     let back = list::back_or(&f, "/admin/comments");
@@ -754,7 +744,7 @@ pub(crate) async fn comments_empty(
     let Ok((s, sc)) = need_auth(&app, &headers) else {
         return Redirect::to("/admin/login").into_response();
     };
-    if f.get("csrf").map(|x| x.as_str()) != Some(s.csrf.as_str()) {
+    if !ct_eq(s.csrf.as_bytes(), f.get("csrf").map(|x| x.as_str()).unwrap_or("").as_bytes()) {
         return StatusCode::FORBIDDEN.into_response();
     }
     let back = list::back_or(&f, "/admin/comments");
@@ -961,7 +951,7 @@ pub(crate) async fn edit_save(
     let Ok((s, sc)) = need_auth(&app, &headers) else {
         return Redirect::to("/admin/login").into_response();
     };
-    if f.get("csrf").map(|x| x.as_str()) != Some(s.csrf.as_str()) {
+    if !ct_eq(s.csrf.as_bytes(), f.get("csrf").map(|x| x.as_str()).unwrap_or("").as_bytes()) {
         return StatusCode::FORBIDDEN.into_response();
     }
     let back = list::back_or(&f, "/admin/comments");
@@ -980,10 +970,23 @@ pub(crate) async fn edit_save(
     };
     let get = |k: &str| f.get(k).cloned().unwrap_or_default();
     let (aa, mm, jj, hh, mn) = (get("aa"), get("mm"), get("jj"), get("hh"), get("mn"));
-    let created = if [aa.as_str(), mm.as_str(), jj.as_str(), hh.as_str(), mn.as_str()]
+    // WP edit timestamp fields: all-or-nothing; malformed ranges (month 13,
+    // day 99, hour 25) bounce the save instead of corrupting created_at.
+    let parts: Vec<i64> = [&aa, &mm, &jj, &hh, &mn]
         .iter()
-        .all(|x| !x.is_empty())
-    {
+        .map(|x| x.parse().unwrap_or(-1))
+        .collect();
+    let fields_filled = [&aa, &mm, &jj, &hh, &mn].iter().all(|x| !x.is_empty());
+    let fields_valid = fields_filled
+        && parts[0] > 0
+        && (1..=12).contains(&parts[1])
+        && (1..=31).contains(&parts[2])
+        && (0..=23).contains(&parts[3])
+        && (0..=59).contains(&parts[4]);
+    if fields_filled && !fields_valid {
+        return Redirect::to(&format!("/admin/comments/edit/{id}?m=baddate")).into_response();
+    }
+    let created = if fields_valid {
         Some(format!("{aa}-{mm}-{jj} {hh}:{mn}:00"))
     } else {
         None
@@ -1019,7 +1022,7 @@ pub(crate) async fn quick_edit(
     let Ok((s, sc)) = need_auth(&app, &headers) else {
         return Redirect::to("/admin/login").into_response();
     };
-    if f.get("csrf").map(|x| x.as_str()) != Some(s.csrf.as_str()) {
+    if !ct_eq(s.csrf.as_bytes(), f.get("csrf").map(|x| x.as_str()).unwrap_or("").as_bytes()) {
         return StatusCode::FORBIDDEN.into_response();
     }
     let htmx = is_htmx(&headers);
@@ -1131,7 +1134,7 @@ pub(crate) async fn reply_save(
     let Ok((s, sc)) = need_auth(&app, &headers) else {
         return Redirect::to("/admin/login").into_response();
     };
-    if f.get("csrf").map(|x| x.as_str()) != Some(s.csrf.as_str()) {
+    if !ct_eq(s.csrf.as_bytes(), f.get("csrf").map(|x| x.as_str()).unwrap_or("").as_bytes()) {
         return StatusCode::FORBIDDEN.into_response();
     }
     let htmx = is_htmx(&headers);
@@ -1144,7 +1147,14 @@ pub(crate) async fn reply_save(
         return Redirect::to("/admin/comments?m=empty").into_response();
     }
     let author = crud::comments::user_display_name(&sc.db, s.user_id, &s.email);
-    let new_id = crud::comments::insert_reply(&sc.db, parent, &author, &s.email, &body).unwrap_or(0);
+    // A failed insert must not fake id 0 and claim success (would regen
+    // post 0 and redirect ?m=replied).
+    let Ok(new_id) = crud::comments::insert_reply(&sc.db, parent, &author, &s.email, &body) else {
+        if htmx {
+            return StatusCode::UNPROCESSABLE_ENTITY.into_response();
+        }
+        return Redirect::to("/admin/comments?m=empty").into_response();
+    };
     // A new approved reply changes the parent post's page.
     let reply_post = crud::comments::get(&sc.db, new_id)
         .ok()
@@ -1177,7 +1187,7 @@ pub(crate) async fn screen_options(
     let Ok((s, sc)) = need_auth(&app, &headers) else {
         return Redirect::to("/admin/login").into_response();
     };
-    if f.get("csrf").map(|x| x.as_str()) != Some(s.csrf.as_str()) {
+    if !ct_eq(s.csrf.as_bytes(), f.get("csrf").map(|x| x.as_str()).unwrap_or("").as_bytes()) {
         return StatusCode::FORBIDDEN.into_response();
     }
     let back = list::back_or(&f, "/admin/comments");

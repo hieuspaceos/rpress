@@ -1,7 +1,7 @@
 //! Shared WP-list-table chrome: `ul.subsubsub` view links, `div.tablenav`
 //! (bulk actions + pagination), pager, and `.row-actions` spans.
 //! WP parity: views with zero rows are hidden; per_page is fixed at 20.
-use crate::admin::esc;
+use crate::admin::{esc, urlenc};
 use std::collections::HashMap;
 
 pub(crate) const PER_PAGE: i64 = 20;
@@ -72,11 +72,17 @@ pub(crate) struct Pager {
 impl Pager {
     pub fn new(q: &HashMap<String, String>, total: i64) -> Self {
         let page = q.get("paged").and_then(|s| s.parse().ok()).unwrap_or(1).max(1);
-        Pager { page, total, per_page: PER_PAGE }
+        Pager { page, total, per_page: PER_PAGE }.clamp()
     }
     /// Screen Options override: `per_page` comes from user prefs.
     pub fn with_per_page(mut self, per: i64) -> Self {
         self.per_page = per.max(1);
+        self.clamp()
+    }
+    /// Clamp `page` into [1, pages] — an over-range `?paged=999` otherwise
+    /// renders an empty list with no way back (audit: pager clamp).
+    fn clamp(mut self) -> Self {
+        self.page = self.page.clamp(1, self.pages().max(1));
         self
     }
     pub fn pages(&self) -> i64 {
@@ -144,41 +150,6 @@ pub(crate) fn tablenav(top: bool, actions: &[(&str, &str)], pager: Option<&Pager
     out.push_str("<br class=\"clear\"></div>");
     out
 }
-/// `.row-actions` span list: `Edit | Trash | View` under the column-primary
-/// cell. Each action is a POST form (WP uses GET+nonce; we use POST+CSRF).
-/// `actions`: (label, css_class, url, confirm_msg or "").
-#[allow(dead_code)] // generic row-actions helper retained for admin lists
-pub(crate) fn row_actions(csrf: &str, id: i64, actions: &[(&str, &str, &str, &str)], back: &str) -> String {
-    let mut out = String::from("<div class=\"row-actions\">");
-    let mut first = true;
-    for (label, class, url, confirm) in actions {
-        if !first {
-            out.push_str(" | ");
-        }
-        first = false;
-        let onclick = if confirm.is_empty() {
-            String::new()
-        } else {
-            format!(" onclick=\"return confirm('{}')\"", esc(confirm))
-        };
-        out.push_str(&format!(
-            "<span class=\"{class}\"><form method=\"post\" action=\"{url}\" style=\"display:inline\">\
-             <input type=\"hidden\" name=\"csrf\" value=\"{csrf}\">\
-             <input type=\"hidden\" name=\"id\" value=\"{id}\">\
-             <input type=\"hidden\" name=\"back\" value=\"{back}\">\
-             <button type=\"submit\" class=\"button-link\"{onclick}>{label}</button></form></span>",
-            class = class,
-            url = url,
-            csrf = csrf,
-            id = id,
-            back = esc(back),
-            onclick = onclick,
-            label = esc(label)
-        ));
-    }
-    out.push_str("</div>");
-    out
-}
 
 /// `<thead>` row from (class, label, sortable_href_or_empty) tuples.
 pub(crate) fn thead(cols: &[(&str, &str, &str)]) -> String {
@@ -212,11 +183,6 @@ pub(crate) fn back_or<'a>(f: &'a HashMap<String, String>, default: &'a str) -> &
         .unwrap_or(default)
 }
 
-fn urlenc(s: &str) -> String {
-    s.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || "-_.".contains(c) { c.to_string() } else { format!("%{:02X}", c as u32) })
-        .collect()
-}
 
 #[cfg(test)]
 mod tests {

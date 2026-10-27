@@ -67,17 +67,11 @@ pub fn get_by_slug(db: &Path, slug: &str) -> Result<Option<FormRow>> {
     .optional()?)
 }
 
-#[allow(dead_code)] // id-lookup parity with get_by_slug
-pub fn get(db: &Path, id: i64) -> Result<Option<FormRow>> {
-    let c = crate::db::conn(db)?;
-    Ok(c.query_row(&format!("SELECT {COLS} FROM forms WHERE id=?1"), [id], row)
-        .optional()?)
-}
 
 pub fn list(db: &Path) -> Result<Vec<FormRow>> {
     let c = crate::db::conn(db)?;
     let mut st = c.prepare(&format!("SELECT {COLS} FROM forms ORDER BY slug"))?;
-    let rows: Vec<FormRow> = st.query_map([], row)?.flatten().collect();
+    let rows: Vec<FormRow> = st.query_map([], row)?.collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
 }
 

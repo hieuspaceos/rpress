@@ -128,6 +128,8 @@ pub fn widget_ids_in_sidebar(conn: &rusqlite::Connection, sidebar: &str) -> Vec<
     let mut ids = Vec::new();
     if let Ok(mut st) = conn.prepare("SELECT id FROM widgets WHERE sidebar_id=?1 ORDER BY ord") {
         if let Ok(rows) = st.query_map([sidebar], |r| r.get::<_, String>(0)) {
+            // best-effort sidebar list: the flatten intentionally skips row
+            // decode errors (no Result channel to propagate through).
             ids.extend(rows.flatten());
         }
     }
@@ -183,7 +185,8 @@ pub fn gdlr_media_json(db: &Path, site: &str) -> Result<String> {
     })?;
     let site = site.trim_end_matches('/').to_string();
     let v: Vec<serde_json::Value> = rows
-        .flatten()
+        .collect::<rusqlite::Result<Vec<_>>>()?
+        .into_iter()
         .map(|mut m| {
             if let Some(p) = m.get("path").and_then(|p| p.as_str()).map(|x| x.to_string()) {
                 m.as_object_mut().map(|o| o.insert("url".into(), serde_json::json!(format!("{site}/wp-content/uploads/{p}"))));
@@ -272,18 +275,19 @@ pub fn save_upload(db: &Path, uploads: &Path, filename: &str, bytes: &[u8], alt:
         "{}".into()
     };
     let c = crate::db::conn(db)?;
-    let next: i64 = c.query_row(sql!("misc__select_coalesce_max_1"), [], |r| r.get(0))?;
-    // Unlink on insert failure so a PK race never orphans a file on disk.
+    // No id: SQLite assigns the rowid — MAX(id)+1 raced under concurrent
+    // uploads (audit M12). Unlink on insert failure so a failed INSERT
+    // never orphans the file on disk.
     let ins = c.execute(
-        "INSERT INTO media(id, wp_id, path, title, alt, caption, description, mime, w, h, sizes_json, owner, created)
-         VALUES(?1,?1,?2,?3,?4,'','',?5,?6,?7,?10,?8,?9)",
-        params![next, rel, title, alt, mime, w, h, owner, tmd, sizes_json],
+        "INSERT INTO media(wp_id, path, title, alt, caption, description, mime, w, h, sizes_json, owner, created)
+         VALUES(NULL,?1,?2,?3,'','',?4,?5,?6,?9,?7,?8)",
+        params![rel, title, alt, mime, w, h, owner, tmd, sizes_json],
     );
     if ins.is_err() {
         let _ = fs::remove_file(&dest);
         ins?;
     }
-    Ok(next)
+    Ok(c.last_insert_rowid())
 }
 
 /// Overwrite an attachment's bytes (image-editor "Save"). Keeps path/id;
@@ -435,7 +439,7 @@ pub fn ensure_media_cols(db: &Path) -> Result<()> {
 pub fn media_backfill_dates(db: &Path, uploads: &Path) -> Result<u64> {
     let c = crate::db::conn(db)?;
     let mut s = c.prepare("SELECT id, path FROM media WHERE created GLOB '[0-9][0-9][0-9][0-9]/[0-9][0-9]'")?;
-    let rows: Vec<(i64, String)> = s.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.flatten().collect();
+    let rows: Vec<(i64, String)> = s.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
     drop(s);
     let mut n = 0u64;
     for (id, path) in rows {
@@ -544,7 +548,7 @@ pub fn media_list(
     let mut all = ps.clone();
     all.push(limit.into());
     all.push(offset.into());
-    let rows = s.query_map(rusqlite::params_from_iter(all), media_row)?.flatten().collect();
+    let rows = s.query_map(rusqlite::params_from_iter(all), media_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
     Ok((rows, total))
 }
 
@@ -555,14 +559,14 @@ pub fn media_months(db: &Path) -> Result<Vec<String>> {
         "SELECT DISTINCT substr(COALESCE(NULLIF(created,''), path),1,7) AS m
          FROM media WHERE m GLOB '[0-9][0-9][0-9][0-9]/[0-9][0-9]' ORDER BY m DESC",
     )?;
-    let rows = s.query_map([], |r| r.get::<_, String>(0))?.flatten().collect();
+    let rows = s.query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
 }
 
 pub fn media_get(db: &Path, id: i64) -> Result<Option<MediaRow>> {
     let c = crate::db::conn(db)?;
     let mut s = c.prepare(&format!("SELECT {MEDIA_COLS} FROM media WHERE id=?1"))?;
-    let row = s.query_map([id], media_row)?.flatten().next();
+    let row = s.query_map([id], media_row)?.next().transpose()?;
     Ok(row)
 }
 
@@ -598,7 +602,7 @@ pub fn media_attached_to(db: &Path, id: i64) -> Result<Vec<(i64, String)>> {
     let mut s = c.prepare(
         "SELECT id, COALESCE(NULLIF(title,''),'(no title)') FROM posts WHERE featured_media_id=?1 ORDER BY id DESC LIMIT 5",
     )?;
-    let rows = s.query_map([id], |r| Ok((r.get(0)?, r.get(1)?)))?.flatten().collect();
+    let rows = s.query_map([id], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
 }
 
@@ -805,8 +809,7 @@ pub fn media_regenerate_sizes(db: &Path, uploads: &Path) -> Result<(u64, u64)> {
     let mut st = c.prepare("SELECT id, path FROM media WHERE mime LIKE 'image/%'")?;
     let rows: Vec<(i64, String)> = st
         .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1).unwrap_or_default())))?
-        .flatten()
-        .collect();
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     let (mut done, mut skipped) = (0u64, 0u64);
     for (id, path) in rows {
         if path.contains("..") || path.starts_with('/') || !uploads.join(&path).is_file() {
@@ -929,31 +932,6 @@ fn walk_text(v: &serde_json::Value, out: &mut String) {
     }
 }
 
-/// Content of the FIRST text-box only — the post editor's `#content`
-/// textarea. `save_post` writes back through `set_first_textbox`, so the
-/// editor must show exactly that slot, not the concatenation of every
-/// text-box in the layout.
-#[allow(dead_code)] // editor-writeback helper retained for gdlr bodies
-pub fn first_textbox_html(s: &str) -> String {
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(s) else {
-        return String::new();
-    };
-    fn first(v: &serde_json::Value) -> Option<String> {
-        match v {
-            serde_json::Value::Array(a) => a.iter().find_map(first),
-            serde_json::Value::Object(m) => {
-                if m.get("type").and_then(|t| t.as_str()) == Some("text-box") {
-                    if let Some(c) = m.get("value").and_then(|v| v.get("content")).and_then(|c| c.as_str()) {
-                        return Some(c.to_string());
-                    }
-                }
-                m.values().find_map(first)
-            }
-            _ => None,
-        }
-    }
-    first(&v).unwrap_or_default()
-}
 
 pub fn body_json_with_html(existing: &str, html: &str) -> String {
     if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(existing) {
@@ -1007,13 +985,15 @@ fn set_first_textbox(v: &mut serde_json::Value, html: &str) -> bool {
 /// `content` is raw HTML wrapped into the gdlr body_json text-box shape.
 pub fn insert_draft(db: &Path, title: &str, content: &str, author_id: i64) -> Result<i64> {
     let c = crate::db::conn(db)?;
-    let next: i64 = c.query_row(sql!("posts__select_coalesce_max"), [], |r| r.get(0))?;
     let slug = super::slugify(title.trim());
     let body = body_json_with_html("[]", content.trim());
+    // No id: SQLite assigns the rowid — MAX(id)+1 raced under concurrent
+    // writers (audit M12). Read it back, then write meta on the real id.
     c.execute(
         sql!("misc__insert_draft"),
-        params![next, slug, title.trim(), body],
+        params![slug, title.trim(), body],
     )?;
+    let next = c.last_insert_rowid();
     // Fresh id → no existing meta row; plain INSERT is safe.
     c.execute(
         sql!("misc__insert_meta_author"),

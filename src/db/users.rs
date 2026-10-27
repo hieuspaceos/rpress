@@ -230,11 +230,14 @@ fn session_row(r: &rusqlite::Row) -> rusqlite::Result<SessionRow> {
     })
 }
 
-/// Record a login: token → user + UA + IP. `ON CONFLICT` refreshes
-/// `last_seen` so a rehydrated token keeps one row.
-pub fn session_put(db: &Path, token: &str, user_id: i64, ua: &str, ip: &str) -> Result<()> {
+/// Record a login: token → user + UA + IP + per-session CSRF. `ttl_secs`
+/// backs the remember-me window so the persisted row dies with the cookie.
+/// `ON CONFLICT` refreshes `last_seen` (and rolls a fixed 12h expiry) so a
+/// rehydrated token keeps one row; csrf is written only on insert — the
+/// row's token is session identity, never regenerated in place.
+pub fn session_put(db: &Path, token: &str, user_id: i64, ua: &str, ip: &str, csrf: &str, ttl_secs: i64) -> Result<()> {
     let c = crate::db::conn(db)?;
-    c.execute(sql!("users__session_put"), params![token, user_id, ua, ip])?;
+    c.execute(sql!("users__session_put"), params![token, user_id, ua, ip, csrf, ttl_secs])?;
     Ok(())
 }
 
@@ -245,13 +248,23 @@ pub fn session_list(db: &Path, user_id: i64) -> Result<Vec<SessionRow>> {
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
-/// Rehydrate a session after restart: `(token, user_id, email, role)` —
-/// `None` when the token is unknown (expired/revoked/never persisted).
-pub fn session_get(db: &Path, token: &str) -> Result<Option<(String, i64, String, String)>> {
+/// Rehydrate a session after restart: `(token, user_id, email, role, csrf)` —
+/// `None` when the token is unknown (expired/revoked/never persisted). csrf
+/// is '' for rows written before the column existed — the caller mints and
+/// persists a fresh one (see `session_set_csrf`).
+pub fn session_get(db: &Path, token: &str) -> Result<Option<(String, i64, String, String, String)>> {
     let c = crate::db::conn(db)?;
     Ok(c.query_row(sql!("users__session_get"), [token], |r| {
-        Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
     }).optional()?)
+}
+
+/// Persist a csrf minted on rehydration of a pre-column ('' csrf) row, so the
+/// same token keeps one stable csrf across further restarts.
+pub fn session_set_csrf(db: &Path, token: &str, csrf: &str) -> Result<()> {
+    let c = crate::db::conn(db)?;
+    c.execute("UPDATE sessions SET csrf=?1 WHERE token=?2 AND COALESCE(csrf,'')=''", params![csrf, token])?;
+    Ok(())
 }
 
 /// Refresh `last_seen` — cheap write on authed admin requests (decision B).
@@ -342,8 +355,8 @@ pub fn save_user_prefs(db: &Path, user_id: i64, prefs: &UserPrefs) -> Result<()>
 }
 
 /// Orphan cleanup on user delete (FK declared but SQLite pragmas aren't
-/// relied on for cascades).
-#[allow(dead_code)] // called when user-delete flow enables cascade cleanup
+/// relied on for cascades) — wired from `admin::users_delete` so a
+/// re-created same-email account never inherits dead credentials.
 pub fn app_pass_delete_user(db: &Path, user_id: i64) -> Result<()> {
     let c = crate::db::conn(db)?;
     c.execute(sql!("users__app_pass_delete_user"), [user_id])?;

@@ -119,7 +119,7 @@ cargo build --release
 # Point at a WP SQL dump; rpress imports, creates an admin user,
 # renders every page into cache/, and prints the credentials.
 ./target/release/rpress migrate dump.sql --db rpress.db \
-    --templates templates --out cache --www www \
+    --templates templates --out cache \
     --site-url https://example.com
 
 # Then serve.

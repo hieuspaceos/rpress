@@ -934,12 +934,6 @@ fn media_size(sc: &SiteCtx, m: &crud::MediaRow) -> Option<u64> {
         })
 }
 
-/// Percent-encode a query-string value (alphanumerics + -_.~ pass through).
-fn urlenc(s: &str) -> String {
-    s.chars()
-        .map(|c| if c.is_alphanumeric() || "-_.~".contains(c) { c.to_string() } else { format!("%{:02X}", c as u32) })
-        .collect()
-}
 
 /// Escape for embedding inside a single-quoted JS string in an inline handler:
 /// esc() covers HTML context; add `'` → \' so an apostrophe can't break out.
@@ -1148,6 +1142,13 @@ pub(crate) fn bust_cache(sc: &SiteCtx) {
 /// Sweep generated files under `dir` — callable from contexts that have a
 /// path but no SiteCtx (e.g. the rebuild job).
 pub(crate) fn bust_cache_dir(dir: &std::path::Path) {
+    // Template environments are process-cached per templates dir; a bust is
+    // the admin signal that theme/template content may have changed, so the
+    // cached Environment must go too or editors see stale templates.
+    crate::render::env_cache_bust();
+    // Site_data is (site_url, lang)-keyed and holds post/tour rows — a full
+    // bust means widgets/menus/settings changed; the cache must go too.
+    crate::render::site_data_bust();
     fn sweep(dir: &std::path::Path) {
         let Ok(rd) = std::fs::read_dir(dir) else { return };
         for e in rd.flatten() {

@@ -28,8 +28,7 @@ pub fn list_terms(db: &Path, tax: &str) -> Result<Vec<TermRow>> {
                 parent_id: r.get(5)?,
             })
         })?
-        .flatten()
-        .collect();
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
 }
 
@@ -95,7 +94,7 @@ pub fn save_term(db: &Path, tax: &str, id: Option<i64>, name: &str, slug: &str, 
 pub fn descendants(db: &Path, id: i64) -> Result<Vec<i64>> {
     let c = crate::db::conn(db)?;
     let mut st = c.prepare(sql!("terms__select_descendants"))?;
-    let v = st.query_map([id], |r| r.get(0))?.flatten().collect();
+    let v = st.query_map([id], |r| r.get(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(v)
 }
 
@@ -106,16 +105,35 @@ pub fn top_terms(db: &Path, tax: &str) -> Result<Vec<(String, i64)>> {
     let mut st = c.prepare(sql!("terms__select_top"))?;
     let v = st
         .query_map([tax], |r| Ok((r.get::<_, String>(1)?, r.get::<_, i64>(2)?)))?
-        .flatten()
-        .collect();
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(v)
 }
 
 pub fn delete_term(db: &Path, id: i64) -> Result<()> {
-    let c = crate::db::conn(db)?;
+    let mut c = crate::db::conn(db)?;
+    let tx = c.transaction()?;
+    // Resolve the term's join key BEFORE deleting: post_terms carries no
+    // term_id, so the cascade deletes by (taxonomy, slug). A missing id is
+    // still a clean no-op (matches the old row-only delete).
+    let (tax, slug): (String, String) = tx
+        .query_row(
+            "SELECT taxonomy, slug FROM terms WHERE id=?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?
+        .unwrap_or_default();
     // WP reparents orphaned children to the deleted term's own parent.
-    c.execute(sql!("terms__reparent_children"), [id])?;
-    c.execute(sql!("terms__delete_from_terms"), [id])?;
+    tx.execute(sql!("terms__reparent_children"), [id])?;
+    tx.execute(sql!("terms__delete_from_terms"), [id])?;
+    // H13: dead term slugs must not keep rendering/counting on archives.
+    if !tax.is_empty() {
+        tx.execute(
+            "DELETE FROM post_terms WHERE taxonomy=?1 AND slug=?2",
+            params![tax, slug],
+        )?;
+    }
+    tx.commit()?;
     Ok(())
 }
 
@@ -170,7 +188,7 @@ pub fn get_term(db: &Path, id: i64) -> Result<Option<TermRow>> {
 pub fn term_slugs_for(db: &Path, post_id: i64, tax: &str) -> Result<Vec<String>> {
     let c = crate::db::conn(db)?;
     let mut s = c.prepare(sql!("terms__select_slug_from_9"))?;
-    let v = s.query_map(params![post_id, tax], |r| r.get(0))?.flatten().collect();
+    let v = s.query_map(params![post_id, tax], |r| r.get(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(v)
 }
 
@@ -181,8 +199,7 @@ pub fn terms_for(db: &Path, post_id: i64) -> Result<Vec<(String, String, String)
     let mut s = c.prepare(sql!("terms__select_taxonomy_slug"))?;
     let v = s
         .query_map([post_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
-        .flatten()
-        .collect();
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(v)
 }
 
@@ -216,8 +233,7 @@ pub fn term_choices(db: &Path, tax: &str, keep: &[String]) -> Result<Vec<(String
     )?;
     let mut out: Vec<(String, String, bool)> = st
         .query_map([tax], |r| Ok((r.get(0)?, r.get(1)?, false)))?
-        .flatten()
-        .collect();
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     for k in keep {
         if !out.iter().any(|(s, _, _)| s == k) {
             let name = c
@@ -260,7 +276,7 @@ pub fn list_taxonomies(db: &Path) -> Result<Vec<String>> {
     let mut s = c.prepare(
         "SELECT DISTINCT taxonomy FROM terms UNION SELECT DISTINCT taxonomy FROM post_terms",
     )?;
-    let mut v: Vec<String> = s.query_map([], |r| r.get(0))?.flatten().collect();
+    let mut v: Vec<String> = s.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
     if let Ok(raw) = c.query_row(
         "SELECT value FROM settings WHERE key='tour_custom_taxs'",
         [],

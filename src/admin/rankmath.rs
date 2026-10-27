@@ -153,6 +153,8 @@ fn tax_map(conn: &Connection, id: i64) -> Vec<(String, String)> {
         Ok(s) => s,
         Err(_) => return Vec::new(),
     };
+    // Best-effort: primary-term candidates render an empty select rather
+    // than fail the editor — row decode errors are skipped on purpose.
     let taxs: Vec<String> = stmt
         .query_map([id], |r| r.get(0))
         .map(|rows| rows.flatten().collect())
@@ -191,6 +193,8 @@ fn rankmath_meta(conn: &Connection, id: i64) -> HashMap<String, String> {
         "SELECT DISTINCT meta_key, meta_value FROM post_meta WHERE post_id=?1 AND meta_key LIKE 'rank\\_math\\_%' ESCAPE '\\'",
     ) {
         if let Ok(rows) = s.query_map([id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))) {
+            // Meta-box helpers degrade to empty rather than 500; a skipped
+            // row just omits one rank_math key from the form.
             for kv in rows.flatten() {
                 m.entry(kv.0).or_insert(kv.1);
             }
@@ -213,6 +217,7 @@ fn post_terms(conn: &Connection, id: i64) -> BTreeMap<String, Vec<(String, Strin
                 r.get::<_, String>(2)?,
             ))
         }) {
+            // Same best-effort contract as rankmath_meta above.
             for (t, slug, name) in rows.flatten() {
                 out.entry(t).or_default().push((slug, name));
             }

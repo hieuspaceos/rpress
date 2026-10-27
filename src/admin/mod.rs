@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 
 mod admin;
 mod auth;
+mod dashboard;
 mod gdlr;
 pub(crate) mod gdlr_pb;
 pub(crate) mod plugins;
@@ -75,12 +76,17 @@ pub(crate) struct Sess {
     pub(crate) db: PathBuf,
     pub(crate) csrf: String,
     pub(crate) exp: Instant,
+    /// Last time `session_touch` ran (throttles the per-request write).
+    pub(crate) touched: Instant,
 }
 
 /// `sites`: `(host_header, db, templates, out, www)` — multi-site support.
 /// `out` = disposable HTML cache; `www` = persistent uploads/plugins/assets.
 pub async fn serve(db: PathBuf, templates: PathBuf, out: PathBuf, www: PathBuf, bind: SocketAddr, site_slug: String, host: String, name: String, tour_base: String) -> Result<()> {
-    let _ = schema::migrate(&db);
+    // Schema must be current before we serve — the post_meta dedupe +
+    // unique-index migration lives here; silently continuing would serve
+    // on a wrong schema (audit M18).
+    schema::migrate(&db).map_err(|e| anyhow::anyhow!("schema migrate failed: {e}"))?;
     let _ = crud::ensure_media_cols(&db);
     let uploads_root = www.join("wp-content/uploads");
     let _ = crud::media_backfill_dates(&db, &uploads_root);
@@ -128,9 +134,9 @@ pub async fn serve(db: PathBuf, templates: PathBuf, out: PathBuf, www: PathBuf, 
         .route("/api/login", post(auth::login))
         .route("/api/logout", post(auth::logout))
 
-        .route("/admin", get(auth::dashboard).post(auth::screen_options_save))
-        .route("/admin/draft", post(auth::save_draft))
-        .route("/admin/health", get(auth::health_page))
+        .route("/admin", get(dashboard::dashboard).post(dashboard::screen_options_save))
+        .route("/admin/draft", post(dashboard::save_draft))
+        .route("/admin/health", get(dashboard::health_page))
         .route("/admin/new/{kind}", get(posts::new_post))
         .route("/admin/edit/{id}", get(posts::edit_post))
         .route("/admin/save", post(posts::save_post))
@@ -306,7 +312,7 @@ async fn public_root(State(app): State<App>, headers: HeaderMap) -> Response {
     let Ok(conn) = crate::db::conn(&sc.db) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    match crate::render::front_ids(&conn).0 {
+    match crate::render::front_id(&conn) {
         Some(id) => match crate::render::render_slug_by_id_public(&conn, &sc.templates, id, &site_url(sc), &sc.tour_base) {
             // Publish-gated render: a draft page_on_front never reaches 200.
             Ok((h, status)) if status == "publish" => {
@@ -498,7 +504,27 @@ async fn public_page(State(app): State<App>, headers: HeaderMap, ConnectInfo(pee
         None => ("", rest),
     };
     let base = site_url(sc);
-    match crate::render::render_slug(&sc.db, &sc.templates, lookup, &lang_s, kind, &base, &sc.tour_base) {
+    // rusqlite + template render are synchronous — a cache-miss render is
+    // ~140ms of work, too heavy to sit on a tokio worker (H14). Everything
+    // the render needs is cloned up front; the cache write-back still runs
+    // on the handler task (pure fs).
+    let rendered = {
+        let (db, tpl, lookup_s, lang_c, kind_c, base_c, tb_c) = (
+            sc.db.clone(),
+            sc.templates.clone(),
+            lookup.to_string(),
+            lang_s.clone(),
+            kind.to_string(),
+            base.clone(),
+            sc.tour_base.clone(),
+        );
+        tokio::task::spawn_blocking(move || {
+            crate::render::render_slug(&db, &tpl, &lookup_s, &lang_c, &kind_c, &base_c, &tb_c)
+        })
+        .await
+        .unwrap_or_else(|e| Err(anyhow::anyhow!("render join: {e}")))
+    };
+    match rendered {
         Ok((h, status, canonical)) => {
             // Defense in depth: only publish ever caches — and only publish
             // ever serves, even if a render path slips a status through.
@@ -776,21 +802,33 @@ fn cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<String> {
 }
 
 pub(crate) fn get_sess<'a>(app: &'a App, sc: &'a SiteCtx, headers: &HeaderMap) -> Option<Sess> {
+    let tok = cookie(headers, SESSION_COOKIE)?;
     // WP `wp_schedule_publish` equivalent: the static site has no cron, so
-    // the due-scheduled check piggybacks on the auth path — one indexed
-    // SELECT (+UPDATE only when something is due) per admin request (6.3).
+    // the due-scheduled check piggybacks on the auth path — after cookie
+    // extraction so unauthed requests don't pay the write-check (6.3).
     // Flipped posts regenerate their single output file off the request
     // thread so publish latency stays one request, not one full generate.
     publish_due(sc);
-    let tok = cookie(headers, SESSION_COOKIE)?;
     let mut map = app.sessions.lock();
     // Rehydrate from the `sessions` table on a map miss — cookie logins now
     // survive a restart (sessions are persisted, decision B). On any hit,
     // live or rehydrated, `last_seen` is stamped below.
     if !map.contains_key(&tok) {
-        if let Ok(Some((_t, user_id, email, role))) = crud::users::session_get(&sc.db, &tok) {
-            let mut csrf = [0u8; 16];
-            rand::thread_rng().fill_bytes(&mut csrf);
+        if let Ok(Some((_t, user_id, email, role, csrf))) = crud::users::session_get(&sc.db, &tok) {
+            // Persisted csrf survives restarts so a mid-edit form still
+            // submits (M20). '' = row written before the column existed:
+            // mint once, persist it, keep it stable from then on.
+            let csrf = if csrf.is_empty() {
+                let mut b = [0u8; 16];
+                rand::thread_rng().fill_bytes(&mut b);
+                let v = hex(&b);
+                if let Err(e) = crud::users::session_set_csrf(&sc.db, &tok, &v) {
+                    eprintln!("session_set_csrf persist failed for rehydrated token: {e}");
+                }
+                v
+            } else {
+                csrf
+            };
             map.insert(
                 tok.clone(),
                 Sess {
@@ -800,8 +838,9 @@ pub(crate) fn get_sess<'a>(app: &'a App, sc: &'a SiteCtx, headers: &HeaderMap) -
                     email,
                     role,
                     db: sc.db.clone(),
-                    csrf: hex(&csrf),
+                    csrf,
                     exp: Instant::now() + Duration::from_secs(12 * 3600),
+                    touched: Instant::now(),
                 },
             );
         }
@@ -814,11 +853,14 @@ pub(crate) fn get_sess<'a>(app: &'a App, sc: &'a SiteCtx, headers: &HeaderMap) -
         map.remove(&tok);
         return None;
     }
-    // Rolling expiry, matching session_touch's 12h bump below — a live map
-    // entry must not outlive its (persisted) inactivity window.
-    let _ = crud::users::session_touch(&sc.db, &tok);
+    // Rolling expiry, matching session_touch's 12h bump — a live map entry
+    // must not outlive its inactivity window. The DB write only runs when
+    // the session was last touched >5min ago (per-request UPDATE was L).
     let s = map.get_mut(&tok)?;
-    s.exp = Instant::now() + Duration::from_secs(12 * 3600);
+    if s.touched.elapsed() > Duration::from_secs(300) {
+        let _ = crud::users::session_touch(&sc.db, &tok);
+        s.touched = Instant::now();
+    }
     Some(Sess {
         site: s.site.clone(),
         site_name: s.site_name.clone(),
@@ -828,6 +870,7 @@ pub(crate) fn get_sess<'a>(app: &'a App, sc: &'a SiteCtx, headers: &HeaderMap) -
         db: sc.db.clone(),
         csrf: s.csrf.clone(),
         exp: s.exp,
+        touched: s.touched,
     })
 }
 
@@ -916,12 +959,84 @@ pub(crate) fn asset_origin(sc: &SiteCtx) -> String {
 
 /// Authenticate and resolve the site in one step.
 /// Handlers get `Ok((sess, site_ctx))`; unauthenticated → login redirect.
-/// CSRF guard for every mutating POST. `s` from `need_auth`.
+/// CSRF guard for every mutating POST. `s` from `need_auth`. Constant-time
+/// compare: a per-byte early-exit `==` leaks the prefix length via timing.
 pub(crate) fn check_csrf(s: &Sess, sent: &str) -> Result<(), Response> {
-    if sent != s.csrf {
+    if !ct_eq(s.csrf.as_bytes(), sent.as_bytes()) {
         return Err(StatusCode::FORBIDDEN.into_response());
     }
     Ok(())
+}
+
+/// Constant-time byte equality — `check_csrf` and any token compare go
+/// through this (the timing leak is small but free to close).
+pub(crate) fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+/// Per-site CSRF key for transient (non-persisted) sessions — app-password
+/// Basic auth never writes a sessions row, so its csrf can't be a stored
+/// random value; it's HMAC(server_key, user_id:app_pass_hash) instead, so a
+/// client holding the app password can compute it but can't forge another
+/// user's. Minted into `settings.server_key` on first use.
+pub(crate) fn server_key(db: &std::path::Path) -> String {
+    let key = "server_key";
+    if let Ok(c) = crate::db::conn(db) {
+        if let Ok(v) = c.query_row("SELECT value FROM settings WHERE key=?1", [key], |r| r.get::<_, String>(0)) {
+            if !v.is_empty() {
+                return v;
+            }
+        }
+        let mut b = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut b);
+        let v = hex(&b);
+        let _ = c.execute(
+            "INSERT OR IGNORE INTO settings(key, value) VALUES(?1,?2)",
+            rusqlite::params![key, v],
+        );
+        return v;
+    }
+    // No db → deterministic-only fallback keeps auth failing closed: csrf
+    // can never match a form value without a real key behind it.
+    String::new()
+}
+
+/// HMAC-SHA256(key, msg) → hex. Minimal RFC 2104 inline — no hmac dep.
+pub(crate) fn hmac_sha256_hex(key: &str, msg: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut k = key.as_bytes().to_vec();
+    if k.len() > 64 {
+        k = Sha256::digest(&k).to_vec();
+    }
+    k.resize(64, 0);
+    let ipad: Vec<u8> = k.iter().map(|b| b ^ 0x36).collect();
+    let opad: Vec<u8> = k.iter().map(|b| b ^ 0x5c).collect();
+    let mut h = Sha256::new();
+    h.update(&ipad);
+    h.update(msg.as_bytes());
+    let inner = h.finalize();
+    let mut h = Sha256::new();
+    h.update(&opad);
+    h.update(inner);
+    hex(&h.finalize())
+}
+
+/// Percent-encode a query/path value — byte-wise UTF-8 (the old per-char
+/// `format!("%{:02X}", c as u32)` copies encoded code points, not bytes,
+/// producing mojibake for non-ASCII; audit M16). Shared by every admin
+/// redirect that interpolates user text.
+pub(crate) fn urlenc(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
 }
 
 /// Middleware: when a request carried an `rpress_session` cookie whose token no

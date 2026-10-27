@@ -212,7 +212,7 @@ pub(crate) async fn settings_page(State(app): State<App>, headers: HeaderMap, Pa
 pub(crate) async fn settings_save(State(app): State<App>, headers: HeaderMap, Path(section): Path<String>, Form(f): Form<HashMap<String, String>>) -> Response {
     let Ok((s, sc)) = need_auth(&app, &headers) else { return Redirect::to("/admin/login").into_response(); };
     if let Err(e) = require_admin(&s) { return e.into_response(); }
-    if f.get("csrf").map(|v| v.as_str()) != Some(s.csrf.as_str()) { return StatusCode::FORBIDDEN.into_response(); }
+    if !ct_eq(s.csrf.as_bytes(), f.get("csrf").map(|x| x.as_str()).unwrap_or("").as_bytes()) { return StatusCode::FORBIDDEN.into_response(); }
     // Radio/checkbox normalization: checkboxes collapse to 1/0; permalink
     // radios keep only the stored structure string.
     for (k, present) in [

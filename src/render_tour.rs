@@ -17,7 +17,7 @@ use rusqlite::Connection;
 use serde_json::json;
 use std::path::Path;
 
-use crate::render::{load_env, media_map};
+use crate::render::load_env;
 
 /// Context handed in by the caller: the post row plus its already-rendered
 /// page-builder body (`body_html_rendered`).
@@ -37,9 +37,8 @@ pub struct PostCtx {
 /// `single_tour.html` / base); the booking sidebar comes from the
 /// `sidebar-tour` widget rows.
 pub(crate) fn page(conn: &Connection, templates: &Path, ctx: &PostCtx) -> Result<String> {
-    let media = media_map(conn)?;
-
-    // featured image for hero background + JSON-LD image
+    // featured image for hero background + JSON-LD image (lazy lookup —
+    // one row, not the whole media table).
     let (featured_id, excerpt, seo_title, seo_desc): (Option<i64>, String, String, String) = conn
         .query_row(sql!("tour__select_post_row"), [ctx.id], |r| {
             Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
@@ -47,7 +46,7 @@ pub(crate) fn page(conn: &Connection, templates: &Path, ctx: &PostCtx) -> Result
         .unwrap_or((None, String::new(), String::new(), String::new()));
 
     let featured_img = featured_id
-        .and_then(|mid| media.get(&mid))
+        .and_then(|mid| crate::render::media_lookup(conn, mid))
         .map(|(p, _)| format!("{}/wp-content/uploads/{}", ctx.site_url, p))
         .unwrap_or_default();
 
@@ -88,12 +87,10 @@ pub(crate) fn page(conn: &Connection, templates: &Path, ctx: &PostCtx) -> Result
     // Permalink slug: some rows carry degenerate slugs (''/'x'), WP re-derives
     // post_name from the title — replicate with accent-stripping slugify.
     let display = display_slug(conn, ctx.id, &ctx.slug, &ctx.title);
-    let tour_path = format!("{}/{}/{}/", url_prefix(&ctx.lang), ctx.tour_base, display);
+    let tour_path = format!("{}/{}/{}/", url_prefix(conn, &ctx.lang), ctx.tour_base, display);
     let canonical = format!("{}{}", ctx.site_url, tour_path);
 
     let alternates = translation_urls(conn, ctx.id, &ctx.site_url, &ctx.tour_base);
-    let hreflang_fr = alternates.iter().find(|(l, _)| l == "fr").map(|(_, u)| u.clone()).unwrap_or_default();
-    let hreflang_es = alternates.iter().find(|(l, _)| l == "es").map(|(_, u)| u.clone()).unwrap_or_default();
     let hreflang_links = hreflang_links(&alternates);
 
     let jsonld = product_jsonld(&ctx.title, ctx.id, &canonical, &description, &price, &featured_img, &site_name_of(conn));
@@ -129,19 +126,16 @@ pub(crate) fn page(conn: &Connection, templates: &Path, ctx: &PostCtx) -> Result
         &canonical,
         &seo_desc_out,
         &ctx.body_html,
-        &hreflang_fr,
-        &hreflang_es,
+        &alternates,
         &ctx.tour_base,
     )?;
     // seo_title/title hit <title> + meta content attributes — pre-escaped
     // at the boundary (base templates run AutoEscape::None).
     let sidebar_tour = crate::widgets::render_sidebar(conn, "sidebar-tour", &ctx.site_url, &ctx.lang, &ctx.slug, &ctx.tour_base)?;
     for (k, v) in serde_json::json!({
+        "canonical": canonical,
         "seo_title": esc_attr(&seo_title),
         "seo_desc": seo_desc_out,
-        "canonical": canonical,
-        "hreflang_fr": hreflang_fr,
-        "hreflang_es": hreflang_es,
         "hreflang_links": hreflang_links,
         "lang": ctx.lang,
         "site_url": ctx.site_url,
@@ -179,8 +173,8 @@ fn esc_attr(s: &str) -> String {
     esc(s).replace('"', "&quot;")
 }
 
-fn url_prefix(lang: &str) -> String {
-    if lang == "fr" || lang.is_empty() { String::new() } else { format!("/{lang}") }
+fn url_prefix(conn: &Connection, lang: &str) -> String {
+    crate::lang::url_prefix(&crate::lang::config(conn), lang)
 }
 
 /// Slug usable in URLs. The DB slug can be degenerate ('', 'x') after late

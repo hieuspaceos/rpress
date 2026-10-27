@@ -88,18 +88,6 @@ fn hierarchical(tax: &str) -> bool {
     tax != "post_tag"
 }
 
-/// URL-encode a path/query segment (`&`/`=`/spaces) for list links.
-fn urlenc(s: &str) -> String {
-    let mut o = String::new();
-    for b in s.bytes() {
-        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
-            o.push(b as char);
-        } else {
-            o.push_str(&format!("%{b:02X}"));
-        }
-    }
-    o
-}
 
 /// `<div class="tablenav-pages">…` pager for the terms table — same markup
 /// as `list::Pager` but honors the per-user per-page setting.
@@ -576,7 +564,7 @@ pub(crate) async fn tax_bulk(State(app): State<App>, headers: HeaderMap, Form(ma
     let Ok((s, sc)) = need_auth(&app, &headers) else {
         return Redirect::to("/admin/login").into_response();
     };
-    if map.get("csrf").map(|x| x.as_str()) != Some(s.csrf.as_str()) {
+    if !ct_eq(s.csrf.as_bytes(), map.get("csrf").map(|x| x.as_str()).unwrap_or("").as_bytes()) {
         return StatusCode::FORBIDDEN.into_response();
     }
     let tax = map.get("tax").cloned().unwrap_or_else(|| "category".into());

@@ -18,7 +18,7 @@ use rusqlite::Connection;
 use serde_json::{json, Value};
 use std::path::Path;
 
-use crate::render::{load_env, media_map};
+use crate::render::load_env;
 
 /// Placeholder the caller plants in place of the `[wpdiscuz_comments]`
 /// shortcode inside body_json text-boxes before rendering; `page()`
@@ -59,10 +59,9 @@ pub struct PostCtx {
 
 /// Render one post single page.
 pub(crate) fn page(conn: &Connection, templates: &Path, ctx: &PostCtx) -> Result<String> {
-    let media = media_map(conn)?;
     let site_url = ctx.site_url.trim_end_matches('/').to_string();
     let site = site_url.as_str();
-    let _fr = ctx.lang != "es";
+    let lang_cfg = crate::lang::config(conn);
 
     // --- post row bits we still need -------------------------------------
     let (published, featured_id, seo_title, seo_desc): (
@@ -76,8 +75,10 @@ pub(crate) fn page(conn: &Connection, templates: &Path, ctx: &PostCtx) -> Result
         })
         .unwrap_or_default();
 
+    // Lazy media_map: only the featured image (+ _thumbnail_id fallback)
+    // this post references — never the whole media table.
     let featured_img = featured_id
-        .and_then(|mid| media.get(&mid))
+        .and_then(|mid| crate::render::media_lookup(conn, mid))
         .map(|(p, _)| format!("{site}/wp-content/uploads/{p}"))
         .unwrap_or_default();
     // Theme falls back to the post-thumbnail metabox image even when
@@ -89,7 +90,7 @@ pub(crate) fn page(conn: &Connection, templates: &Path, ctx: &PostCtx) -> Result
             |r| r.get::<_, i64>(0),
         )
         .ok()
-        .and_then(|mid| media.get(&mid))
+        .and_then(|mid| crate::render::media_lookup(conn, mid))
         .map(|(p, _)| format!("{site}/wp-content/uploads/{p}"))
         .unwrap_or_default()
     } else {
@@ -124,7 +125,7 @@ pub(crate) fn page(conn: &Connection, templates: &Path, ctx: &PostCtx) -> Result
         .iter()
         .map(|(slug, name)| {
             json!({
-                "url": format!("{site}{}/{}/", url_prefix(&ctx.lang), cat_path(slug)),
+                "url": format!("{site}{}/{}/", crate::lang::url_prefix(&lang_cfg, &ctx.lang), cat_path(slug)),
                 "name": esc(name),
             })
         })
@@ -137,7 +138,7 @@ pub(crate) fn page(conn: &Connection, templates: &Path, ctx: &PostCtx) -> Result
 
     // Breadcrumb chain: deepest category → walk parents to root.
     let bc_chain = breadcrumb_chain(&cats);
-    let post_url = format!("{site}{}/{}/", url_prefix(&ctx.lang), ctx.slug);
+    let post_url = format!("{site}{}/{}/", crate::lang::url_prefix(&lang_cfg, &ctx.lang), ctx.slug);
     let site_name = conn
         .query_row(
             "SELECT value FROM settings WHERE key='site_name' LIMIT 1",
@@ -160,7 +161,7 @@ pub(crate) fn page(conn: &Connection, templates: &Path, ctx: &PostCtx) -> Result
             .collect::<Vec<_>>()
             .join("/");
         crumbs.push(json!({
-            "url": format!("{site}{}/{path}/", url_prefix(&ctx.lang)),
+            "url": format!("{site}{}/{path}/", crate::lang::url_prefix(&lang_cfg, &ctx.lang)),
             "class": "taxonomy category",
             "title": esc_attr(&format!("Go to the {name} Catégorie archives.")),
             "name": esc(name),
@@ -185,8 +186,8 @@ pub(crate) fn page(conn: &Connection, templates: &Path, ctx: &PostCtx) -> Result
             |r| r.get(0),
         )
         .ok();
-    let prev_url = prev_slug.map(|s| format!("{site}{}/{s}/", url_prefix(&ctx.lang)));
-    let next_url = next_slug.map(|s| format!("{site}{}/{s}/", url_prefix(&ctx.lang)));
+    let prev_url = prev_slug.map(|s| format!("{site}{}/{s}/", crate::lang::url_prefix(&lang_cfg, &ctx.lang)));
+    let next_url = next_slug.map(|s| format!("{site}{}/{s}/", crate::lang::url_prefix(&lang_cfg, &ctx.lang)));
 
     // --- comments -----------------------------------------------------------
     let comments = load_comments(conn, ctx.id)?;
@@ -194,7 +195,7 @@ pub(crate) fn page(conn: &Connection, templates: &Path, ctx: &PostCtx) -> Result
     // the whole approved thread renders server-side (no pagination — emit
     // all, it costs bytes not queries). wpdiscuz DOM shape, ul/li nested by
     // parent_id, oldest-first per level (the reference default sort).
-    let comment_page = format!("{}/{}/", url_prefix(&ctx.lang), ctx.slug);
+    let comment_page = format!("{}/{}/", crate::lang::url_prefix(&lang_cfg, &ctx.lang), ctx.slug);
     let comments_open = conn
         .query_row(
             sql!("intake__select_post_published"),
@@ -239,7 +240,7 @@ pub(crate) fn page(conn: &Connection, templates: &Path, ctx: &PostCtx) -> Result
         .render(context! {
             site_url => site,
             post_id => ctx.id,
-            post_url => format!("{}/{}/", url_prefix(&ctx.lang), ctx.slug),
+            post_url => format!("{}/{}/", crate::lang::url_prefix(&lang_cfg, &ctx.lang), ctx.slug),
             post_url_enc => urlenc(&post_url),
             comments_open => comments_open,
             rating_value => fmt_rating(rating),
@@ -250,13 +251,11 @@ pub(crate) fn page(conn: &Connection, templates: &Path, ctx: &PostCtx) -> Result
         .map_err(|e| anyhow::anyhow!("render comments_wpdiscuz.html: {e}"))?;
 
     // --- article content (the_content pipeline) ------------------------------
-    let article_html = filter_content(&ctx.body_html, site, ctx.id, &media, conn);
+    let article_html = filter_content(&ctx.body_html, site, ctx.id, conn);
 
     // --- seo / translations ---------------------------------------------------
     let canonical = post_url.clone();
     let alternates = translation_urls(conn, ctx.id, site, &ctx.tour_base);
-    let hreflang_fr = alternates.iter().find(|(l, _)| l == "fr").map(|(_, u)| u.clone()).unwrap_or_default();
-    let hreflang_es = alternates.iter().find(|(l, _)| l == "es").map(|(_, u)| u.clone()).unwrap_or_default();
     let hreflang_links = hreflang_links(&alternates);
     let seo_title = seo_title
         .filter(|s| !s.is_empty())
@@ -288,8 +287,7 @@ pub(crate) fn page(conn: &Connection, templates: &Path, ctx: &PostCtx) -> Result
         &canonical,
         &seo_desc,
         &ctx.body_html,
-        &hreflang_fr,
-        &hreflang_es,
+        &alternates,
         &ctx.tour_base,
     )?;
     // `seo_title`/`title`/term names go into <title>, meta content="…"
@@ -300,8 +298,6 @@ pub(crate) fn page(conn: &Connection, templates: &Path, ctx: &PostCtx) -> Result
         "seo_title": esc_attr(&seo_title),
         "seo_desc": seo_desc,
         "canonical": canonical,
-        "hreflang_fr": hreflang_fr,
-        "hreflang_es": hreflang_es,
         "hreflang_links": hreflang_links,
         "lang": ctx.lang,
         "site_url": site,
@@ -321,7 +317,7 @@ pub(crate) fn page(conn: &Connection, templates: &Path, ctx: &PostCtx) -> Result
         "article_html": article_html,
         "body": body_rendered,
         "tags": tags.iter().map(|(slug, name)| json!({
-            "url": format!("{site}{}/etiquette/{slug}/", url_prefix(&ctx.lang)),
+            "url": format!("{site}{}/etiquette/{slug}/", crate::lang::url_prefix(&lang_cfg, &ctx.lang)),
             "name": esc(name),
         })).collect::<Vec<_>>(),
         "prev_url": prev_url,
@@ -416,9 +412,6 @@ fn inject_post_assets(html: &str, site: &str, post_id: i64) -> String {
     out
 }
 
-fn url_prefix(lang: &str) -> String {
-    if lang == "fr" || lang.is_empty() { String::new() } else { format!("/{lang}") }
-}
 
 /// `2025-08-21 11:38:47` → (21, "Août", 2025, /2025/08/21/, "août 21, 2025")
 pub(crate) fn fr_date_parts(published: &str) -> (String, String, String, String, String) {
@@ -892,14 +885,7 @@ fn fmt_rating(r: f64) -> String {
 }
 
 fn urlenc(s: &str) -> String {
-    s.bytes()
-        .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                (b as char).to_string()
-            }
-            _ => format!("%{b:02X}"),
-        })
-        .collect()
+    crate::admin::urlenc(s)
 }
 
 fn esc(s: &str) -> String {
@@ -944,7 +930,7 @@ fn hreflang_links(alternates: &[(String, String)]) -> String {
 
 /// post_content → article HTML: entity-preserve, wpautop, wptexturize(FR),
 /// caption/button/embed/icon shortcodes, then ez-toc anchors + container.
-fn filter_content(raw: &str, site: &str, post_id: i64, _media: &std::collections::HashMap<i64, (String, String)>, conn: &Connection) -> String {
+fn filter_content(raw: &str, site: &str, post_id: i64, conn: &Connection) -> String {
     let mut s = rewrite_origin(raw, site, conn);
     s = expand_body_shortcodes(&s, site);
     s = wpautop(&s);
@@ -1205,29 +1191,47 @@ fn wpautop(s: &str) -> String {
         return String::new();
     }
     const BLOCKS: &str = "table|thead|tfoot|caption|col|colgroup|tbody|tr|td|th|div|dl|dd|dt|ul|ol|li|pre|form|map|area|blockquote|address|style|p|h[1-6]|hr|fieldset|legend|section|article|aside|hgroup|header|footer|nav|figure|figcaption|details|menu|summary";
-    let re = |pat: &str| regex::Regex::new(pat).unwrap();
+    // All wpautop/link-fixup regexes compile once per process — each render
+    // used to build ~15 of them.
+    use std::sync::LazyLock;
+    static RE_BR_BR: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"<br\s*/?>\s*<br\s*/?>").unwrap());
+    static RE_OPEN: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(&format!(r"(<(?:{BLOCKS})[\s/>])")).unwrap());
+    static RE_CLOSE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(&format!(r"(</(?:{BLOCKS})>)")).unwrap());
+    static RE_HR: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"(<hr\s*?/?>)").unwrap());
+    static RE_NN: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"\n\n+").unwrap());
+    static RE_SPLIT: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"\n\s*\n").unwrap());
+    static RE_EMPTY_P: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"<p>\s*</p>").unwrap());
+    static RE_P_BLOCK_CLOSE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"<p>([^<]+)</(div|address|form)>").unwrap());
+    static RE_P_BLOCK_FULL: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(&format!(r"<p>\s*(</?(?:{BLOCKS})[^>]*>)\s*</p>")).unwrap());
+    static RE_P_LI: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"<p>(<li.+?)</p>").unwrap());
+    static RE_P_BQ: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r#"<p><blockquote((?:[^>"']|"[^"]*"|'[^']*')*)>"#).unwrap());
+    static RE_P_BLOCK_PRE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(&format!(r"<p>\s*(</?(?:{BLOCKS})[^>]*>)")).unwrap());
+    static RE_BLOCK_P_POST: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(&format!(r"(</?(?:{BLOCKS})[^>]*>)\s*</p>")).unwrap());
+    static RE_BLOCK_BR: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(&format!(r"(</?(?:{BLOCKS})[^>]*>)\s*<br />")).unwrap());
+    static RE_BR_BLOCK: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"<br />(\s*</?(?:p|li|div|dl|dd|dt|th|pre|td|ul|ol)[^>]*>)").unwrap());
+    static RE_N_ENDP: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"\n</p>$").unwrap());
 
     // pad end; no <pre> handling needed (article body has none).
     let mut text = format!("{s}\n");
     // <br><br> → paragraph break.
-    text = re(r"<br\s*/?>\s*<br\s*/?>")
+    text = RE_BR_BR
         .replace_all(&text, "\n\n")
         .into_owned();
     // (?:{BLOCKS}) is REQUIRED - without the non-capturing group the
     // alternation splits (`(<table|thead|...` matches bare 'thead' etc.),
     // which is how 'a.jp' + 'g' inside an img src used to get \n\n inserted.
-    let open = re(&format!(r"(<(?:{BLOCKS})[\s/>])"));
-    let close = re(&format!(r"(</(?:{BLOCKS})>)"));
+    let open = &*RE_OPEN;
+    let close = &*RE_CLOSE;
     text = open.replace_all(&text, "\n\n$1").into_owned();
     text = close.replace_all(&text, "$1\n\n").into_owned();
-    text = re(r"(<hr\s*?/?>)").replace_all(&text, "$1\n\n").into_owned();
+    text = RE_HR.replace_all(&text, "$1\n\n").into_owned();
     text = text.replace("\r\n", "\n").replace('\r', "\n");
     text = wp_replace_in_html_tags(&text);
-    text = re(r"\n\n+").replace_all(&text, "\n\n").into_owned();
+    text = RE_NN.replace_all(&text, "\n\n").into_owned();
 
     // Wrap every \n\n-separated chunk in <p>.
     let mut out = String::with_capacity(text.len() + 512);
-    for para in re(r"\n\s*\n").split(&text) {
+    for para in RE_SPLIT.split(&text) {
         let t = para.trim_matches('\n');
         if !t.is_empty() {
             out.push_str("<p>");
@@ -1236,23 +1240,23 @@ fn wpautop(s: &str) -> String {
         }
     }
     let mut text = out;
-    text = re(r"<p>\s*</p>").replace_all(&text, "").into_owned();
-    text = re(r"<p>([^<]+)</(div|address|form)>")
+    text = RE_EMPTY_P.replace_all(&text, "").into_owned();
+    text = RE_P_BLOCK_CLOSE
         .replace_all(&text, "<p>$1</p></$2>")
         .into_owned();
     // unwrap <p>-wrapped block tags (three cleanup passes like WP).
-    text = re(&format!(r"<p>\s*(</?(?:{BLOCKS})[^>]*>)\s*</p>"))
+    text = RE_P_BLOCK_FULL
         .replace_all(&text, "$1")
         .into_owned();
-    text = re(r"<p>(<li.+?)</p>").replace_all(&text, "$1").into_owned();
-    text = re(r#"<p><blockquote((?:[^>"']|"[^"]*"|'[^']*')*)>"#)
+    text = RE_P_LI.replace_all(&text, "$1").into_owned();
+    text = RE_P_BQ
         .replace_all(&text, "<blockquote$1><p>")
         .into_owned();
     text = text.replace("</blockquote></p>", "</p></blockquote>");
-    text = re(&format!(r"<p>\s*(</?(?:{BLOCKS})[^>]*>)"))
+    text = RE_P_BLOCK_PRE
         .replace_all(&text, "$1")
         .into_owned();
-    text = re(&format!(r"(</?(?:{BLOCKS})[^>]*>)\s*</p>"))
+    text = RE_BLOCK_P_POST
         .replace_all(&text, "$1")
         .into_owned();
 
@@ -1262,13 +1266,13 @@ fn wpautop(s: &str) -> String {
     text = text.replace("<br>", "<br />").replace("<br/>", "<br />");
     text = newline_to_br(&text);
     text = text.replace("<WPPreserveNewline />", "\n");
-    text = re(&format!(r"(</?(?:{BLOCKS})[^>]*>)\s*<br />"))
+    text = RE_BLOCK_BR
         .replace_all(&text, "$1")
         .into_owned();
-    text = re(r"<br />(\s*</?(?:p|li|div|dl|dd|dt|th|pre|td|ul|ol)[^>]*>)")
+    text = RE_BR_BLOCK
         .replace_all(&text, "$1")
         .into_owned();
-    text = re(r"\n</p>$").replace_all(&text, "</p>").into_owned();
+    text = RE_N_ENDP.replace_all(&text, "</p>").into_owned();
     // restore newlines inside attributes
     text.replace(" <!-- wpnl --> ", "\n")
         .replace("<!-- wpnl -->", "\n")
@@ -1277,8 +1281,9 @@ fn wpautop(s: &str) -> String {
 /// `wp_replace_in_html_tags`: newline inside tag definitions →
 /// ` <!-- wpnl --> ` so paragraph splitting never splits a tag.
 fn wp_replace_in_html_tags(s: &str) -> String {
-    let re = regex::Regex::new(r"(?s)<!--.*?-->|<[^>]*>").unwrap();
-    re.replace_all(s, |c: &regex::Captures| {
+    static RE: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"(?s)<!--.*?-->|<[^>]*>").unwrap());
+    RE.replace_all(s, |c: &regex::Captures| {
         c[0].replace('\n', " <!-- wpnl --> ")
     })
     .into_owned()
@@ -1372,8 +1377,9 @@ fn preserve_block_newlines(s: &str) -> String {
 /// get `target="_blank" rel="noopener"`; existing target=_blank links
 /// missing rel gain `rel="noopener"`.
 fn link_rel_fixup(s: &str, site: &str) -> String {
-    let re = regex::Regex::new(r#"<a\s[^>]*href="([^"]+)"[^>]*>"#).unwrap();
-    re.replace_all(s, |c: &regex::Captures| {
+    static RE: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r#"<a\s[^>]*href="([^"]+)"[^>]*>"#).unwrap());
+    RE.replace_all(s, |c: &regex::Captures| {
         let tag = &c[0];
         let href = &c[1];
         if tag.contains("target=") {

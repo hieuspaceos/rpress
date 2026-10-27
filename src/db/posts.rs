@@ -1,7 +1,7 @@
 use anyhow::Result;
 use super::misc::*;
 use super::terms::*;
-use super::{attach_term, slugify, term_name};
+use super::{attach_term, reparent_orphans, slugify, term_name};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Deserialize;
 use std::path::Path;
@@ -285,7 +285,7 @@ pub fn list_admin(
         wh.push_str(" AND EXISTS (SELECT 1 FROM post_terms t JOIN terms tm ON tm.taxonomy=t.taxonomy AND tm.slug=t.slug WHERE t.post_id=p.id AND tm.id=?)");
         args.push(rusqlite::types::Value::Integer(term_id));
         if !tax.is_empty() {
-            wh.push_str(" AND t.taxonomy=?");
+            wh.push_str(" AND tm.taxonomy=?");
             args.push(rusqlite::types::Value::Text(tax.to_string()));
         }
         wh.push(')');
@@ -336,8 +336,7 @@ pub fn list_admin(
                 views: r.get(13)?,
             })
         })?
-        .flatten()
-        .collect();
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok((rows, total, counts))
 }
 
@@ -355,6 +354,9 @@ pub fn quick_update(
 ) -> Result<()> {
     let c = crate::db::conn(db)?;
     let tx = c.unchecked_transaction()?;
+    // Revision snapshot before the update — WP takes a revision on every
+    // quick-edit too; save_post already snapshots via the same SQL.
+    tx.execute(sql!("posts__insert_into_revisions"), [id])?;
     if lang.is_empty() {
         tx.execute(
             sql!("posts__update_posts_set"),
@@ -391,6 +393,8 @@ pub fn quick_update(
 pub fn bulk_apply(db: &Path, id: i64, status: &str, cats: &[String], tags: &[String]) -> Result<()> {
     let c = crate::db::conn(db)?;
     let tx = c.unchecked_transaction()?;
+    // Revision snapshot — bulk edit is a save like any other (see quick_update).
+    tx.execute(sql!("posts__insert_into_revisions"), [id])?;
     if matches!(status, "publish" | "future" | "draft" | "pending" | "trash") {
         tx.execute(
             sql!("posts__update_posts_set_8"),
@@ -445,7 +449,7 @@ pub fn tag_names_for(db: &Path, id: i64) -> Result<Vec<String>> {
     let c = crate::db::conn(db)?;
     let mut st = c.prepare(sql!("posts__select_name_from_2"))?;
     let rows = st.query_map([id], |r| r.get(0))?;
-    Ok(rows.flatten().collect())
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
 /// post.lang for Quick-Edit prefill.
@@ -502,9 +506,18 @@ fn delete_posts_in(tx: &Connection, ids_sql: &str, p: impl rusqlite::Params) -> 
     run("tours", "post_id")?;
     run("revisions", "post_id")?;
     run("review_assignments", "post_id")?;
+    run("post_translation_members", "post_id")?;
     tx.execute(
         &format!("DELETE FROM post_translations WHERE fr_post_id IN ({ph}) OR es_post_id IN ({ph})"),
         rusqlite::params_from_iter(ids.iter().chain(ids.iter())),
+    )?;
+    // Groups left with <2 members after the member sweep are dead pairs —
+    // a lone member can't translate to anything, and its row would re-link
+    // to a future post reusing the rowid.
+    tx.execute(
+        "DELETE FROM post_translation_members WHERE group_id IN (\
+            SELECT group_id FROM post_translation_members GROUP BY group_id HAVING COUNT(*) < 2)",
+        [],
     )?;
     let n = run("posts", "id")?;
     Ok(n as u64)
@@ -544,12 +557,13 @@ pub fn purge_old_trash(db: &Path) -> Result<u64> {
     let mut c = crate::db::conn(db)?;
     let tx = c.transaction()?;
     // Re-parent children of aged trash comments before the delete, matching
-    // `comments::empty_status` (`comments__reparent_orphans`).
-    while tx.execute(
-        "UPDATE comments SET parent_id = (SELECT c2.parent_id FROM comments c2 WHERE c2.id = comments.parent_id)
-         WHERE parent_id IN (SELECT id FROM comments WHERE status='trash' AND created_at < datetime('now','-30 days'))",
+    // `comments::empty_status`. Cyclic parent chains bail to force-NULL in
+    // the helper after 1000 passes — the loop alone spun forever.
+    reparent_orphans(
+        &tx,
+        "status='trash' AND created_at < datetime('now','-30 days')",
         [],
-    )? > 0 {}
+    )?;
     let cn = tx.execute(
         "DELETE FROM comments WHERE status='trash' AND created_at < datetime('now','-30 days')",
         [],
@@ -1092,16 +1106,17 @@ fn save_post_on(db: &Path, c: &Connection, f: &PostForm) -> Result<i64> {
         )?;
         id
     } else {
-        let next: i64 = c.query_row(sql!("posts__select_coalesce_max"), [], |r| r.get(0))?;
+        // No explicit id: SQLite assigns the rowid — a MAX(id)+1 pre-read
+        // races any other writer (audit M12). Read it back after insert.
         c.execute(
             sql!("posts__insert_into_posts_18"),
             params![
-                next, f.slug, f.lang, f.title, body, null_empty(&f.excerpt), status,
+                f.slug, f.lang, f.title, body, null_empty(&f.excerpt), status,
                 null_empty(&seo_t), null_empty(&seo_d), feat, f.kind, pub_at.as_deref(),
                 f.content
             ],
         )?;
-        next
+        c.last_insert_rowid()
     };
     if let Some(p_plugin) = crate::admin::plugins::find(&f.kind) {
         (p_plugin.save)(c, id, f)?;
@@ -1195,7 +1210,7 @@ pub fn promote_tours(db: &Path) -> Result<u64> {
     let c = crate::db::conn(db)?;
     let ids: Vec<i64> = {
         let mut s = c.prepare(sql!("posts__select_id_from"))?;
-        let v: Vec<i64> = s.query_map([], |r| r.get(0))?.flatten().collect();
+        let v: Vec<i64> = s.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
         v
     };
     let mut n = 0u64;
@@ -1249,10 +1264,7 @@ fn terms_payload(db: &Path, id: i64, f: &PostForm) -> String {
         if name.is_empty() || name.contains(':') || name.contains('\n') || name.contains('\r') {
             continue;
         }
-        let slug: String = name
-            .chars()
-            .map(|ch| if ch.is_ascii_alphanumeric() { ch.to_ascii_lowercase() } else { '-' })
-            .collect();
+        let slug = super::slugify(name);
         if slug.trim_matches('-').is_empty() {
             continue;
         }
@@ -1284,8 +1296,7 @@ pub fn recent_posts(db: &Path, limit: i64) -> Result<Vec<DashPostRow>> {
                 date: r.get(2)?,
             })
         })?
-        .flatten()
-        .collect();
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
 }
 
@@ -1302,8 +1313,7 @@ pub fn drafts(db: &Path, user_id: i64, limit: i64) -> Result<Vec<DashPostRow>> {
                 date: r.get(2)?,
             })
         })?
-        .flatten()
-        .collect();
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
 }
 
@@ -1371,8 +1381,7 @@ pub fn publish_due(db: &Path) -> Result<Vec<(i64, String, String, String)>> {
                 r.get::<_, String>(3).unwrap_or_default(),
             ))
         })?
-        .flatten()
-        .collect();
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     drop(st);
     if !rows.is_empty() {
         tx.execute(sql!("posts__publish_due_set"), [])?;
@@ -1398,8 +1407,7 @@ pub fn revisions_for(db: &Path, post_id: i64) -> Result<Vec<(i64, String, i64)>>
     let mut st = c.prepare(sql!("revisions__select_for_post"))?;
     let rows = st
         .query_map([post_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
-        .flatten()
-        .collect();
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
 }
 
@@ -1493,8 +1501,8 @@ mod tests {
             .unwrap();
         s.query_map([post_id], |r| Ok((r.get(0)?, r.get(1)?)))
             .unwrap()
-            .flatten()
-            .collect()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
     }
 
     #[test]

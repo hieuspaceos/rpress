@@ -20,13 +20,12 @@
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension};
 use serde_json::{json, Value};
-use std::collections::HashMap;
 use std::path::Path;
 
 #[allow(unused_imports)] // used by the binary target's copy of this module
 use crate::sql;
 
-use crate::render::{load_env, media_map};
+use crate::render::load_env;
 
 /// Resolved term for dispatch: `render_slug` calls `term_by_path` first so
 /// an unknown `tax/slug` still reports "slug not found".
@@ -209,17 +208,15 @@ pub(crate) fn wp_term_id(taxonomy: &str, slug: &str) -> Option<i64> {
 }
 
 /// WP taxonomy label shown as `traveltour-page-caption`.
-fn tax_label(taxonomy: &str, es: bool) -> &'static str {
+fn tax_label(taxonomy: &str, lang: &str) -> &'static str {
     match taxonomy {
         "profil" | "perfil" => "Profil",
         "region" | "region-es" => "Région",
         "duree" | "duracion" => "Durée",
         "style" | "estilo" => "Style",
-        "category" if es => "Categoría",
-        "category" => "Catégorie",
-        "post_tag" if es => "Etiqueta",
-        "post_tag" => "Étiquette",
-        _ => "Terme",
+        "category" => crate::lang::t(lang, "category_label"),
+        "post_tag" => crate::lang::t(lang, "tag_label"),
+        _ => crate::lang::t(lang, "term_label"),
     }
 }
 
@@ -255,20 +252,30 @@ fn term_description(conn: &Connection, term: &Term) -> String {
 /// Term banner (page-title background). `wp_termmeta.thumbnail_id` was not
 /// imported; match `media.path` on the term slug, preferring the edited
 /// `-e<timestamp>` upload variants WP uses for taxonomy headers.
-fn term_banner(media: &HashMap<i64, (String, String)>, slug: &str) -> String {
+fn term_banner(conn: &Connection, slug: &str) -> String {
     let slug = slug.to_lowercase();
     let edited = |file: &str| -> bool {
         file.split('-')
             .last()
             .is_some_and(|p| p.starts_with('e') && p[1..].chars().take_while(|c| c.is_ascii_digit()).count() >= 8)
     };
-    let mut best: Option<&str> = None;
-    for (path, _) in media.values() {
+    // Lazy media_map: only candidate rows matching the slug, never the
+    // whole table (the old code scanned a materialized media_map).
+    let mut stmt = match conn.prepare("SELECT path FROM media WHERE LOWER(path) LIKE '%' || ?1 || '%'") {
+        Ok(s) => s,
+        Err(_) => return String::new(),
+    };
+    let paths: Vec<String> = stmt
+        .query_map([&slug], |r| r.get::<_, String>(0))
+        .map(|rows| rows.flatten().collect())
+        .unwrap_or_default();
+    let mut best: Option<String> = None;
+    for path in paths {
         let Some(file) = path.rsplit('/').next() else { continue };
         if !file.to_lowercase().contains(&slug) {
             continue;
         }
-        let better = match best {
+        let better = match &best {
             None => true,
             Some(b) => {
                 let be = edited(b.rsplit('/').next().unwrap_or(b));
@@ -279,7 +286,7 @@ fn term_banner(media: &HashMap<i64, (String, String)>, slug: &str) -> String {
             best = Some(path);
         }
     }
-    best.map(|p| p.to_string()).unwrap_or_default()
+    best.unwrap_or_default()
 }
 
 /// Render one taxonomy archive page. `ctx` carries the dispatch context
@@ -297,7 +304,6 @@ pub(crate) fn page(
     let is_post_tax = term.taxonomy == "category" || term.taxonomy == "post_tag";
     let lang = ctx.lang.as_str();
     let es = lang == "es" || (!is_post_tax && matches!(term.taxonomy.as_str(), "region-es" | "perfil" | "duracion" | "estilo"));
-    let media = media_map(conn)?;
     let meta1 = |id: i64, key: &str| -> String {
         conn.query_row(
             sql!("archive__select_meta_value"),
@@ -321,7 +327,7 @@ pub(crate) fn page(
 
     // fr/es alternate via term_translations (the twin keeps its own
     // taxonomy so region→region-es pairings resolve).
-    let (mut hreflang_fr, mut hreflang_es) = (String::new(), String::new());
+    let mut alternates: Vec<(String, String)> = Vec::new();
     if let Some((tslug, ttax)) = conn
         .query_row(
             sql!("archive__select_term_twin"),
@@ -330,29 +336,34 @@ pub(crate) fn page(
         )
         .ok()
     {
-        let twin_es = matches!(ttax.as_str(), "region-es" | "perfil" | "duracion" | "estilo")
-            || (is_post_tax && !es);
-        let twin_lang = if twin_es { "es" } else { &lang_cfg.primary };
+        // Twin language: `-{lang}` taxonomy suffix when configured, else
+        // the legacy ES taxonomies, else the non-current lang (2-lang
+        // sites — the pair table only knows primary↔other anyway).
+        let suffixed = lang_cfg
+            .langs
+            .iter()
+            .find(|l| *l != &lang_cfg.primary && ttax.ends_with(&format!("-{l}")));
+        let twin_lang: &str = if let Some(l) = suffixed {
+            l
+        } else if is_post_tax {
+            lang_cfg.langs.iter().find(|l| *l != lang).map(|s| s.as_str()).unwrap_or(&lang_cfg.primary)
+        } else if ttax == "estilo" || ttax == "duracion" || ttax == "perfil" {
+            "es"
+        } else {
+            &lang_cfg.primary
+        };
         let twin_prefix = crate::lang::url_prefix(&lang_cfg, twin_lang);
         let twin_url = format!("{site_url}{}", term_url_path(&ttax, &tslug, &twin_prefix));
-        if es {
-            hreflang_fr = twin_url;
-            hreflang_es = canonical.clone();
-        } else {
-            hreflang_fr = canonical.clone();
-            hreflang_es = twin_url;
-        }
+        alternates.push((lang.to_string(), canonical.clone()));
+        alternates.push((twin_lang.to_string(), twin_url));
     }
 
-    let hreflang_links = [
-        ("fr", hreflang_fr.as_str()),
-        ("es", hreflang_es.as_str()),
-    ]
-    .into_iter()
-    .filter(|(_, u)| !u.is_empty())
-    .map(|(l, u)| format!("<link rel=\"alternate\" href=\"{}\" hreflang=\"{}\" />", esc_attr(u), esc_attr(l)))
-    .collect::<Vec<_>>()
-    .join("\n");
+    let hreflang_links = alternates
+        .iter()
+        .filter(|(_, u)| !u.is_empty())
+        .map(|(l, u)| format!("<link rel=\"alternate\" href=\"{}\" hreflang=\"{}\" />", esc_attr(u), esc_attr(l)))
+        .collect::<Vec<_>>()
+        .join("\n");
 
     // ---- cards: tours carry tourmaster data; posts use the blog grid ----
     let mut cards: Vec<Value> = Vec::new();
@@ -375,14 +386,14 @@ pub(crate) fn page(
         for (post_id, slug, title, excerpt, fid, published) in &rows {
             let url = format!("{site_url}{prefix}/{slug}/");
             let image = fid
-                .and_then(|m| media.get(&m))
+                .and_then(|m| crate::render::media_lookup(conn, m))
                 .map(|(p, _)| format!("{site_url}/wp-content/uploads/{p}"))
                 .unwrap_or_default();
             let img_attrs = fid
                 .map(|m| crate::render::media_img_attrs(conn, m, &site_url))
                 .unwrap_or_default();
             let alt = fid
-                .and_then(|m| media.get(&m))
+                .and_then(|m| crate::render::media_lookup(conn, m))
                 .map(|(_, a)| a.clone())
                 .unwrap_or_default();
             let (day, month, _y, date_url, date_label) =
@@ -481,11 +492,11 @@ pub(crate) fn page(
             let display = crate::render_tour::display_slug(conn, *id, slug, title);
             let url = format!("{site_url}{prefix}/{}/{display}/", ctx.tour_base);
             let image = fid
-                .and_then(|m| media.get(&m))
+                .and_then(|m| crate::render::media_lookup(conn, m))
                 .map(|(p, _)| format!("{site_url}/wp-content/uploads/{p}"))
                 .unwrap_or_default();
             let alt = fid
-                .and_then(|m| media.get(&m))
+                .and_then(|m| crate::render::media_lookup(conn, m))
                 .map(|(_, a)| a.clone())
                 .unwrap_or_default();
             let promo_bg = os("promo-text-ribbon-background");
@@ -515,7 +526,7 @@ pub(crate) fn page(
     } else {
         term_description(conn, term)
     };
-    let banner_path = term_banner(&media, &term.slug);
+    let banner_path = term_banner(conn, &term.slug);
     let banner = if banner_path.is_empty() {
         String::new()
     } else {
@@ -557,8 +568,7 @@ pub(crate) fn page(
         &canonical,
         &seo_desc,
         "",
-        &hreflang_fr,
-        &hreflang_es,
+        &alternates,
         &ctx.tour_base,
     )?;
     let sidebar_post = crate::widgets::render_sidebar(conn, "sidebar-post", &site_url, lang, &term.slug, &ctx.tour_base)?;
@@ -566,8 +576,6 @@ pub(crate) fn page(
         "seo_title": esc_attr(&term.name),
         "seo_desc": seo_desc,
         "canonical": canonical,
-        "hreflang_fr": hreflang_fr,
-        "hreflang_es": hreflang_es,
         "hreflang_links": hreflang_links,
         "lang": lang,
         "site_url": &site_url,
@@ -575,7 +583,7 @@ pub(crate) fn page(
         "og_type": "website",
         "og_updated": og_updated.map(|t| format!("{}+00:00", t.replace(' ', "T"))).unwrap_or_default(),
         "body_class": body_class,
-        "tax_label": tax_label(&term.taxonomy, es),
+        "tax_label": tax_label(&term.taxonomy, lang),
         "banner": &banner,
         "description": description,
         "tours": cards,
@@ -609,7 +617,7 @@ pub(crate) fn page(
     };
     let title_wrap = format!(
         "<div class=\"traveltour-page-title-wrap  traveltour-style-large traveltour-center-align\"{bg_attr} ><div class=\"traveltour-header-transparent-substitute\" ></div><div class=\"traveltour-page-title-overlay\"  ></div><div class=\"traveltour-page-title-container traveltour-container\" ><div class=\"traveltour-page-title-content traveltour-item-pdlr\"  ><h3 class=\"traveltour-page-caption\"  >{}</h3><h1 class=\"traveltour-page-title\"  >{}</h1></div></div></div>",
-        esc(&tax_label(&term.taxonomy, es)),
+        esc(&tax_label(&term.taxonomy, lang)),
         esc(&term.name)
     );
     if let Some(p) = html.find(WRAPPER) {

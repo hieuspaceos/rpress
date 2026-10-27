@@ -57,12 +57,6 @@ fn role_label(role: &str) -> &'static str {
     }
 }
 
-fn urlenc(s: &str) -> String {
-    s.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || "-_.".contains(c) { c.to_string() } else { format!("%{:02X}", c as u32) })
-        .collect()
-}
-
 /// `?msg=` → WP `.notice` blocks. `n`/`skipped` feed the count texts.
 fn notice_html(msg: &str, n: i64, skipped: i64) -> String {
     let mut out = String::new();
@@ -1038,10 +1032,10 @@ pub(crate) async fn users_delete_page(
 <fieldset>
 <p><legend>What should be done with content owned by these users?</legend></p>
 <ul>
-<li><label><input type="radio" id="delete_option0" name="delete_option" value="delete" checked="checked"> Delete all content.</label></li>
+<li><label><input type="radio" id="delete_option0" name="delete_option" value="keep" checked="checked"> Keep all content.</label></li>
 <li><label for="delete_option1"><input type="radio" id="delete_option1" name="delete_option" value="reassign" disabled="disabled"> Attribute all content to: </label>
 <select name="reassign_user" id="reassign_user" disabled="disabled"><option value="">—</option></select>
-<p class="description">Attribution is unavailable — posts have no owner column.</p></li>
+<p class="description">Posts keep their author meta; attribution is unavailable — posts have no owner column. Only the account, its sessions, and its application passwords are removed.</p></li>
 </ul></fieldset>
 <input type="submit" name="submit" class="button button-primary" value="Confirm Deletion">
 </form>
@@ -1064,7 +1058,7 @@ pub(crate) async fn users_delete(State(app): State<App>, headers: HeaderMap, For
     if let Err(r) = require_admin(&s) {
         return r.into_response();
     }
-    if map.get("csrf").map(|x| x.as_str()) != Some(s.csrf.as_str()) {
+    if !ct_eq(s.csrf.as_bytes(), map.get("csrf").map(|x| x.as_str()).unwrap_or("").as_bytes()) {
         return StatusCode::FORBIDDEN.into_response();
     }
     let ids = delete_ids(&map);
@@ -1092,7 +1086,11 @@ pub(crate) async fn users_delete(State(app): State<App>, headers: HeaderMap, For
                     admins_left -= 1;
                 }
                 let _ = udb::delete(&sc.db, id);
+                // H12: orphan cleanup — dead sessions can't rehydrate,
+                // dead app passwords can't keep authenticating.
                 let _ = udb::session_delete_user(&sc.db, id);
+                let _ = udb::app_pass_delete_user(&sc.db, id);
+                drop_sessions_for(&app, id, None);
                 deleted += 1;
             }
             _ => {}
@@ -1123,7 +1121,7 @@ pub(crate) async fn users_bulk(State(app): State<App>, headers: HeaderMap, Form(
     if let Err(r) = require_admin(&s) {
         return r.into_response();
     }
-    if map.get("csrf").map(|x| x.as_str()) != Some(s.csrf.as_str()) {
+    if !ct_eq(s.csrf.as_bytes(), map.get("csrf").map(|x| x.as_str()).unwrap_or("").as_bytes()) {
         return StatusCode::FORBIDDEN.into_response();
     }
     let back = back_target(&map, "/admin/users");
@@ -1213,7 +1211,7 @@ fn app_password() -> String {
 /// shows the cleartext once, then stores only SHA-256.
 pub(crate) async fn users_app_pass_add(State(app): State<App>, headers: HeaderMap, Form(f): Form<HashMap<String, String>>) -> Response {
     let Ok((s, sc)) = need_auth(&app, &headers) else { return Redirect::to("/admin/login").into_response(); };
-    if f.get("csrf").map(|x| x.as_str()) != Some(s.csrf.as_str()) { return StatusCode::FORBIDDEN.into_response(); }
+    if !ct_eq(s.csrf.as_bytes(), f.get("csrf").map(|x| x.as_str()).unwrap_or("").as_bytes()) { return StatusCode::FORBIDDEN.into_response(); }
     let user_id = f.get("user_id").and_then(|v| v.parse::<i64>().ok()).unwrap_or(0);
     if user_id != s.user_id && require_admin(&s).is_err() { return StatusCode::FORBIDDEN.into_response(); }
     let name = f.get("name").map(|v| v.trim()).filter(|v| !v.is_empty()).unwrap_or("Application Password");
@@ -1232,7 +1230,7 @@ pub(crate) async fn users_app_pass_add(State(app): State<App>, headers: HeaderMa
 /// POST `/admin/users/app-pass/revoke` — deletes one app password for a user.
 pub(crate) async fn users_app_pass_revoke(State(app): State<App>, headers: HeaderMap, Form(f): Form<HashMap<String, String>>) -> Response {
     let Ok((s, sc)) = need_auth(&app, &headers) else { return Redirect::to("/admin/login").into_response(); };
-    if f.get("csrf").map(|x| x.as_str()) != Some(s.csrf.as_str()) { return StatusCode::FORBIDDEN.into_response(); }
+    if !ct_eq(s.csrf.as_bytes(), f.get("csrf").map(|x| x.as_str()).unwrap_or("").as_bytes()) { return StatusCode::FORBIDDEN.into_response(); }
     let user_id = f.get("user_id").and_then(|v| v.parse::<i64>().ok()).unwrap_or(0);
     if user_id != s.user_id && require_admin(&s).is_err() { return StatusCode::FORBIDDEN.into_response(); }
     let id = f.get("id").and_then(|v| v.parse::<i64>().ok()).unwrap_or(0);

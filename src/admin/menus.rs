@@ -692,7 +692,7 @@ Open link in a new tab</label>",
 }
 
 fn csrf_ok(s: &Sess, map: &HashMap<String, String>) -> bool {
-    map.get("csrf").map(|x| x.as_str()) == Some(s.csrf.as_str())
+    ct_eq(s.csrf.as_bytes(), map.get("csrf").map(|x| x.as_str()).unwrap_or("").as_bytes())
 }
 
 /// `POST /admin/menus/create` — name → redirect to the new menu's edit view.
@@ -753,7 +753,7 @@ pub(crate) async fn menus_add(
     let pairs: Vec<(String, String)> =
         serde_urlencoded::from_bytes(body.as_bytes()).unwrap_or_default();
     let get = |k: &str| pairs.iter().find(|(x, _)| x == k).map(|(_, v)| v.clone());
-    if get("csrf").as_deref() != Some(s.csrf.as_str()) {
+    if !ct_eq(s.csrf.as_bytes(), get("csrf").as_deref().unwrap_or("").as_bytes()) {
         return StatusCode::FORBIDDEN.into_response();
     }
     let menu: i64 = get("menu").and_then(|v| v.parse().ok()).unwrap_or(0);

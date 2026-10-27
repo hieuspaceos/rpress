@@ -140,8 +140,7 @@ pub fn list(db: &Path, f: &Filter) -> Result<(Vec<CommentRow>, i64)> {
     let mut st = c.prepare(&sql)?;
     let rows = st
         .query_map(rusqlite::params_from_iter(args.iter()), row)?
-        .flatten()
-        .collect();
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok((rows, total))
 }
 
@@ -203,13 +202,18 @@ pub fn delete_permanent(db: &Path, id: i64) -> Result<()> {
 pub fn insert_reply(db: &Path, parent_id: i64, author: &str, email: &str, body: &str) -> Result<i64> {
     let mut c = crate::db::conn(db)?;
     let tx = c.transaction()?;
-    let next: i64 = tx.query_row(sql!("intake__select_coalesce_max_3"), [], |r| r.get(0))?;
-    tx.execute(
+    // INSERT…SELECT writes nothing when the parent vanished; require one row
+    // so last_insert_rowid() can't return a stale id.
+    if tx.execute(
         sql!("comments__insert_reply"),
-        params![next, parent_id, author, email, body],
-    )?;
+        params![parent_id, author, email, body],
+    )? != 1
+    {
+        anyhow::bail!("parent comment {parent_id} not found");
+    }
+    let new_id = tx.last_insert_rowid();
     tx.commit()?;
-    Ok(next)
+    Ok(new_id)
 }
 
 /// "Empty Spam"/"Empty Trash": hard-deletes every row in `status` after
@@ -218,8 +222,9 @@ pub fn insert_reply(db: &Path, parent_id: i64, author: &str, email: &str, body: 
 pub fn empty_status(db: &Path, status: &str) -> Result<u64> {
     let mut c = crate::db::conn(db)?;
     let tx = c.transaction()?;
-    // Re-parent until no row references a victim (parents may chain-delete).
-    while tx.execute(sql!("comments__reparent_orphans"), [status])? > 0 {}
+    // Re-parent until no row references a victim (parents may chain-delete);
+    // cyclic chains bail to force-NULL inside the helper after 1000 passes.
+    reparent_orphans(&tx, "status=?1", [status])?;
     let n = tx.execute(sql!("comments__empty_status"), [status])?;
     tx.commit()?;
     Ok(n as u64)

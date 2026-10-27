@@ -5,9 +5,26 @@
 use anyhow::{bail, Context, Result};
 use serde_json::{Map, Value};
 
+/// `Vec::with_capacity` cap for declared array/object sizes — a hostile
+/// `a:999999999:` must fail cleanly, not abort on a ~GB allocation. Small
+/// (4096): declared counts multiply across nesting levels; Vec grows anyway.
+const MAX_PREALLOC: usize = 4_096;
+
+/// Recursion cap — `a:`/`O:` nest via `value()`; crafted deep input would
+/// overflow the stack before any length check fires. 256 (not 512): the
+/// `value_inner` frame is large enough that 512 live frames overflow the
+/// default 2 MiB test-thread stack.
+const MAX_DEPTH: usize = 256;
+
 pub fn unserialize(input: &[u8]) -> Result<Value> {
-    let mut p = Parser { b: input, i: 0 };
+    let mut p = Parser { b: input, i: 0, depth: 0 };
     let v = p.value()?;
+    // Anything past (or overrun beyond) the top-level value is malformed
+    // input, not a second document — trailing ASCII whitespace is tolerated
+    // (meta blobs written with a final newline still parse).
+    if p.i > p.b.len() || p.b[p.i..].iter().any(|b| !b.is_ascii_whitespace()) {
+        bail!("serialized value does not consume the input exactly");
+    }
     Ok(v)
 }
 
@@ -72,6 +89,7 @@ fn write_value(out: &mut Vec<u8>, v: &Value) {
 struct Parser<'a> {
     b: &'a [u8],
     i: usize,
+    depth: usize,
 }
 
 impl<'a> Parser<'a> {
@@ -95,6 +113,15 @@ impl<'a> Parser<'a> {
         self.i += 1; // skip end
         s.parse().with_context(|| format!("bad number '{}'", s))
     }
+    /// Declared element/byte count: negative values were silently widened
+    /// to `usize::MAX` (alloc abort / slice-overflow panic) — bail instead.
+    fn count_until(&mut self, end: u8) -> Result<usize> {
+        let n = self.num_until(end)?;
+        if n < 0 {
+            bail!("negative declared length {n} at byte {}", self.i);
+        }
+        Ok(n as usize)
+    }
     fn float_until(&mut self, end: u8) -> Result<f64> {
         let start = self.i;
         while self.i < self.b.len() && self.b[self.i] != end {
@@ -111,6 +138,16 @@ impl<'a> Parser<'a> {
     }
 
     fn value(&mut self) -> Result<Value> {
+        self.depth += 1;
+        if self.depth > MAX_DEPTH {
+            bail!("nesting deeper than {MAX_DEPTH}");
+        }
+        let v = self.value_inner();
+        self.depth -= 1;
+        v
+    }
+
+    fn value_inner(&mut self) -> Result<Value> {
         match self.peek()? {
             b'N' => {
                 self.i += 2;
@@ -132,19 +169,20 @@ impl<'a> Parser<'a> {
             }
             b's' => {
                 self.i += 2;
-                let len = self.num_until(b':')? as usize;
+                let len = self.count_until(b':')?;
                 self.eat(b'"')?;
-                let raw = self.b.get(self.i..self.i + len).context("string overruns input")?;
-                self.i += len;
+                let end = self.i.checked_add(len).context("string length overflow")?;
+                let raw = self.b.get(self.i..end).context("string overruns input")?;
+                self.i = end;
                 self.eat(b'"')?;
                 self.eat(b';')?;
                 Ok(Value::String(String::from_utf8_lossy(raw).into_owned()))
             }
             b'a' => {
                 self.i += 2;
-                let n = self.num_until(b':')?;
+                let n = self.count_until(b':')? as i64;
                 self.eat(b'{')?;
-                let mut seq: Vec<Value> = Vec::with_capacity(n as usize);
+                let mut seq: Vec<Value> = Vec::with_capacity((n as usize).min(MAX_PREALLOC));
                 let mut map: Map<String, Value> = Map::new();
                 let mut is_seq = true;
                 for k in 0..n {
@@ -178,16 +216,17 @@ impl<'a> Parser<'a> {
             }
             b'O' => {
                 self.i += 2;
-                let nlen = self.num_until(b':')? as usize;
+                let nlen = self.count_until(b':')?;
                 self.eat(b'"')?;
+                let end = self.i.checked_add(nlen).context("class name length overflow")?;
                 let name = String::from_utf8_lossy(
-                    self.b.get(self.i..self.i + nlen).context("class name overruns")?,
+                    self.b.get(self.i..end).context("class name overruns")?,
                 )
                 .into_owned();
-                self.i += nlen;
+                self.i = end;
                 self.eat(b'"')?;
                 self.eat(b':')?;
-                let n = self.num_until(b':')?;
+                let n = self.count_until(b':')? as i64;
                 self.eat(b'{')?;
                 let mut map: Map<String, Value> = Map::new();
                 map.insert("__class".into(), Value::String(name));
@@ -214,5 +253,57 @@ impl<'a> Parser<'a> {
             }
             c => bail!("unexpected type byte '{}' at {}", c as char, self.i),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn negative_lengths_error_not_abort() {
+        for bad in [b"a:-1:{".as_slice(), b"O:-1:\"X\":0:{}".as_slice(), b"s:-1:\"\"".as_slice(), b"a:2:{i:-1;i:0;".as_slice()] {
+            assert!(unserialize(bad).is_err(), "{bad:?} must error");
+        }
+    }
+
+    #[test]
+    fn trailing_bytes_error() {
+        assert!(unserialize(b"i:1;junk").is_err());
+        assert!(unserialize(b"N;junk").is_err());
+        assert!(unserialize(b"N").is_err(), "overrun must error");
+        assert!(unserialize(b"N;").is_ok(), "exact input still parses");
+        assert!(unserialize(b"N;\n").is_ok(), "trailing whitespace tolerated");
+        assert!(unserialize(b"i:42; \r\n").is_ok());
+    }
+
+    #[test]
+    fn huge_declared_len_errors_cleanly() {
+        assert!(unserialize(b"a:999999999:{").is_err());
+        assert!(unserialize(b"s:999999999:\"x".as_slice()).is_err());
+    }
+
+    #[test]
+    fn happy_paths_unchanged() {
+        assert_eq!(unserialize(b"i:42;").unwrap(), Value::from(42));
+        assert_eq!(unserialize(b"a:2:{i:0;s:1:\"a\";i:1;s:1:\"b\";}").unwrap(),
+                   serde_json::json!(["a", "b"]));
+    }
+
+    #[test]
+    fn deep_nesting_bails() {
+        // Nesting via values: `a:1:{i:0;<inner>}`. 600 deep must error
+        // (MAX_DEPTH=512), not overflow the stack.
+        let mut blob = Vec::new();
+        for _ in 0..300 { blob.extend_from_slice(b"a:1:{i:0;"); }
+        blob.extend_from_slice(b"i:7;");
+        for _ in 0..600 { blob.push(b'}'); }
+        assert!(unserialize(&blob).is_err(), "deep input must bail at MAX_DEPTH");
+        // Shallow sane input still parses.
+        let mut ok = Vec::new();
+        for _ in 0..100 { ok.extend_from_slice(b"a:1:{i:0;"); }
+        ok.extend_from_slice(b"i:7;");
+        for _ in 0..100 { ok.push(b'}'); }
+        assert!(unserialize(&ok).is_ok());
     }
 }

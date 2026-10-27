@@ -228,6 +228,7 @@ CREATE TABLE IF NOT EXISTS sessions(
   user_id    INTEGER NOT NULL,
   ua         TEXT NOT NULL,
   ip         TEXT NOT NULL,
+  csrf       TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   last_seen  TEXT NOT NULL,
   expires_at INTEGER NOT NULL DEFAULT 0
@@ -254,7 +255,21 @@ CREATE TABLE IF NOT EXISTS widgets(
 );
 CREATE INDEX IF NOT EXISTS idx_widgets_sidebar ON widgets(sidebar_id, ord);
 CREATE INDEX IF NOT EXISTS idx_post_meta_key ON post_meta(meta_key);
+-- post_meta got a (post_id, meta_key) uniqueness rule (audit M18): readers
+-- do `LIMIT 1` per key, so dup rows were dead weight with an arbitrary
+-- winner. Existing dbs are deduped in `dedupe_post_meta` BEFORE this DDL
+-- runs — the keeper is MIN(rowid), the most likely old LIMIT-1 winner
+-- (rowids are assigned in insert order). Behavior change: later insert
+-- attempts for an existing (post_id, meta_key) are now ignored/error.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_post_meta_pair ON post_meta(post_id, meta_key);
+-- Lookup indexes (audit M18): comment threads per post / parent chain,
+-- revision lists per post, and the kind+status admin/front filters.
+CREATE INDEX IF NOT EXISTS idx_comments_post ON comments(post_id);
+CREATE INDEX IF NOT EXISTS idx_comments_parent ON comments(parent_id);
+CREATE INDEX IF NOT EXISTS idx_revisions_post ON revisions(post_id);
+CREATE INDEX IF NOT EXISTS idx_posts_kind_status_lang ON posts(kind, status, lang);
 "#;
+
 
 /// Columns added after the initial DDL — `ALTER TABLE` migrations applied on
 /// every `serve` startup (and import) so existing `.db` files upgrade in
@@ -277,6 +292,7 @@ const MIGRATIONS: &[(&str, &str, &str)] = &[
     ("menu_items", "description", "TEXT NOT NULL DEFAULT ''"),
     ("menus", "auto_add", "INTEGER NOT NULL DEFAULT 0"),
     ("sessions", "expires_at", "INTEGER NOT NULL DEFAULT 0"),
+    ("sessions", "csrf", "TEXT NOT NULL DEFAULT ''"),
 ];
 
 /// Seed the `forms` table from `intake::FORM_SLUGS` on first run — only when
@@ -323,8 +339,48 @@ fn seed_forms(c: &rusqlite::Connection) -> anyhow::Result<()> {
     }
     Ok(())
 }
+/// Pre-DDL cleanup hook: `post_meta` predates the (post_id, meta_key)
+/// unique index, so existing dbs may hold dup rows that would make
+/// `CREATE UNIQUE INDEX` fail. Dedupes BEFORE `execute_batch(DDL)` runs.
+/// Keeper: MIN(rowid) — readers do `LIMIT 1` with no ORDER BY and SQLite's
+/// rowid-scan winner is the earliest row, so this preserves whatever value
+/// pages most likely rendered before (documented behavior change).
+fn dedupe_post_meta(c: &rusqlite::Connection) -> anyhow::Result<()> {
+    let exists: bool = c
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='post_meta'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|n| n > 0)
+        .unwrap_or(false);
+    if !exists {
+        return Ok(());
+    }
+    // Keeper per (post_id, meta_key) group = the row every `LIMIT 1` reader
+    // already serves: the covering index sqlite_autoindex_post_meta_1
+    // (post_id, meta_key, meta_value) returns MIN(meta_value); MIN(rowid)
+    // breaks ties. Verified on work/*.db copies: 65/100 groups disagreed
+    // with a plain MIN(rowid) keeper, 0/100 with this one.
+    let n = c.execute(
+        "DELETE FROM post_meta WHERE rowid IN (\
+            SELECT rowid FROM (\
+                SELECT rowid, ROW_NUMBER() OVER (\
+                    PARTITION BY post_id, meta_key \
+                    ORDER BY meta_value IS NOT NULL, meta_value, rowid) rn \
+                FROM post_meta) \
+            WHERE rn > 1)",
+        [],
+    )?;
+    if n > 0 {
+        eprintln!("migrate: deduped {n} post_meta row(s) before unique index");
+    }
+    Ok(())
+}
+
 /// Apply DDL + additive migrations on an open connection.
 pub fn migrate_conn(c: &rusqlite::Connection) -> anyhow::Result<()> {
+    dedupe_post_meta(c)?;
     c.execute_batch(DDL)?;
     for (table, col, ddl) in MIGRATIONS {
         let exists: bool = c
@@ -391,4 +447,71 @@ fn backfill_body_html(c: &rusqlite::Connection) {
 /// Run migrations on `db`. Safe on fresh and existing files.
 pub fn migrate(db: &std::path::Path) -> anyhow::Result<()> {
     migrate_conn(&crate::db::conn(db)?)
+}
+
+#[cfg(test)]
+mod tests {
+    /// Simulates a pre-M18 `.db`: post_meta WITHOUT the unique index but
+    /// WITH dup (post_id, meta_key) rows — `migrate_conn` must dedupe them
+    /// before the DDL's CREATE UNIQUE INDEX would otherwise fail.
+    #[test]
+    fn migrate_dedupes_post_meta_and_indexes() {
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        // Old-shape table: PK includes meta_value, so dups per key exist.
+        c.execute_batch(
+            "CREATE TABLE post_meta(post_id INTEGER, meta_key TEXT, meta_value TEXT,
+                PRIMARY KEY(post_id, meta_key, meta_value));
+             -- 'zzz' has the SMALLER rowid but the LARGER meta_value: the
+             -- covering index serves 'aaa' to LIMIT-1 readers, so 'aaa'
+             -- must be the keeper (not MIN(rowid)).
+             INSERT INTO post_meta VALUES(7,'a','zzz'),(7,'a','aaa'),(7,'b','x'),(8,'a','y');",
+        )
+        .unwrap();
+        super::migrate_conn(&c).unwrap();
+        let rows: Vec<(i64, String, String)> = c
+            .prepare("SELECT post_id, meta_key, meta_value FROM post_meta ORDER BY post_id, meta_key")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        // MIN(meta_value) keeper: 'aaa' survives, not first-inserted 'zzz'.
+        assert_eq!(
+            rows,
+            vec![
+                (7, "a".to_string(), "aaa".to_string()),
+                (7, "b".to_string(), "x".to_string()),
+                (8, "a".to_string(), "y".to_string()),
+            ]
+        );
+        // Unique index landed and now rejects a fresh dup pair.
+        assert!(
+            c.execute("INSERT INTO post_meta VALUES(7,'a','third')", [])
+                .is_err(),
+            "unique index must reject dup (post_id, meta_key)"
+        );
+        // Second migrate is a clean no-op.
+        super::migrate_conn(&c).unwrap();
+    }
+
+    /// `sessions.csrf` exists on both fresh DDL and migrated legacy tables.
+    #[test]
+    fn sessions_csrf_column_added() {
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE sessions(token TEXT PRIMARY KEY, user_id INTEGER NOT NULL,
+                ua TEXT NOT NULL, ip TEXT NOT NULL, created_at TEXT NOT NULL,
+                last_seen TEXT NOT NULL, expires_at INTEGER NOT NULL DEFAULT 0);",
+        )
+        .unwrap();
+        super::migrate_conn(&c).unwrap();
+        let cols: Vec<String> = c
+            .prepare("PRAGMA table_info(sessions)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert!(cols.iter().any(|n| n == "csrf"), "csrf column missing: {cols:?}");
+    }
 }

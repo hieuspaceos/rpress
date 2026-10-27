@@ -558,7 +558,7 @@ pub(crate) async fn bulk_posts(State(app): State<App>, headers: HeaderMap, Form(
     let Ok((s, sc)) = need_auth(&app, &headers) else {
         return Redirect::to("/admin/login").into_response();
     };
-    if map.get("csrf").map(|x| x.as_str()) != Some(s.csrf.as_str()) {
+    if !ct_eq(s.csrf.as_bytes(), map.get("csrf").map(|x| x.as_str()).unwrap_or("").as_bytes()) {
         return StatusCode::FORBIDDEN.into_response();
     }
     let mut ids: Vec<i64> = Vec::new();
@@ -572,30 +572,39 @@ pub(crate) async fn bulk_posts(State(app): State<App>, headers: HeaderMap, Form(
     }
     ids.sort_unstable();
     ids.dedup();
-    match map.get("action").map(|a| a.as_str()) {
-        Some("trash") => {
-            for id in &ids {
-                let _ = crud::set_post_status(&sc.db, *id, "trash");
+    // Bulk loops are the heaviest admin writes (status flips + term
+    // assignments × N posts) — keep them off the tokio worker (H14).
+    // regen/bust calls inside already manage their own blocking work.
+    let action = map.get("action").cloned();
+    {
+        let sc = sc.clone();
+        let ids = ids.clone();
+        let (bstatus, bcats, btags) = (
+            map.get("bstatus").cloned().unwrap_or_default(),
+            map.keys().filter_map(|k| k.strip_prefix("bcat-").map(|x| x.to_string())).collect::<Vec<String>>(),
+            map.get("btags")
+                .map(|t| t.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect::<Vec<String>>())
+                .unwrap_or_default(),
+        );
+        let _ = tokio::task::spawn_blocking(move || {
+            match action.as_deref() {
+                Some("trash") => {
+                    for id in &ids {
+                        let _ = crud::set_post_status(&sc.db, *id, "trash");
+                    }
+                    admin::regen_posts(&sc, &ids);
+                }
+                Some("edit") => {
+                    for id in &ids {
+                        let _ = crud::bulk_apply(&sc.db, *id, &bstatus, &bcats, &btags);
+                    }
+                    admin::regen_posts(&sc, &ids);
+                    admin::bust_cache(&sc); // taxonomy assignments hit archive pages too
+                }
+                _ => {}
             }
-            admin::regen_posts(&sc, &ids);
-        }
-        Some("edit") => {
-            let bstatus = map.get("bstatus").cloned().unwrap_or_default();
-            let bcats: Vec<String> = map
-                .keys()
-                .filter_map(|k| k.strip_prefix("bcat-").map(|x| x.to_string()))
-                .collect();
-            let btags: Vec<String> = map
-                .get("btags")
-                .map(|t| t.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect())
-                .unwrap_or_default();
-            for id in &ids {
-                let _ = crud::bulk_apply(&sc.db, *id, &bstatus, &bcats, &btags);
-            }
-            admin::regen_posts(&sc, &ids);
-            admin::bust_cache(&sc); // taxonomy assignments hit archive pages too
-        }
-        _ => {}
+        })
+        .await;
     }
     // Bulk bar is shared by posts/pages/tours — return to the list it ran on.
     let back = map
@@ -655,7 +664,7 @@ pub(crate) async fn posts_empty(
     let Ok((s, sc)) = need_auth(&app, &headers) else {
         return Redirect::to("/admin/login").into_response();
     };
-    if f.get("csrf").map(|x| x.as_str()) != Some(s.csrf.as_str()) {
+    if !ct_eq(s.csrf.as_bytes(), f.get("csrf").map(|x| x.as_str()).unwrap_or("").as_bytes()) {
         return StatusCode::FORBIDDEN.into_response();
     }
     let kind = q
@@ -1527,7 +1536,11 @@ pub(crate) async fn save_tour_option(
         if kind != "tour" {
             return Err("not a tour".into());
         }
-        plugins::tourmaster::save::save(&c, f.post_id, &pf).map_err(|e| e.to_string())
+        // tx wrap: the plugin save writes several tour-meta rows — a failure
+        // mid-save must roll back, not leave a half-updated option blob.
+        let tx = c.unchecked_transaction().map_err(|e| e.to_string())?;
+        plugins::tourmaster::save::save(&tx, f.post_id, &pf).map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())
     })();
     let out = match out {
         Ok(()) => serde_json::json!({"status":"success","head":"Successfully Save","message":""}),

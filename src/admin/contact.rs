@@ -89,11 +89,6 @@ fn date_ok(s: &str) -> String {
     if ok { s.to_string() } else { String::new() }
 }
 
-fn urlenc(s: &str) -> String {
-    s.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || "-_.".contains(c) { c.to_string() } else { format!("%{:02X}", c as u32) })
-        .collect()
-}
 
 /// Sorted `k=v&…` query string of the current request minus `msg`.
 fn qs_pairs(q: &HashMap<String, String>) -> String {
@@ -288,7 +283,7 @@ pub(crate) async fn form_delete(
     let Ok((s, sc)) = need_auth(&app, &headers) else {
         return Redirect::to("/admin/login").into_response();
     };
-    if f.get("csrf").map(|v| v.as_str()) != Some(s.csrf.as_str()) {
+    if !ct_eq(s.csrf.as_bytes(), f.get("csrf").map(|x| x.as_str()).unwrap_or("").as_bytes()) {
         return StatusCode::FORBIDDEN.into_response();
     }
     let slug = f.get("slug").cloned().unwrap_or_default();

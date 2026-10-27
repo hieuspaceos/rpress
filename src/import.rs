@@ -304,6 +304,7 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
     let mut stmt_post = tx.prepare(
         sql!("import__insert_into_posts_2"),
     )?;
+    let mut dropped_meta: u64 = 0;
     let mut stmt_meta = tx.prepare(
         sql!("import__insert_or_ignore_3"),
     )?;
@@ -411,7 +412,12 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
                 }
                 for (k, vals) in &p.meta {
                     for mv in vals {
-                        stmt_meta.execute(params![p.id, k, mv])?;
+                        // OR IGNORE + the (post_id,meta_key) unique index:
+                        // extra values for one key silently drop — count
+                        // them so the loss is visible in the report.
+                        if stmt_meta.execute(params![p.id, k, mv])? == 0 {
+                            dropped_meta += 1;
+                        }
                     }
                 }
             }
@@ -684,6 +690,13 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
     ));
     tx.commit()?;
 
+    if dropped_meta > 0 {
+        rep.log(format!(
+            "post_meta: {dropped_meta} value(s) dropped — the (post_id,meta_key) \
+             unique index collapses WP multi-value metas to one row \
+             (readers all take LIMIT 1). See CMS-OPERATIONS.md."
+        ));
+    }
     rep.log(format!("skipped rows: {}", rep.skipped));
     rep.log(format!("unserialize errors: {}", rep.unser_errors));
     rep.log(format!("unparsed bodies: {}", rep.unparsed));

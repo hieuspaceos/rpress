@@ -81,3 +81,34 @@ pub(crate) fn attach_term(tx: &Connection, post_id: i64, tax: &str, slug: &str, 
     )?;
     Ok(())
 }
+
+/// Re-parent children of comments matched by `victim_pred` (a constant SQL
+/// predicate on `comments.id`, e.g. `"status=?1"` or `"status='trash' AND
+/// created_at < …"`) up to their grandparent — `wp_delete_comment` orphans
+/// semantics. Self-parented rows are skipped (they'd reparent to their own
+/// parent forever); a cyclic parent chain can still spin a normal chain
+/// forever, so passes are capped at 1000 and remaining rows are force-NULLed.
+/// Runs on the caller's transaction.
+pub(crate) fn reparent_orphans(
+    tx: &Connection,
+    victim_pred: &str,
+    p: impl rusqlite::Params + Copy,
+) -> Result<()> {
+    let reparent = format!(
+        "UPDATE comments SET parent_id = (SELECT c2.parent_id FROM comments c2 WHERE c2.id = comments.parent_id) \
+         WHERE comments.id != comments.parent_id AND comments.parent_id IN (SELECT id FROM comments WHERE {victim_pred})"
+    );
+    for _ in 0..1000 {
+        if tx.execute(&reparent, p)? == 0 {
+            return Ok(());
+        }
+    }
+    // Cycle: grandchildren in a parent loop can never escape the victim set.
+    // Also NULL self-parented rows — a reparent pass can CREATE id==parent_id
+    // rows the main loop's self-guard then excludes forever.
+    tx.execute(
+        &format!("UPDATE comments SET parent_id = NULL WHERE comments.parent_id IN (SELECT id FROM comments WHERE {victim_pred}) OR comments.parent_id = comments.id"),
+        p,
+    )?;
+    Ok(())
+}

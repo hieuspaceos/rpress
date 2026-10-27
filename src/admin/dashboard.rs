@@ -1,13 +1,12 @@
-// WP `index.php` dashboard parity, included into `auth.rs` via `include!`
-// (promote to `mod dashboard;` in `mod.rs` when the router can name
-// `dashboard::` handlers directly — the routes below then move from
-// `auth::` to `dashboard::`).
+//! WP `index.php` dashboard parity as a real module (`mod dashboard;`).
 //
 // Widgets: At a Glance, Activity, Quick Draft, Site Health Status +
 // Screen Options (per-widget toggles, 1–4 column layout) persisted as
 // JSON in `settings.dashboard_{user_id}`.
 
 use std::time::{SystemTime, UNIX_EPOCH};
+#[allow(unused_imports)]
+use crate::sql;
 #[allow(unused_imports)]
 use super::*;
 
@@ -441,7 +440,7 @@ pub(crate) async fn save_draft(
     let Ok((s, sc)) = need_auth(&app, &headers) else {
         return Redirect::to("/admin/login").into_response();
     };
-    if f.get("csrf").map(|x| x.as_str()) != Some(s.csrf.as_str()) {
+    if !ct_eq(s.csrf.as_bytes(), f.get("csrf").map(|x| x.as_str()).unwrap_or("").as_bytes()) {
         return StatusCode::FORBIDDEN.into_response();
     }
     let title = f.get("title").cloned().unwrap_or_default();
@@ -462,7 +461,7 @@ pub(crate) async fn screen_options_save(
     let Ok((s, sc)) = need_auth(&app, &headers) else {
         return Redirect::to("/admin/login").into_response();
     };
-    if f.get("csrf").map(|x| x.as_str()) != Some(s.csrf.as_str()) {
+    if !ct_eq(s.csrf.as_bytes(), f.get("csrf").map(|x| x.as_str()).unwrap_or("").as_bytes()) {
         return StatusCode::FORBIDDEN.into_response();
     }
     let columns = f
