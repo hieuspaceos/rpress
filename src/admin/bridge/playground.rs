@@ -1,6 +1,7 @@
 //! `@wp-playground/cli` runtime — MVP `PhpRuntime` impl.
 //!
-//! Spawn: `npx --yes @wp-playground/cli server --port <free>` with
+//! Spawn: `wp-playground-cli server --port <free>` (resolved from the
+//! npx cache — see `cli_bin` — so no `npm exec` wrapper lingers) with
 //! `wordpressOnBoot` pointing at a bootstrap dir containing the
 //! sqlite-database-integration drop-in + our mu-plugin. wp.db lives at
 //! `www/bridge/<slug>/wp.db` — disposable, re-projected each spawn.
@@ -116,8 +117,6 @@ pub(crate) fn spawn(
     // Tokens land as PHP constants via `--define`: process env does NOT
     // propagate into PHP-WASM.
     let mut args: Vec<String> = vec![
-        "--yes".into(),
-        "@wp-playground/cli".into(),
         "server".into(),
         "--port".into(),
         port.to_string(),
@@ -204,12 +203,12 @@ pub(crate) fn spawn(
         args.push("--mount".into());
         args.push(format!("{}:{dst}", src.display()));
     }
-    let child = Command::new("npx")
+    let child = Command::new(cli_bin())
         .args(&args)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .context("spawn @wp-playground/cli — is Node/npx installed?")?;
+        .context("spawn @wp-playground/cli — is Node installed?")?;
 
     // Wait for the HTTP surface (cold WASM boot ~1-3s; allow 30s).
     let deadline = Instant::now() + std::time::Duration::from_secs(30);
@@ -354,8 +353,10 @@ fn option_from_dump(dump: Option<&Path>, key: &str) -> Option<String> {
         return None;
     }
     let want = key.to_string();
+    let prefix = crate::sqldump::detect_prefix(dump).unwrap_or_else(|_| "wp_".into());
+    let opt_table = format!("{prefix}options");
     let mut out = None;
-    let _ = crate::sqldump::rows(dump, &["wp_options"], |_, v| {
+    let _ = crate::sqldump::rows(dump, &[opt_table.as_str()], |_, v| {
         if v.len() > 2 && v[1].to_string_lossy().as_deref() == Some(want.as_str()) {
             out = v[2].to_string_lossy();
         }
@@ -383,4 +384,51 @@ mod tests2 {
         assert_eq!(option_from_dump(Some(&dir.join("missing.sql")), "x"), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+/// Resolve the `wp-playground-cli` executable once per process. The npx
+/// cache already holds it after any prior spawn — invoking the shim
+/// directly (shebang `#!/usr/bin/env node`) skips the ~50 MB `npm exec`
+/// wrapper per bridge and npx's resolve pass. Order: npx cache glob →
+/// `node_modules/.bin` under `npm root -g` → PATH.
+fn cli_bin() -> PathBuf {
+    use std::sync::OnceLock;
+    static BIN: OnceLock<PathBuf> = OnceLock::new();
+    BIN.get_or_init(|| {
+        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+        let cache = home.join(".npm/_npx");
+        let mut hits: Vec<PathBuf> = Vec::new();
+        if let Ok(rd) = std::fs::read_dir(&cache) {
+            for e in rd.flatten() {
+                let p = e.path().join("node_modules/.bin/wp-playground-cli");
+                if p.exists() {
+                    hits.push(p);
+                }
+            }
+        }
+        /* Multiple npx caches → take the freshest install (version bumps
+           rotate the cache-hash dir). */
+        hits.sort_by_key(|p| {
+            p.metadata()
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+        });
+        if let Some(p) = hits.pop() {
+            return p;
+        }
+        /* Global npm install — `npm root -g` gives its node_modules. */
+        if let Ok(o) = Command::new("npm").args(["root", "-g"]).output() {
+            let root = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if !root.is_empty() {
+                let p = PathBuf::from(root).join(".bin/wp-playground-cli");
+                if p.exists() {
+                    return p;
+                }
+            }
+        }
+        /* PATH last — `Command::new` does the lookup; a bare name still
+           produces a clear ENOENT context if nothing installed it. */
+        PathBuf::from("wp-playground-cli")
+    })
+    .clone()
 }

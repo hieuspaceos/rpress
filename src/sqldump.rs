@@ -623,3 +623,51 @@ where
     }
     Ok(())
 }
+
+/// Detect the dump's table prefix: first `INSERT INTO `<p>posts`` (or the
+/// CREATE TABLE for it). Falls back to `wp_` when nothing turns up —
+/// a posts-less dump imports empty either way.
+pub fn detect_prefix(path: &Path) -> Result<String> {
+    let file = File::open(path).with_context(|| format!("open {}", path.display()))?;
+    let mut peek = BufReader::with_capacity(1024 * 1024, file);
+    let gz = peek
+        .fill_buf()
+        .map(|b| b.starts_with(&[0x1f, 0x8b]))
+        .unwrap_or(false);
+    let mut rdr: Box<dyn BufRead> = if gz {
+        Box::new(BufReader::new(flate2::read::MultiGzDecoder::new(peek)))
+    } else {
+        Box::new(peek)
+    };
+    /* Collect table names first — plugin tables can end in `posts`
+       (`wp_42426_pmxe_posts`) and sort BEFORE the core table, so a
+       first-match prefix is wrong. The real posts prefix also owns
+       `<p>postmeta`. */
+    let mut names: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut line = Vec::with_capacity(1024 * 1024);
+    while rdr.read_until(b'\n', &mut line)? > 0 {
+        let s = String::from_utf8_lossy(&line);
+        for kw in ["INSERT INTO `", "CREATE TABLE `", "INSERT INTO ", "CREATE TABLE "] {
+            if let Some(i) = s.find(kw) {
+                let name: String = s[i + kw.len()..]
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$')
+                    .collect();
+                if !name.is_empty() {
+                    names.insert(name);
+                }
+                break;
+            }
+        }
+        line.clear();
+    }
+    let mut candidates: Vec<String> = names
+        .iter()
+        .filter_map(|n| n.strip_suffix("posts").map(|p| p.to_string()))
+        .filter(|p| !p.is_empty() && names.contains(&format!("{p}postmeta")))
+        .collect();
+    /* Prefer the shortest prefix — `wp_` over `wp_42426_` over plugin-y
+       longer ones when several satisfy the pair check. */
+    candidates.sort_by_key(|p| p.len());
+    Ok(candidates.into_iter().next().unwrap_or_else(|| "wp_".to_string()))
+}

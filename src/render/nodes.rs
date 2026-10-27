@@ -788,19 +788,24 @@ fn render_node(
         "elements/fallback.html".into()
     };
     let opts_v = JVal::from_serialize(&opts);
-    env.get_template(&tpl_file)?
-        .render(context! {
-            opts => opts_v,
-            children => children,
-            type => typ,
-            column => column,
-            site => site.clone(),
-            site_url => site_url,
-            lang => lang,
-            pdb => "40px",
-            post => post.clone(),
-            gallery_items => gallery_items,
-        })
+    let ctx = context! {
+        opts => opts_v.clone(),
+        children => children,
+        type => typ,
+        column => column,
+        site => site.clone(),
+        site_url => site_url,
+        lang => lang,
+        pdb => "40px",
+        post => post.clone(),
+        gallery_items => gallery_items.clone(),
+    };
+    /* A listed element whose template file is missing falls back instead
+       of failing the whole page — sites carry element types our template
+       set doesn't cover yet (social-share, timeline, …). */
+    env.get_template(&tpl_file)
+        .or_else(|_| env.get_template("elements/fallback.html"))?
+        .render(ctx)
         .map_err(|e| anyhow::anyhow!("element {typ}: {e}"))
 }
 

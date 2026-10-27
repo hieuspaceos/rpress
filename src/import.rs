@@ -57,6 +57,12 @@ impl Report {
 }
 
 pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
+    /* Table prefix varies (`wp_`, `wp_42426_`, …) — detect it once, then
+       ask `rows` for `<prefix><suffix>` but report canonical `wp_*` names
+       so all downstream matching stays prefix-free. */
+    let prefix = crate::sqldump::detect_prefix(dump)?;
+    let physical: Vec<String> = WANTED.iter().map(|t| format!("{prefix}{}", &t[3..])).collect();
+    let phys: Vec<&str> = physical.iter().map(|s| s.as_str()).collect();
     // ---- Pass 1: load dump into memory ------------------------------------
     let mut terms: HashMap<i64, (String, String)> = HashMap::new(); // term_id -> (name, slug)
     let mut ttax: HashMap<i64, (i64, String, String)> = HashMap::new(); // tt_id -> (term_id, taxonomy, description)
@@ -72,7 +78,19 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
 
     let mut rep = Report::default();
 
-    dump_rows(dump, WANTED, |table, v| {
+    dump_rows(dump, &phys, |table, v| {
+        /* canonicalize: `wp_42426_postmeta` → `wp_postmeta` */
+        let table: &str = match table.strip_prefix(prefix.as_str()) {
+            Some("posts") => "wp_posts",
+            Some("postmeta") => "wp_postmeta",
+            Some("terms") => "wp_terms",
+            Some("term_taxonomy") => "wp_term_taxonomy",
+            Some("term_relationships") => "wp_term_relationships",
+            Some("comments") => "wp_comments",
+            Some("commentmeta") => "wp_commentmeta",
+            Some("options") => "wp_options",
+            _ => table,
+        };
         match table {
             "wp_terms" => {
                 if let (Some(id), Some(name), Some(slug)) =
