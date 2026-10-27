@@ -1,8 +1,7 @@
 ---
 phase: 3
 title: "Import & dump correctness"
-status: pending
-priority: P1
+status: done
 effort: "6h"
 dependencies: []
 ---
@@ -92,14 +91,14 @@ uncommitted `import.rs` diff is completed and committed.
 
 ## Todo
 
-- [ ] Complete import_expect parity (posts/media/menu_items)
-- [ ] sqldump: unquoted INSERT + column lists + introducers + escapes
-- [ ] quote-aware multi-line statement completion
-- [ ] .sql.gz transparent decompress in import reader
-- [ ] choose() non-TTY bail
-- [ ] verify page_on_front conditional
-- [ ] menu-lang inference; post-ID dedupe
-- [ ] tests/sqldump.rs + import fixture test
+- [x] Complete import_expect parity (posts/media/menu_items)
+- [x] sqldump: unquoted INSERT + column lists + introducers + escapes
+- [x] quote-aware multi-line statement completion
+- [x] .sql.gz transparent decompress in import reader
+- [x] choose() non-TTY bail
+- [x] verify page_on_front conditional
+- [x] menu-lang inference; post-ID dedupe
+- [x] tests/sqldump.rs + import fixture test
 
 ## Risks
 

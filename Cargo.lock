@@ -973,6 +973,7 @@ dependencies = [
  "argon2",
  "axum",
  "clap",
+ "flate2",
  "image",
  "minijinja",
  "parking_lot",

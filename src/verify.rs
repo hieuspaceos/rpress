@@ -191,12 +191,12 @@ pub fn run(db: &Path) -> Result<()> {
                 if let Some(rest) = k.strip_prefix("posts:") {
                     let (kind, lang) = rest.rsplit_once(':').unwrap_or((rest, ""));
                     check(&c, &mut failed, &format!("{kind} {lang}"),
-                        &format!("SELECT COUNT(*) FROM posts WHERE kind='{kind}' AND lang='{lang}' AND status='publish'"), n);
+                        &format!("SELECT COUNT(*) FROM posts WHERE kind='{kind}' AND lang='{lang}' AND status IN ('publish','draft')"), n);
                 } else {
                     let (label, sql) = match k.as_str() {
                         "comments_total" => ("comments", "SELECT COUNT(*) FROM comments"),
-                        "menus" => ("menus", "SELECT COUNT(*) FROM menus"),
                         "menu_items" => ("menu_items", "SELECT COUNT(*) FROM menu_items"),
+                        "menus" => ("menus", "SELECT COUNT(*) FROM menus"),
                         "media" => ("media", "SELECT COUNT(*) FROM media"),
                         "translation_members" => ("translation members", "SELECT COUNT(*) FROM post_translation_members"),
                         _ => continue,
@@ -233,9 +233,17 @@ pub fn run(db: &Path) -> Result<()> {
         "SELECT COUNT(*) FROM posts p WHERE NOT EXISTS (
            SELECT 1 FROM settings s WHERE s.key='languages'
              AND (','||s.value||',') LIKE ('%,'||p.lang||',%'))", 0);
-    check(&c, &mut failed, "settings.page_on_front set",
-        "SELECT COUNT(*) FROM settings WHERE key='page_on_front' AND value != '0'", 1);
-
+    // page_on_front only matters when the front page is a static page —
+    // show_on_front='posts' (WP's default) legitimately leaves it unset/0.
+    let show_on_front: String = c
+        .query_row(sql!("render__select_value_from_settings"), rusqlite::params!["show_on_front"], |r| r.get(0))
+        .unwrap_or_else(|_| "posts".into());
+    if show_on_front == "page" {
+        check(&c, &mut failed, "settings.page_on_front set",
+            "SELECT COUNT(*) FROM settings WHERE key='page_on_front' AND value != '0'", 1);
+    } else {
+        println!("{:<44} {}", "settings.page_on_front set", "skipped (show_on_front=posts)");
+    }
     let seo: i64 = c.query_row(
         sql!("verify__select_cast_count"),
         [], |r| r.get(0)).unwrap_or(-1);

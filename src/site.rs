@@ -265,14 +265,19 @@ pub fn confirm(q: &str, default: bool) -> Result<bool> {
     })
 }
 
-/// Numbered menu; returns the picked index. Fails on empty list or bad input.
-pub fn choose(label: &str, items: &[String]) -> Result<usize> {
+/// Numbered menu; returns the picked index. Fails on empty list or bad
+/// input. Non-TTY with more than one option is never auto-picked — bail
+/// naming `flag_hint`, the flag that would have skipped this prompt.
+pub fn choose(label: &str, items: &[String], flag_hint: &str) -> Result<usize> {
     if items.is_empty() {
         bail!("{label}: nothing to choose from");
     }
     if items.len() == 1 {
         eprintln!("{label}: {} (only option)", items[0]);
         return Ok(0);
+    }
+    if !tty() {
+        bail!("{label}: {} options, non-interactive — pass --{flag_hint} to pick", items.len());
     }
     for (i, it) in items.iter().enumerate() {
         eprintln!("  {}) {}", i + 1, it);

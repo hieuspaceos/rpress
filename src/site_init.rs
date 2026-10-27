@@ -57,7 +57,7 @@ pub fn run(a: InitArgs) -> Result<()> {
                 "local   — a .sql dump (+ wp-content dir) already on disk".to_string(),
                 "archive — a .zip/.tar(.gz)/.sql.gz backup to unpack".to_string(),
             ];
-            ["ssh", "local", "archive"][site::choose("Source", &items)?].to_string()
+            ["ssh", "local", "archive"][site::choose("Source", &items, "source")?].to_string()
         }
         None => bail!("missing --source ssh|local|archive"),
     };
@@ -167,7 +167,7 @@ fn ssh_flow(a: &InitArgs, root: &Path, env: &mut SiteEnv, probed_url: &mut Optio
                 .iter()
                 .map(|p| p.rsplit_once('/').map(|(d, _)| d).unwrap_or(p).to_string())
                 .collect();
-            dirs[site::choose("WordPress root", &dirs)?].clone()
+            dirs[site::choose("WordPress root", &dirs, "wp-root")?].clone()
         }
     };
     eprintln!("wp_root = {wp_root}");
@@ -201,7 +201,7 @@ fn ssh_flow(a: &InitArgs, root: &Path, env: &mut SiteEnv, probed_url: &mut Optio
         if found.is_empty() && !creds.has_wp && !creds.has_mysqldump {
             bail!("no *.sql on host and no wp-cli/mysqldump — pass --dump-remote");
         }
-        let i = site::choose("SQL dump", &opts)?;
+        let i = site::choose("SQL dump", &opts, "dump-remote or --fresh-dump")?;
         if i < found.len() {
             found[i]
                 .split_once('\t')
@@ -480,7 +480,7 @@ fn local_flow(
                         .iter()
                         .map(|(p, s)| format!("{}  ({})", p.display(), human(*s)))
                         .collect();
-                    probe.dumps[site::choose("SQL dump", &opts)?].0.clone()
+                    probe.dumps[site::choose("SQL dump", &opts, "dump")?].0.clone()
                 }
             };
             let wc = match a.wp_content.clone().filter(|p| p.is_dir()) {
@@ -493,7 +493,7 @@ fn local_flow(
                     } else {
                         let opts: Vec<String> =
                             probe.wp_contents.iter().map(|p| p.display().to_string()).collect();
-                        Some(probe.wp_contents[site::choose("wp-content dir", &opts)?].clone())
+                        Some(probe.wp_contents[site::choose("wp-content dir", &opts, "wp-content")?].clone())
                     }
                 }
             };
@@ -704,7 +704,7 @@ fn archive_flow(
         bail!("no *.sql inside {}", backup.display());
     }
     let opts: Vec<String> = probe.dumps.iter().map(|(p, s)| format!("{}  ({})", p.display(), human(*s))).collect();
-    let dump = probe.dumps[site::choose("SQL dump", &opts)?].0.clone();
+    let dump = probe.dumps[site::choose("SQL dump", &opts, "dump")?].0.clone();
     check_dump(&dump)?;
     *probed_url = detect_siteurl(&dump);
     env.dump_local = Some(dump);

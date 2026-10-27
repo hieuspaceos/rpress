@@ -40,7 +40,7 @@ commit it as part of that phase).
 |---|-------|--------|
 | 1 | [Public content exposure](./phase-01-public-content-exposure.md) | Done |
 | 2 | [Shell & path injection](./phase-02-shell-and-path-injection.md) | Done |
-| 3 | [Import & dump correctness](./phase-03-import-and-dump-correctness.md) | Pending |
+| 3 | [Import & dump correctness](./phase-03-import-and-dump-correctness.md) | Done |
 | 4 | [tour_base & URL correctness](./phase-04-tourbase-and-url-correctness.md) | Pending |
 | 5 | [Cache & regen consistency](./phase-05-cache-and-regen-consistency.md) | Pending |
 | 6 | [Admin & DB integrity](./phase-06-admin-db-integrity.md) | Pending |

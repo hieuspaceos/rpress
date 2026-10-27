@@ -195,6 +195,16 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
         Ok(())
     })?;
 
+    // Some dumps contain duplicate wp_posts ids (stale rows after a failed
+    // migration on the source). Keep the first occurrence — an INSERT
+    // collision on posts.id would abort the whole import otherwise.
+    let mut seen_ids = std::collections::HashSet::new();
+    let before = posts.len();
+    posts.retain(|p| seen_ids.insert(p.id));
+    if posts.len() != before {
+        rep.log(format!("skipped {} duplicate wp_posts id(s)", before - posts.len()));
+    }
+
     // fold postmeta into posts
     let idx: HashMap<i64, usize> = posts.iter().enumerate().map(|(i, p)| (p.id, i)).collect();
     for (pid, k, mv) in post_meta {
@@ -541,7 +551,14 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
             continue;
         }
         let (name, slug) = terms.get(term_id).cloned().unwrap_or_default();
-        let lang = if slug.ends_with("-es") { "es" } else { "fr" };
+        // Menu lang: Polylang names translated menus `<slug>-<lang>` — take
+        // the longest matching lang suffix, fall back to the primary lang.
+        let lang = languages
+            .iter()
+            .filter(|l| slug.ends_with(&format!("-{l}")))
+            .max_by_key(|l| l.len())
+            .cloned()
+            .unwrap_or_else(|| primary.clone());
         stmt_menu.execute(params![term_id, name, slug, lang])?;
         menu_wp.insert(*tt_id, *term_id);
     }
@@ -607,27 +624,44 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
 
     {
         let mut expect: std::collections::BTreeMap<String, i64> = Default::default();
+        // Mirror the insert filters exactly — count only rows that can
+        // land: posts must be a known kind in publish|draft; media must be
+        // an inherit attachment with a resolvable file; menu items must be
+        // published and assigned to a menu.
         for p in &posts {
-            if p.status != "publish" && p.post_type != "attachment" {
-                continue;
-            }
             match p.post_type.as_str() {
-                "attachment" => *expect.entry("media".into()).or_default() += 1,
-                "nav_menu_item" => *expect.entry("menu_items".into()).or_default() += 1,
+                "attachment" => {
+                    if p.status == "inherit" && !attachment_path(p).is_empty() {
+                        *expect.entry("media".into()).or_default() += 1;
+                    }
+                }
+                "nav_menu_item" => {
+                    if p.status == "publish" && item_lang.contains_key(&p.id) {
+                        *expect.entry("menu_items".into()).or_default() += 1;
+                    }
+                }
                 pt => {
                     if let Some(kind) = kind_of(pt) {
-                        let lang = post_lang.get(&p.id).cloned().unwrap_or_else(|| primary.clone());
-                        *expect.entry(format!("posts:{kind}:{lang}")).or_default() += 1;
+                        if matches!(p.status.as_str(), "publish" | "draft") {
+                            let lang = post_lang.get(&p.id).cloned().unwrap_or_else(|| primary.clone());
+                            *expect.entry(format!("posts:{kind}:{lang}")).or_default() += 1;
+                        }
                     }
                 }
             }
         }
         // menus come from nav_menu terms, not wp_posts
         expect.insert("menus".into(), ttax.values().filter(|(_, tax, _)| tax == "nav_menu").count() as i64);
-        expect.insert("comments_total".into(), comments.len() as i64);
+        // Same rule for comments and translation members: rows pointing at
+        // non-imported posts (drafts, revisions, attachments) are skipped
+        // by design — count only rows that can actually land.
+        expect.insert("comments_total".into(),
+            comments.iter().filter(|c| wp_to_cms.contains_key(&c.1)).count() as i64);
         expect.insert("redirects".into(), redirs.len() as i64);
         expect.insert("translation_members".into(),
-            trans_groups.iter().map(|(_, m)| m.len() as i64).sum());
+            trans_groups.iter()
+                .map(|(_, m)| m.iter().filter(|(_, id)| wp_to_cms.contains_key(id)).count() as i64)
+                .sum());
         stmt_set.execute(params!["import_expect", serde_json::to_string(&expect)?])?;
     }
 
@@ -696,6 +730,19 @@ fn build_body_json(p: &Post, rep: &mut Report) -> String {
     json!([Value::Object(el)]).to_string()
 }
 
+/// Resolvable file path for an attachment: `_wp_attached_file`, falling
+/// back to the serialized attachment metadata's `file` key.
+fn attachment_path(p: &Post) -> String {
+    let path = meta1(p, "_wp_attached_file").unwrap_or_default();
+    if !path.is_empty() {
+        return path;
+    }
+    meta1(p, "_wp_attachment_metadata")
+        .and_then(|raw| unserialize(raw.as_bytes()).ok())
+        .and_then(|v| v.get("file").and_then(|x| x.as_str()).map(|s| s.to_string()))
+        .unwrap_or_default()
+}
+
 fn import_media(p: &Post, stmt: &mut rusqlite::Statement, rep: &mut Report) -> Result<()> {
     if p.status != "inherit" {
         rep.skipped += 1;
@@ -705,17 +752,14 @@ fn import_media(p: &Post, stmt: &mut rusqlite::Statement, rep: &mut Report) -> R
     let mut w: Option<i64> = None;
     let mut h: Option<i64> = None;
     let mut sizes = json!({});
-    let mut path = meta1(p, "_wp_attached_file").unwrap_or_default();
     if let Ok(v) = unserialize(meta_raw.as_bytes()) {
         w = v.get("width").and_then(|x| x.as_i64());
         h = v.get("height").and_then(|x| x.as_i64());
-        if path.is_empty() {
-            path = v.get("file").and_then(|x| x.as_str()).unwrap_or("").to_string();
-        }
         if let Some(Value::Object(m)) = v.get("sizes").cloned() {
             sizes = Value::Object(m);
         }
     }
+    let path = attachment_path(p);
     if path.is_empty() {
         rep.log(format!("attachment {} has no file path", p.id));
         rep.skipped += 1;
