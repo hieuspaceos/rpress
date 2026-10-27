@@ -55,12 +55,19 @@ impl PluginAdapter for ThemeTraveltour {
             .query_row("SELECT value FROM settings WHERE key='stylesheet'", [], |r| r.get(0))
             .unwrap_or_default();
         if !matches_traveltour(&stylesheet) {
+            // A site that moved OFF traveltour must not keep its seeds:
+            // stale rows make a tevily site emit traveltour chrome.
+            c.execute(
+                "DELETE FROM settings WHERE key LIKE 'plugin:theme-traveltour:%'",
+                [],
+            )?;
             return Ok(());
         }
         c.execute(
             "INSERT OR IGNORE INTO settings(key, value) VALUES(?1, ?2)",
             rusqlite::params!["plugin:theme-traveltour:taxonomy_map", TAXONOMY_MAP_JSON],
         )?;
+        carry_custom_css(&c, db)?;
         Ok(())
     }
     fn sidebars(&self) -> &'static [crate::widgets::Sidebar] {
@@ -203,3 +210,108 @@ pub(crate) fn tag_base(conn: &Connection) -> String {
     taxonomy_base_in(conn, "post_tag").unwrap_or_else(|| "etiquette".to_string())
 }
 
+
+/// Theme-generated css (`wp-content/uploads/traveltour-style-custom.css`)
+/// is a site asset, not repo data: rewrite its own-origin `url()` refs to
+/// site-relative paths, emit the `.scoped.css` twin Live Mode needs, and
+/// record the link path (`plugin:theme:css_upload_path`) the base
+/// template reads through `site.chrome.theme_css`. Absent file → key
+/// removed, never an aucoeur fallback.
+fn carry_custom_css(c: &Connection, db: &Path) -> Result<()> {
+    const KEY: &str = "plugin:theme:css_upload_path";
+    const NAME: &str = "traveltour-style-custom.css";
+    let www = db
+        .parent()
+        .map(|p| p.join("www"))
+        .unwrap_or_default();
+    let file = www.join("wp-content/uploads").join(NAME);
+    if !file.is_file() {
+        c.execute("DELETE FROM settings WHERE key=?1", [KEY])?;
+        return Ok(());
+    }
+    // Own-origin hosts to strip: live site_url + imported site_url +
+    // url_aliases. `strip_origin` re-anchors on the live site_url;
+    // relative `url(...)` refs pass through untouched.
+    let setting = |k: &str| -> String {
+        c.query_row("SELECT value FROM settings WHERE key=?1", [k], |r| {
+            r.get::<_, String>(0)
+        })
+        .unwrap_or_default()
+    };
+    let site_url = setting("site_url");
+    let mut aliases: Vec<String> = setting("url_aliases")
+        .split(',')
+        .map(|a| a.trim().to_string())
+        .filter(|a| !a.is_empty())
+        .collect();
+    let asset = setting("asset_origin");
+    if !asset.is_empty() {
+        aliases.push(asset);
+    }
+    let css = std::fs::read_to_string(&file)?;
+    // Theme css references only the site's own assets: any host whose
+    // `url()` path starts `/wp-content/` is this site's origin
+    // (covers test-subdomain mismatches like aucoeurvietnam.com vs
+    // test.aucoeurvietnam.com where url_aliases is empty).
+    let host_of = |u: &str| -> Option<String> {
+        let rest = u
+            .strip_prefix("http://")
+            .or_else(|| u.strip_prefix("https://"))?;
+        let end = rest.find('/').unwrap_or(rest.len());
+        Some(rest[..end].to_string())
+    };
+    for (i, _) in css.match_indices("http") {
+        let tail = &css[i..];
+        let end = tail
+            .find(|c: char| c == ')' || c == '\'' || c == '"' || c.is_whitespace() || c == ';')
+            .unwrap_or(tail.len());
+        let u = &tail[..end];
+        if let Some(h) = host_of(u) {
+            if u.contains("/wp-content/") && !aliases.contains(&h) {
+                aliases.push(h);
+            }
+        }
+    }
+    // Cheap url( ...) walker: exact per-URL handling via strip_origin
+    // keeps foreign hosts (cdn fonts etc.) absolute.
+    let mut out = String::with_capacity(css.len());
+    let mut rest = css.as_str();
+    while let Some(p) = rest.find("url(") {
+        out.push_str(&rest[..p + 4]);
+        let tail = &rest[p + 4..];
+        let (url, rest_off) = match tail.chars().next() {
+            Some(q @ ('"' | '\'')) => {
+                // `url("X")`: inner starts past the open quote; `close`
+                // is the matching close quote (keep both in output).
+                let inner = &tail[1..];
+                let close = inner.find(q).unwrap_or(inner.len());
+                (&inner[..close], 1 + close)
+            }
+            _ => {
+                let close = tail.find(')').unwrap_or(tail.len());
+                (&tail[..close], close)
+            }
+        };
+        let stripped = crate::url_util::strip_origin(url, &site_url, &aliases.join(","));
+        // Re-anchor re-absolute → path-only for portability across envs:
+        let local = stripped
+            .strip_prefix(site_url.trim_end_matches('/'))
+            .unwrap_or(&stripped);
+        out.push_str(local);
+        rest = &tail[rest_off..];
+    }
+    out.push_str(rest);
+    if out != css {
+        std::fs::write(&file, &out)?;
+    }
+    let scoped = file.with_file_name(format!(
+        "{}.scoped.css",
+        NAME.strip_suffix(".css").unwrap_or(NAME)
+    ));
+    std::fs::write(&scoped, crate::css_scope::scope_css(&out))?;
+    c.execute(
+        "INSERT OR REPLACE INTO settings(key, value) VALUES(?1, ?2)",
+        rusqlite::params![KEY, format!("wp-content/uploads/{NAME}")],
+    )?;
+    Ok(())
+}

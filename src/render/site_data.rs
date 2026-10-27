@@ -595,6 +595,9 @@ fn chrome_ctx(conn: &Connection, site_url: &str, lang: &str) -> Value {
     let theme: Value = get("plugin:theme-traveltour:general")
         .parse::<serde_json::Value>()
         .unwrap_or(Value::Null);
+    // Per-site theme-generated css path (traveltour-style-custom.css);
+    // "" when the site's uploads lack the file → template omits the link.
+    let theme_css = get("plugin:theme:css_upload_path");
     let tget = |k: &str| -> String {
         theme.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string()
     };
@@ -734,6 +737,7 @@ fn chrome_ctx(conn: &Connection, site_url: &str, lang: &str) -> Value {
         "sticky": sticky,
         "contact_slugs": serde_json::from_str::<serde_json::Value>(&get("contact_slugs")).unwrap_or(Value::Null),
         "enable_top_bar": tget("enable-top-bar") != "disable",
+        "theme_css": theme_css,
         "body_suffix": "wp-theme-traveltour wp-child-theme-traveltour-child gdlr-core-body tourmaster-body metaslider-plugin traveltour-body traveltour-body-front traveltour-full  traveltour-with-sticky-navigation gdlr-core-link-to-lightbox",
         "favicons": favicons_html(conn, site_url),
         "sticky_html": sticky_html(&sticky, lang),

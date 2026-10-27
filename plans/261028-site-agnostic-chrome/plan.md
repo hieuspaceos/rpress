@@ -60,7 +60,7 @@ templates — never to the base ctx.
 | 01 | [Dynamic header nav from menus/menu_items + theme_locations](./phase-01-dynamic-nav.md) | — | 1.5d | Done |
 | 02 | [Site-scoped chrome ctx: literals → settings/ctx vars](./phase-02-site-chrome-ctx.md) | 01 | 1.5d | Done |
 | 03 | [Theme separation](./phase-03-theme-separation.md) | 02 | 2d | Done |
-| 04 | [Per-site theme CSS: traveltour-style-custom from site uploads](./phase-04-site-css.md) | 03 | 0.5d | Pending |
+| 04 | [Per-site theme CSS: traveltour-style-custom from site uploads](./phase-04-site-css.md) | 03 | 0.5d | Done |
 | 05 | [Visual smoke harness + aucoeur regression gate](./phase-05-visual-smoke.md) | 01–04, 06 | 1d | Pending |
 | 06 | [Tevily base templates authored from harvest/origin markup](./phase-06-tevily-bases.md) | 03 | 1.5d | Pending |
 

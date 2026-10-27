@@ -1616,7 +1616,12 @@ pub(crate) fn hex(b: &[u8]) -> String {
 /// only inside the page-builder Live Mode canvas so it matches the public site.
 async fn front_css(State(app): State<App>, headers: HeaderMap, Path(path): Path<String>) -> Response {
     let sc = site_for(&app, &headers);
-    match safe_read_under(&sc.templates.join("front-css"), &path) {
+    // Per-site scoped css wins: `migrate` writes `<name>.scoped.css`
+    // twins beside the site's uploads (traveltour-style-custom). Repo
+    // `front-css/` stays as the fallback for vendored non-site files.
+    match safe_read_under(&sc.www.join("wp-content/uploads"), &path)
+        .or_else(|| safe_read_under(&sc.templates.join("front-css"), &path))
+    {
         Some(b) => ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], b).into_response(),
         None => StatusCode::NOT_FOUND.into_response(),
     }

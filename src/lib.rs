@@ -8,6 +8,7 @@ pub mod import;
 pub mod intake;
 pub mod lang;
 pub mod php_serialize;
+pub mod css_scope;
 pub mod url_util;
 pub mod render;
 pub mod render_archive;
