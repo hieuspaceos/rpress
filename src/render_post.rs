@@ -913,7 +913,7 @@ fn translation_urls(conn: &Connection, id: i64, site: &str, tour_base: &str) -> 
         .filter_map(|(lang, pid)| {
             conn.query_row(sql!("render__select_slug_kind"), [pid], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
                 .ok()
-                .map(|(slug, kind)| (lang.clone(), crate::lang::page_url(&cfg, site, &lang, &kind, &slug, tour_base)))
+                .map(|(slug, kind)| (lang.clone(), crate::lang::page_url(&cfg, site, &lang, &kind, &slug, crate::admin::plugins::kind_url_base(tour_base, &kind).as_deref())))
         })
         .collect()
 }

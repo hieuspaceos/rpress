@@ -179,7 +179,12 @@ fn frame_html(sc: &SiteCtx, s: &Sess, m: &crud::Menu, ms: &crud::MenuScreen) -> 
     };
     push_box("page", object_box("page", "Pages", sc, &m.lang));
     push_box("post", object_box("post", "Posts", sc, &m.lang));
-    push_box("tour", object_box("tour", "Tours", sc, &m.lang));
+    // Non-core kinds contribute one object metabox each (registry-driven).
+    for def in crate::admin::plugins::kind_defs() {
+        if crate::admin::plugins::adapter_for_kind(def.kind).is_some() {
+            push_box(def.kind, object_box(def.kind, def.list_title, sc, &m.lang));
+        }
+    }
     push_box("custom-links", custom_link_box());
     push_box("category", category_box(sc));
     for tax in crud::list_taxonomies(&sc.db).unwrap_or_default() {
@@ -361,10 +366,17 @@ fn section_keys(sc: &SiteCtx) -> Vec<(String, String)> {
     let mut v = vec![
         ("page".into(), "Pages".into()),
         ("post".into(), "Posts".into()),
-        ("tour".into(), "Tours".into()),
+    ];
+    for def in crate::admin::plugins::kind_defs() {
+        if crate::admin::plugins::adapter_for_kind(def.kind).is_some() {
+            v.push((def.kind.into(), def.list_title.into()));
+        }
+    }
+    v.extend([
         ("custom-links".into(), "Custom Links".into()),
         ("category".into(), "Categories".into()),
-    ];
+    ]);
+
     for tax in crud::list_taxonomies(&sc.db).unwrap_or_default() {
         if matches!(tax.as_str(), "category" | "post_tag" | "nav_menu") {
             continue;

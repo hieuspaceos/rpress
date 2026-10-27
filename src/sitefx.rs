@@ -30,15 +30,16 @@ fn collect_urls(conn: &Connection, site: &str, tour_base: &str) -> Result<Vec<(S
         .collect();
     let mut mod_stmt = conn.prepare("SELECT modified_at FROM posts WHERE id=?1")?;
     for (id, slug, lang, kind) in &rows {
-        let wslug = if kind == "tour" {
-            let title: String = conn
-                .query_row("SELECT title FROM posts WHERE id=?1", [id], |r| r.get(0))
-                .unwrap_or_default();
-            crate::render_tour::display_slug(conn, *id, slug, &title)
-        } else {
-            slug.clone()
-        };
-        let rel = crate::generate::rel_path_with_cfg(&lang_cfg, *id, front, lang, kind, &wslug, tour_base);
+        // Adapter-owned kinds canonicalize their slug (display_slug).
+        let wslug = crate::admin::plugins::adapter_for_kind(kind)
+            .and_then(|a| {
+                let title: String = conn
+                    .query_row("SELECT title FROM posts WHERE id=?1", [id], |r| r.get(0))
+                    .unwrap_or_default();
+                a.display_slug(conn, *id, slug, &title)
+            })
+            .unwrap_or_else(|| slug.clone());
+        let rel = crate::generate::rel_path_with_cfg(&lang_cfg, *id, front, lang, &wslug, crate::admin::plugins::kind_url_base(tour_base, kind).as_deref());
         let loc_path = rel.to_string_lossy().replace("index.html", "");
         let loc = format!(
             "{}{}",
@@ -54,7 +55,7 @@ fn collect_urls(conn: &Connection, site: &str, tour_base: &str) -> Result<Vec<(S
         let lastmod: Option<String> = conn
             .query_row("SELECT MAX(modified_at) FROM posts WHERE lang=?1 AND kind='page'", [lang], |r| r.get(0))
             .ok();
-        urls.push((format!("{}{}", site, crate::lang::page_path(&lang_cfg, lang, "page", "", tour_base)), "page".into(), lastmod));
+        urls.push((format!("{}{}", site, crate::lang::page_path(&lang_cfg, lang, "page", "", None)), "page".into(), lastmod));
     }
 
     // Taxonomy archives — same set generate emitted, same shared mapping.
@@ -86,26 +87,43 @@ fn collect_urls(conn: &Connection, site: &str, tour_base: &str) -> Result<Vec<(S
     Ok(urls)
 }
 
-/// Raw-slug → canonical display-slug redirect rows for degenerate tour
-/// slugs (6416 'x'). Mirrors the raw_redirects collection in `generate::run`.
+/// Raw-slug → canonical display-slug redirect rows for adapter-owned kinds
+/// with degenerate slugs (6416 'x'). Mirrors the raw_redirects collection
+/// in `generate::run`.
 fn collect_raw_redirects(conn: &Connection, site: &str, tour_base: &str) -> Result<Vec<(String, String)>> {
     let site = site.trim_end_matches('/');
     let lang_cfg = crate::lang::config(conn);
     let mut raw = Vec::new();
-    let mut stmt = conn.prepare(
-        "SELECT id, slug, lang, title FROM posts WHERE status='publish' AND kind='tour'",
-    )?;
-    let rows: Vec<(i64, String, String, String)> = stmt
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+    // Plugin kinds with a display_slug hook: only those can diverge from
+    // the stored slug.
+    let owned: Vec<&'static str> = crate::admin::plugins::kind_defs()
+        .iter()
+        .filter(|d| crate::admin::plugins::adapter_for_kind(d.kind).is_some())
+        .map(|d| d.kind)
+        .collect();
+    if owned.is_empty() {
+        return Ok(raw);
+    }
+    let qs = owned.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let mut stmt = conn.prepare(&format!(
+        "SELECT id, slug, lang, title, kind FROM posts WHERE status='publish' AND kind IN ({qs})"
+    ))?;
+    let rows: Vec<(i64, String, String, String, String)> = stmt
+        .query_map(rusqlite::params_from_iter(owned.iter()), |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })?
         .flatten()
         .collect();
-    for (id, slug, lang, title) in &rows {
-        let display = crate::render_tour::display_slug(conn, *id, slug, title);
+    for (id, slug, lang, title, kind) in &rows {
+        let display = crate::admin::plugins::adapter_for_kind(kind)
+            .and_then(|a| a.display_slug(conn, *id, slug, title))
+            .unwrap_or_else(|| slug.clone());
         if &display != slug {
             let prefix = crate::lang::url_prefix(&lang_cfg, lang);
+            let base = crate::admin::plugins::kind_url_base(tour_base, kind).unwrap_or_default();
             raw.push((
-                format!("{prefix}/{tour_base}/{slug}/"),
-                format!("{site}{prefix}/{tour_base}/{display}/"),
+                format!("{prefix}/{base}/{slug}/"),
+                format!("{site}{prefix}/{base}/{display}/"),
             ));
         }
     }
@@ -118,13 +136,14 @@ fn collect_raw_redirects(conn: &Connection, site: &str, tour_base: &str) -> Resu
 /// feeds, robots, redirects and the search page from minute zero.
 pub fn emit_site_files(db: &Path, templates: &Path, out: &Path, site: &str, tour_base: &str) -> Result<()> {
     let conn = crate::db::conn(db)?;
-    crate::generate::write_404(out, templates, &conn, site, tour_base)?;
-    crate::generate::write_search(out, templates, &conn, site, tour_base)?;
-    crate::generate::write_feeds(out, &conn, site, tour_base)?;
+    let bases = crate::admin::plugins::resolve_bases(tour_base);
+    crate::generate::write_404(out, templates, &conn, site, &bases)?;
+    crate::generate::write_search(out, templates, &conn, site, &bases)?;
+    crate::generate::write_feeds(out, &conn, site, &bases)?;
     let urls = collect_urls(&conn, site, tour_base)?;
     crate::generate::write_sitemap(out, site, &urls)?;
     crate::generate::write_robots(out, site)?;
-    crate::generate::write_llms_txt(out, &conn, site, tour_base)?;
+    crate::generate::write_llms_txt(out, &conn, site, &bases)?;
     let raw = collect_raw_redirects(&conn, site, tour_base)?;
     crate::generate::write_redirects(out, &conn, &raw)?;
     Ok(())

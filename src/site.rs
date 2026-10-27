@@ -42,6 +42,7 @@ pub struct SiteEnv {
     pub host: String,
     pub bind: String,
     pub local_url: String,
+    // deprecated: sourced via KindBases at entry points; remove phase 05
     pub tour_base: String,
     /// Origin URL the dump came from (parity target + asset fallback).
     pub site_url: String,

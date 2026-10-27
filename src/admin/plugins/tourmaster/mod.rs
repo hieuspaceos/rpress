@@ -6,11 +6,13 @@ use crate::admin::esc;
 use crate::sql;
 
 pub(crate) mod elements;
+pub(crate) mod render;
 pub(crate) mod save;
 pub(crate) mod schema;
 pub(crate) mod screens;
+pub(crate) mod widgets;
 
-use super::{Backend, EditorHooks, KindDef, PluginAdapter, PostForm, ScreenDef, Sess, SiteCtx};
+use super::{Backend, EditorHooks, ImportHooks, KindDef, PluginAdapter, PostForm, ScreenDef, Sess, SiteCtx};
 use crate::php_serialize::unserialize;
 use anyhow::Result;
 use rusqlite::{params, Connection};
@@ -100,8 +102,68 @@ impl PluginAdapter for Tourmaster {
             .map_err(|e| anyhow::anyhow!("clone tours {new_id}<={old_id}: {e}"))?;
         Ok(())
     }
+    fn import_hooks(&self) -> Option<&'static ImportHooks> {
+        /// wp `post_type` → `posts.kind` claims tourmaster owns.
+        fn claim(t: &str) -> Option<&'static str> {
+            match t {
+                "tour" => Some("tour"),
+                _ => None,
+            }
+        }
+        /// Tours rows are promoted post-import, not per row (phase-03
+        /// spec T13) — the hook exists for plugins with per-row tables.
+        fn post_noop(_c: &Connection, _id: i64) -> Result<()> {
+            Ok(())
+        }
+        /// post_meta → `tours` denormalize over the committed import.
+        fn after(c: &Connection) -> Result<()> {
+            promote(c)?;
+            Ok(())
+        }
+        static HOOKS: ImportHooks = ImportHooks {
+            claim_type: claim,
+            option_prefixes: &["tourmaster_"],
+            post_imported: post_noop,
+            after_import: after,
+        };
+        Some(&HOOKS)
+    }
+    fn widget_types(&self) -> &'static [(&'static str, &'static str)] {
+        widgets::WIDGET_TYPES
+    }
+    fn widget_fields(&self, typ: &str) -> Option<&'static [crate::widgets::FieldSpec]> {
+        widgets::widget_fields(typ)
+    }
+    fn sidebars(&self) -> &'static [crate::widgets::Sidebar] {
+        widgets::SIDEBARS
+    }
+    fn seeds(&self) -> &'static [crate::widgets::Seed] {
+        widgets::SEEDS
+    }
     fn backend(&self) -> Backend {
         Backend::Rust
+    }
+
+    /// Single-tour page + canonical-slug + site.tours/search feeds — the
+    /// former `src/render_tour.rs` ownership, plugin-side since phase 03.
+    fn render(&self, conn: &Connection, templates: &Path, ctx: &super::RenderCtx) -> Result<Option<String>> {
+        render::page(conn, templates, ctx).map(Some)
+    }
+    fn display_slug(&self, conn: &Connection, id: i64, slug: &str, title: &str) -> Option<String> {
+        render::display_slug_opt(conn, id, slug, title)
+    }
+    fn site_data_feeds(&self, conn: &Connection, lang: &str, site_url: &str, kind_base: Option<&str>) -> Vec<(String, Value)> {
+        render::site_data_feeds(conn, lang, site_url, kind_base.unwrap_or(""))
+    }
+    /// Archive path segment for owned taxonomies: the taxonomy name
+    /// verbatim (this site's `{tax}/{slug}/` layout is verbatim — WP
+    /// `register_taxonomy` rewrite slug equals the name here).
+    fn taxonomy_base(&self, tax: &str) -> Option<&'static str> {
+        KINDS
+            .iter()
+            .flat_map(|k| k.taxonomies.iter())
+            .find(|t| t.eq_ignore_ascii_case(tax))
+            .copied()
     }
 }
 

@@ -1,17 +1,19 @@
 //! Widget rendering + admin for WP parity.
 //!
 //! SEED_WIDGETS + src/seed/*.json are the REFERENCE THEME's default widget
-//! set (traveltour: sidebar-post-*, sidebar-tour, sidebar-archive-*, footer-*).
-//! To ship your own theme, replace `src/seed/` payloads and the SIDEBARS /
-//! SEED_WIDGETS tables below — the runtime feature (sidebar/widget CRUD,
-//! fragment render, dirty-flag regen) is theme-agnostic.
+//! set (traveltour: sidebar-post-*, sidebar-archive-*, footer-*; the
+//! plugin-owned sidebar seeds ship with their adapter). To ship your own
+//! theme, replace `src/seed/` payloads and the SIDEBARS / SEED_WIDGETS
+//! tables below — the runtime feature (sidebar/widget CRUD, fragment
+//! render, dirty-flag regen) is theme-agnostic.
 //! Registered sidebars + widget instances — WP widgets.php parity.
 //!
 //! Data model (see plans/261026-0426-wp-parity-widgets/):
 //!   sidebars(id TEXT PK, name, lang) — the render regions: blog sidebar
-//!     (per lang), tour booking bar, tour-archive sidebar (per lang), the
-//!     four footer columns per language, plus admin-registered custom
-//!     sidebars (GoodLayers dynamic sidebars → POST /admin/widgets/sidebar/*).
+//!     (per lang), archive sidebar (per lang), the four footer columns per
+//!     language, adapter-declared regions (merged via `all_sidebars`),
+//!     plus admin-registered custom sidebars (GoodLayers dynamic sidebars
+//!     → POST /admin/widgets/sidebar/*).
 //!   widgets(id TEXT PK, sidebar_id, type, title, settings_json, ord) — the
 //!     WP widget-instance equivalent. `id` keeps the wp widget id
 //!     ("search-4", "wpcategorieswidget-9", …): it is the `id=` attribute in
@@ -19,28 +21,24 @@
 //!
 //! Two storage shapes in `settings_json`:
 //!   * frozen HTML — `{"html": "…verbatim capture…"}` for search, text,
-//!     custom_html, media_image, tour_category and any widget whose admin
-//!     supplies a Content override. The fragments still contain live
+//!     custom_html, media_image and any widget whose admin supplies a
+//!     Content override. The fragments still contain live
 //!     `{{ site_url }}`/`{{ lang }}` jinja, so `render_sidebar` runs
 //!     `template_from_str` over them (AutoEscape::None ⇒ byte-identical).
 //!   * settings — `categories` widgets store `{taxonomy, title, order[],
-//!     children{parent: [slug…]}, show_counts}` and `tour_list` stores
-//!     `{mode, manual_ids[], count, title, wrapper, inner}`. Both render
-//!     live from DB data (phase 3):
-//!       - categories taxonomy='category' builds its hierarchy from
-//!         `render_post::cat_parent()` (terms.parent_id was never imported),
-//!         counts = COUNT(post_terms JOIN posts status='publish'), and
-//!         `cat-item-N` ids from `render_archive::wp_term_id`'s frozen wp map
-//!         (extracted from the wpcategorieswidget-9 capture). FR/ES
-//!         partitions come from the cat_parent tree's root sets.
-//!       - tour_list cards reuse the archive helpers (tour-price-text →
-//!         tourmaster-tour-price → price_range; promo-text → style terms;
-//!         thumbnail = media sizes_json 'thumbnail' else full).
+//!     children{parent: [slug…]}, show_counts}`; adapter-registered types
+//!     keep their own schemas. Categories taxonomy='category' builds its
+//!     hierarchy from `render_post::cat_parent()` (terms.parent_id was
+//!     never imported), counts = COUNT(post_terms JOIN posts
+//!     status='publish'), and `cat-item-N` ids from
+//!     `render_archive::wp_term_id`'s frozen wp map (extracted from the
+//!     wpcategorieswidget-9 capture). FR/ES partitions come from the
+//!     cat_parent tree's root sets.
 //!
 //! Lang routing: render-side callers keep asking for the phase-1 base ids
 //! ("sidebar-post", "sidebar-archive"); `resolve_id` maps them to the
 //! per-lang rows (`-fr`/`-es`) so a single renderer picks the language.
-//! `sidebar-tour` stays un-suffixed (one shared booking sidebar).
+//! Adapter-registered sidebars stay un-suffixed (one shared region).
 
 use anyhow::{Context, Result};
 use minijinja::{context, Environment};
@@ -49,6 +47,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 
 /// A registered sidebar region.
+#[derive(Clone, Copy)]
 pub(crate) struct Sidebar {
     pub id: &'static str,
     pub name: &'static str,
@@ -67,9 +66,10 @@ pub(crate) struct Sidebar {
 const POST_AREA_BEFORE: &str = r#"<div class=" traveltour-sidebar-right traveltour-column-15 traveltour-line-height traveltour-line-height" ><div class="traveltour-sidebar-area traveltour-item-pdlr" >"#;
 const POST_AREA_AFTER: &str = r#"</div></div></div></div>"#;
 
-/// Registered sidebar regions (wp `register_sidebar` equivalents). Rows in
-/// the `sidebars` table beyond this set are admin-registered custom
-/// sidebars (the registry = const ∪ stored).
+/// Registered sidebar regions (wp `register_sidebar` equivalents): the
+/// core set — adapter-declared regions merge via `all_sidebars()`. Rows
+/// in the `sidebars` table beyond this set are admin-registered custom
+/// sidebars (the registry = const ∪ adapter ∪ stored).
 pub(crate) const SIDEBARS: &[Sidebar] = &[
     Sidebar { id: "sidebar-post-fr", name: "Blog sidebar (FR)", lang: "fr",
         before: POST_AREA_BEFORE,
@@ -77,9 +77,6 @@ pub(crate) const SIDEBARS: &[Sidebar] = &[
     Sidebar { id: "sidebar-post-es", name: "Blog sidebar (ES)", lang: "es",
         before: POST_AREA_BEFORE,
         after: POST_AREA_AFTER },
-    Sidebar { id: "sidebar-tour", name: "Tour booking sidebar", lang: "all",
-        before: r#"<div class="tourmaster-tour-booking-bar-widget  traveltour-sidebar-area" >"#,
-        after: r#"</div>"# },
     Sidebar { id: "sidebar-archive-fr", name: "Tour archive sidebar (FR)", lang: "fr",
         before: r#""#,
         after: r#""# },
@@ -112,6 +109,18 @@ pub(crate) const SIDEBARS: &[Sidebar] = &[
         after: r#""# },
 ];
 
+/// Sidebar registry = core const ∪ adapter-declared regions. One flat
+/// list in declared order (core first, then adapters) — callers iterate
+/// this instead of `SIDEBARS` so plugin regions render their `before`/
+/// `after` wrappers and are treated as const by the admin screen.
+pub(crate) fn all_sidebars() -> Vec<Sidebar> {
+    let mut out: Vec<Sidebar> = SIDEBARS.to_vec();
+    for a in crate::admin::plugins::adapters() {
+        out.extend_from_slice(a.sidebars());
+    }
+    out
+}
+
 /// Base ids the render layer accepts; resolved to a per-lang row by
 /// `resolve_id`. Custom sidebars are queried by their own id (no remap).
 fn resolve_id(sidebar_id: &str, lang: &str) -> String {
@@ -121,17 +130,47 @@ fn resolve_id(sidebar_id: &str, lang: &str) -> String {
     }
 }
 
-/// Registered widget types (wp `WP_Widget` equivalents).
-pub(crate) const WIDGET_TYPES: &[(&str, &str)] = &[
+/// Core widget types (wp `WP_Widget` equivalents); adapter-registered
+/// types merge underneath `WIDGET_TYPES`.
+const CORE_WIDGET_TYPES: &[(&str, &str)] = &[
     ("search", "Search"),
     ("categories", "Categories"),
     ("media_image", "Image"),
     ("text", "Text"),
     ("custom_html", "Custom HTML"),
     ("html_embed", "HTML Embed"),
-    ("tour_list", "Tour List"),
-    ("tour_category", "Tour Category"),
 ];
+
+/// The merged widget-type registry (core const ∪ every adapter's
+/// `widget_types()`), kept as an iterable static so existing callers
+/// (`for … in WIDGET_TYPES`, `WIDGET_TYPES.iter()`) work unchanged.
+#[derive(Clone, Copy)]
+pub(crate) struct WidgetTypes;
+
+impl WidgetTypes {
+    /// Core first, then adapters in registry order.
+    pub(crate) fn iter(&self) -> std::slice::Iter<'static, (&'static str, &'static str)> {
+        static MERGED: std::sync::LazyLock<Vec<(&'static str, &'static str)>> =
+            std::sync::LazyLock::new(|| {
+                let mut v = CORE_WIDGET_TYPES.to_vec();
+                for a in crate::admin::plugins::adapters() {
+                    v.extend_from_slice(a.widget_types());
+                }
+                v
+            });
+        MERGED.iter()
+    }
+}
+
+impl IntoIterator for WidgetTypes {
+    type Item = &'static (&'static str, &'static str);
+    type IntoIter = std::slice::Iter<'static, (&'static str, &'static str)>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+pub(crate) static WIDGET_TYPES: WidgetTypes = WidgetTypes;
 
 /// Admin edit-form field: `key` = settings_json key; `kind` ∈
 /// text|textarea|html|checkbox|number|select|taxonomy|list|json|media.
@@ -149,19 +188,26 @@ pub(crate) struct FieldSpec {
     pub help: &'static str,
 }
 
-const fn f(key: &'static str, label: &'static str, kind: &'static str, required: bool, help: &'static str) -> FieldSpec {
+pub(crate) const fn f(key: &'static str, label: &'static str, kind: &'static str, required: bool, help: &'static str) -> FieldSpec {
     FieldSpec { key, label, kind, required, options: &[], help }
 }
+
+/// Shared help text for the `html` fragment field (also used by adapters).
+pub(crate) const HTML_HELP: &str = "Raw HTML — jinja template ({{ site_url }}, {{ lang }}). Admin-trusted. When set, this fragment renders instead of the live output.";
+
+/// The single `html` field schema frozen types share (also used by adapters).
+pub(crate) const HTML_FIELD: &[FieldSpec] = &[f("html", "Content", "html", false, HTML_HELP)];
 
 /// Settings schema per widget type — consumed by the /admin/widgets
 /// screen (save validates against this; page renders the inputs).
 /// Frozen types keep the `html` raw fragment field (admin-trusted jinja);
 /// every dynamic type also exposes `html` as an explicit render override.
+/// Types no core schema knows fall through to the adapter that
+/// registered them (`PluginAdapter::widget_fields`).
 pub(crate) fn widget_fields(typ: &str) -> &'static [FieldSpec] {
-    const HTML_HELP: &str = "Raw HTML — jinja template ({{ site_url }}, {{ lang }}). Admin-trusted. When set, this fragment renders instead of the live output.";
     const HTML: &[FieldSpec] = &[];
     const CATEGORIES: &[FieldSpec] = &[
-        f("taxonomy", "Taxonomy", "taxonomy", true, "Term list rendered live. 'category' builds the blog tree from the captured hierarchy; tour taxonomies use Order/Children below."),
+        f("taxonomy", "Taxonomy", "taxonomy", true, "Term list rendered live. 'category' builds the blog tree from the captured hierarchy; plugin taxonomies use Order/Children below."),
         f("show_counts", "Show post counts", "checkbox", false, "Print the post-count span after each term (blog sidebar style)."),
         f("order", "Term order", "list", false, "Comma-separated slugs; terms not listed append alphabetically (ignored for 'category')."),
         f("children", "Children map", "json", false, "JSON {\"parent-slug\": [\"child-slug\", …]} (ignored for 'category')."),
@@ -172,26 +218,19 @@ pub(crate) fn widget_fields(typ: &str) -> &'static [FieldSpec] {
         f("image_id", "Image", "media", false, "Pick from the media library — used when Content is empty."),
         f("html", "Content", "html", false, HTML_HELP),
     ];
-    const HTML_FIELD: &[FieldSpec] = &[f("html", "Content", "html", false, HTML_HELP)];
-    const TOUR_LIST: &[FieldSpec] = &[
-        FieldSpec {
-            key: "mode", label: "Mode", kind: "select", required: false,
-            options: &[("recent", "Recent tours"), ("manual", "Manual selection")],
-            help: "Recent = latest published tours for the sidebar language; Manual = the Post IDs below, in order.",
-        },
-        f("manual_ids", "Post IDs", "list", false, "Comma-separated post ids (manual mode), shown in list order."),
-        f("count", "Number of tours", "number", false, "Recent-mode limit (default 10)."),
-        f("wrapper", "Outer widget id", "text", false, "id= of the outermost div (defaults to the widget id)."),
-        f("inner", "Tour widget id", "text", false, "id= of the inner tourmaster-tour-widget div (defaults to tourmaster-tour-widget-N)."),
-        f("html", "Content override", "html", false, HTML_HELP),
-    ];
     match typ {
         "search" => HTML_FIELD,
         "categories" => CATEGORIES,
         "media_image" => MEDIA_IMAGE,
-        "text" | "custom_html" | "html_embed" | "tour_category" => HTML_FIELD,
-        "tour_list" => TOUR_LIST,
-        _ => HTML,
+        "text" | "custom_html" | "html_embed" => HTML_FIELD,
+        other => {
+            for a in crate::admin::plugins::adapters() {
+                if let Some(fields) = a.widget_fields(other) {
+                    return fields;
+                }
+            }
+            HTML
+        }
     }
 }
 
@@ -242,7 +281,7 @@ pub(crate) fn list(conn: &Connection) -> Result<Vec<(String, String)>> {
 /// Whether `id` is one of the const (theme-registered) regions — custom
 /// sidebars may be deleted from admin, these may not.
 pub(crate) fn is_const_sidebar(id: &str) -> bool {
-    SIDEBARS.iter().any(|s| s.id == id)
+    all_sidebars().iter().any(|s| s.id == id)
 }
 
 /// One seeded widget instance.
@@ -258,29 +297,23 @@ pub(crate) struct Seed {
 ///   sidebar-post-fr ← the old templates/sidebar_post.html FR capture
 ///                   (search-4, media_image-4; wpcategorieswidget-9 is now a
 ///                   LIVE categories widget — the frozen capture became the
-///                   `category` wp-id map + tree; custom_html-13 is now a
-///                   LIVE tour_list widget in manual mode)
+///                   `category` wp-id map + tree)
 ///   sidebar-post-es ← phase-3 hand-translation (NO ES capture exists —
 ///                   new content, not byte-parity)
-///   sidebar-tour  ← the old templates/sidebar_tour.html
 ///   footer-N-{fr,es} ← the traveltour-footer-column blocks in
 ///                   templates/base_fr.html / base_es.html
 ///   sidebar-archive-{fr,es} ← the WIDGETS const (FR, verbatim) + ES mirror
-///   Manual tour ids resolve the capture's /voyage/ slugs to posts (incl.
-///   via _wp_old_slug for renamed tours); post 44901's '-copy' is excluded.
+/// Plugin-owned seed payloads (sidebar-tour, the blog sidebars' live
+/// list widgets) ship under `admin/plugins/<slug>/seed/` via
+/// `PluginAdapter::seeds`.
 // Reference-theme seed payloads (see file header). Replace for your theme.
 mod seed {
     pub const SIDEBAR_POST_FR_SEARCH_4: &str = include_str!("seed/sidebar-post-fr-search-4.json");
     pub const SIDEBAR_POST_FR_WPCATEGORIESWIDGET_9: &str = include_str!("seed/sidebar-post-fr-wpcategorieswidget-9.json");
     pub const SIDEBAR_POST_FR_MEDIA_IMAGE_4: &str = include_str!("seed/sidebar-post-fr-media_image-4.json");
-    pub const SIDEBAR_POST_FR_CUSTOM_HTML_13: &str = include_str!("seed/sidebar-post-fr-custom_html-13.json");
     pub const SIDEBAR_POST_ES_SEARCH_5: &str = include_str!("seed/sidebar-post-es-search-5.json");
     pub const SIDEBAR_POST_ES_WPCATEGORIESWIDGET_10: &str = include_str!("seed/sidebar-post-es-wpcategorieswidget-10.json");
     pub const SIDEBAR_POST_ES_MEDIA_IMAGE_5: &str = include_str!("seed/sidebar-post-es-media_image-5.json");
-    pub const SIDEBAR_POST_ES_CUSTOM_HTML_14: &str = include_str!("seed/sidebar-post-es-custom_html-14.json");
-    pub const SIDEBAR_TOUR_TEXT_12: &str = include_str!("seed/sidebar-tour-text-12.json");
-    pub const SIDEBAR_TOUR_TEXT_11: &str = include_str!("seed/sidebar-tour-text-11.json");
-    pub const SIDEBAR_TOUR_TOURMASTER_WIDGET_TOUR_CATEGORY_6: &str = include_str!("seed/sidebar-tour-tourmaster-widget-tour-category-6.json");
     pub const FOOTER_1_FR_TEXT_1: &str = include_str!("seed/footer-1-fr-text-1.json");
     pub const FOOTER_2_FR_CUSTOM_HTML_3: &str = include_str!("seed/footer-2-fr-custom_html-3.json");
     pub const FOOTER_2_FR_TEXT_17: &str = include_str!("seed/footer-2-fr-text-17.json");
@@ -310,22 +343,12 @@ const SEED_WIDGETS: &[Seed] = &[
         settings: seed::SIDEBAR_POST_FR_WPCATEGORIESWIDGET_9 },
     Seed { sidebar: "sidebar-post-fr", id: "media_image-4", typ: "media_image", title: "",
         settings: seed::SIDEBAR_POST_FR_MEDIA_IMAGE_4 },
-    Seed { sidebar: "sidebar-post-fr", id: "custom_html-13", typ: "tour_list", title: "Voyages suggérés",
-        settings: seed::SIDEBAR_POST_FR_CUSTOM_HTML_13 },
     Seed { sidebar: "sidebar-post-es", id: "search-5", typ: "search", title: "",
         settings: seed::SIDEBAR_POST_ES_SEARCH_5 },
     Seed { sidebar: "sidebar-post-es", id: "wpcategorieswidget-10", typ: "categories", title: "Categorías",
         settings: seed::SIDEBAR_POST_ES_WPCATEGORIESWIDGET_10 },
     Seed { sidebar: "sidebar-post-es", id: "media_image-5", typ: "media_image", title: "",
         settings: seed::SIDEBAR_POST_ES_MEDIA_IMAGE_5 },
-    Seed { sidebar: "sidebar-post-es", id: "custom_html-14", typ: "tour_list", title: "Viajes sugeridos",
-        settings: seed::SIDEBAR_POST_ES_CUSTOM_HTML_14 },
-    Seed { sidebar: "sidebar-tour", id: "text-12", typ: "text", title: "",
-        settings: seed::SIDEBAR_TOUR_TEXT_12 },
-    Seed { sidebar: "sidebar-tour", id: "text-11", typ: "text", title: "",
-        settings: seed::SIDEBAR_TOUR_TEXT_11 },
-    Seed { sidebar: "sidebar-tour", id: "tourmaster-widget-tour-category-6", typ: "tour_category", title: "",
-        settings: seed::SIDEBAR_TOUR_TOURMASTER_WIDGET_TOUR_CATEGORY_6 },
     Seed { sidebar: "footer-1-fr", id: "text-1", typ: "text", title: "",
         settings: seed::FOOTER_1_FR_TEXT_1 },
     Seed { sidebar: "footer-2-fr", id: "custom_html-3", typ: "custom_html", title: "",
@@ -378,7 +401,7 @@ const SEED_VERSION: &str = "3";
 /// Idempotent: creates the tables only when missing (full migration batch on
 /// first touch), seeds only when BOTH tables are empty — deleting a
 /// single widget row stays deleted. The phase-3 upgrade (lang-suffixed
-/// sidebars, live categories/tour_list) is gated on the exact phase-2
+/// sidebars, live categories + adapter types) is gated on the exact phase-2
 /// settings_json: a pristine seeded row converts, an admin-edited row is
 /// left untouched.
 pub(crate) fn ensure(conn: &Connection) -> Result<()> {
@@ -401,7 +424,7 @@ pub(crate) fn ensure(conn: &Connection) -> Result<()> {
     };
     if n_sidebars == 0 && n_widgets == 0 {
         let tx = conn.unchecked_transaction()?;
-        for s in SIDEBARS {
+        for s in all_sidebars() {
             tx.execute(
                 "INSERT INTO sidebars(id, name, lang) VALUES(?1, ?2, ?3)",
                 rusqlite::params![s.id, s.name, s.lang],
@@ -419,9 +442,15 @@ pub(crate) fn ensure(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Insert all seed rows: core `SEED_WIDGETS` first, then every adapter's
+/// `seeds()` — per-sidebar `ord` counters continue across the boundary,
+/// so plugin rows land after core rows in the same sidebar.
 fn seed_widgets(conn: &Connection) -> Result<()> {
     let mut ords: HashMap<&'static str, i64> = HashMap::new();
-    for w in SEED_WIDGETS {
+    let adapter_seeds = crate::admin::plugins::adapters()
+        .iter()
+        .flat_map(|a| a.seeds().iter());
+    for w in SEED_WIDGETS.iter().chain(adapter_seeds) {
         let ord = ords.entry(w.sidebar).or_insert(0);
         conn.execute(
             "INSERT OR IGNORE INTO widgets(id, sidebar_id, type, title, settings_json, ord)
@@ -467,7 +496,7 @@ fn upgrade(conn: &Connection) -> Result<()> {
             rusqlite::params![old, new],
         )?;
     }
-    for s in SIDEBARS {
+    for s in all_sidebars() {
         tx.execute(
             "INSERT OR IGNORE INTO sidebars(id, name, lang) VALUES(?1, ?2, ?3)",
             rusqlite::params![s.id, s.name, s.lang],
@@ -557,17 +586,18 @@ pub(crate) fn render_fragment(html: &str, site_url: &str, lang: &str) -> Result<
 
 /// Render a sidebar to HTML: `before` + each widget's output + `after`.
 /// Widget output: a non-empty `html` setting renders verbatim (frozen or
-/// admin override); otherwise the type's live renderer runs — `categories`
-/// (live taxonomy tree incl. the cat_parent-derived 'category' tree) and
-/// `tour_list` (live tour cards). `current_slug` marks the current-cat on
-/// rendered term lists (live WP behaviour).
+/// admin override); otherwise the type's live renderer runs — core types
+/// (`categories` builds its tree incl. the cat_parent-derived 'category'
+/// hierarchy) or the owning adapter's renderer via `plugin_widget_render`.
+/// `current_slug` marks the current-cat on rendered term lists (live WP
+/// behaviour).
 pub(crate) fn render_sidebar(
     conn: &Connection,
     sidebar_id: &str,
     site_url: &str,
     lang: &str,
     current_slug: &str,
-    tour_base: &str,
+    kind_base: &str,
 ) -> Result<String> {
     ensure(conn)?;
     let mut sid = resolve_id(sidebar_id, lang);
@@ -578,7 +608,8 @@ pub(crate) fn render_sidebar(
             widget_rows = rows(conn, &sid)?;
         }
     }
-    let sidebar = SIDEBARS.iter().find(|s| s.id == sid);
+    let sidebar = all_sidebars();
+    let sidebar = sidebar.iter().find(|s| s.id == sid);
     let mut out = String::new();
     if let Some(s) = sidebar {
         out.push_str(s.before);
@@ -588,7 +619,7 @@ pub(crate) fn render_sidebar(
         // sidebar (a corrupted row is a bug to fix, not content to drop).
         let s: Value = serde_json::from_str(&settings)
             .with_context(|| format!("widget {wid} in {sid}: bad settings_json"))?;
-        let frag = render_widget(conn, &wid, &typ, &title, &s, site_url, lang, current_slug, tour_base)
+        let frag = render_widget(conn, &wid, &typ, &title, &s, site_url, lang, current_slug, kind_base)
             .with_context(|| format!("widget {wid} in {sid}: render"))?;
         out.push_str(&frag);
     }
@@ -596,6 +627,25 @@ pub(crate) fn render_sidebar(
         out.push_str(s.after);
     }
     Ok(out)
+}
+
+/// Live-renderer signature for plugin widget types: `(conn, widget id,
+/// settings, row title, site_url, lang, kind_base)` → the widget's HTML.
+/// `kind_base` is the resolved public URL prefix of the owning kind
+/// ("" for root kinds) — the same value the page render threads.
+pub(crate) type WidgetRender =
+    fn(&Connection, &str, &Value, &str, &str, &str, &str) -> Result<String>;
+
+/// Registry-driven renderer lookup for plugin widget types: the adapter
+/// that declared `typ` in `widget_types()` owns its renderer; core types
+/// return `None` (handled by the match in `render_widget`).
+fn plugin_widget_render(typ: &str) -> Option<WidgetRender> {
+    for a in crate::admin::plugins::adapters() {
+        if a.widget_types().iter().any(|(t, _)| *t == typ) {
+            return crate::admin::plugins::tourmaster::widgets::plugin_render_for(typ);
+        }
+    }
+    None
 }
 
 /// One widget's HTML: frozen `html` first, then the type's live renderer.
@@ -608,15 +658,17 @@ fn render_widget(
     site_url: &str,
     lang: &str,
     current_slug: &str,
-    tour_base: &str,
+    kind_base: &str,
 ) -> Result<String> {
     if let Some(html) = s.get("html").and_then(|h| h.as_str()) {
         return render_fragment(html, site_url, lang);
     }
     match typ {
         "categories" => render_categories_widget(conn, wid, s, title, site_url, lang, current_slug),
-        "tour_list" => render_tour_list(conn, wid, s, title, site_url, lang, tour_base),
-        _ => Ok(String::new()),
+        other => match plugin_widget_render(other) {
+            Some(render) => render(conn, wid, s, title, site_url, lang, kind_base),
+            None => Ok(String::new()),
+        },
     }
 }
 
@@ -868,7 +920,7 @@ fn render_categories_widget(
     let mut items = String::new();
     for n in &tree {
         // The node slug slot carries the full link: for 'category' the
-        // hierarchical cat_path, for tour taxonomies /{tax}/{slug}/.
+        // hierarchical cat_path, for other taxonomies /{tax}/{slug}/.
         let href = if taxonomy == "category" {
             format!("{site_url}{prefix}/{}/", crate::render_post::cat_path(&n.slug))
         } else {
@@ -956,230 +1008,6 @@ fn emit_tree(
     out.push_str(&format!("{ul_indent}</ul>\n"));
 }
 
-// ---------------------------------------------------------------------------
-// tour_list widget — live tour cards
-// ---------------------------------------------------------------------------
-
-/// `post_meta` single value (meta1/opt_s equivalent of the archive
-/// renderer's helper).
-fn meta1(conn: &Connection, post_id: i64, key: &str) -> String {
-    conn.query_row(
-        crate::sql!("archive__select_meta_value"),
-        rusqlite::params![post_id, key],
-        |r| r.get::<_, String>(0),
-    )
-    .unwrap_or_default()
-}
-
-/// One tourmaster recent-tour card — the markup captured inside
-/// custom_html-13: thumbnail (sizes_json 'thumbnail' → 96×96, else the
-/// full image at 128×85), title, ribbon (promo-text or style term names
-/// with the tourmaster colours) and the De/Desde price block.
-fn tour_card(conn: &Connection, post_id: i64, site_url: &str, lang: &str, tour_base: &str) -> Result<Option<String>> {
-    let row: Option<(String, String, Option<i64>)> = conn
-        .query_row(
-            "SELECT slug, title, featured_media_id FROM posts WHERE id=?1 AND status='publish'",
-            [post_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
-        .ok();
-    let Some((slug, title, fid)) = row else {
-        // WP drops non-published ids from the query silently.
-        return Ok(None);
-    };
-    let opt = crate::php_serialize::unserialize(meta1(conn, post_id, "tourmaster-tour-option").as_bytes())
-        .unwrap_or(Value::Null);
-    let os = |k: &str| -> String {
-        opt.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string()
-    };
-    let mut promo_text = os("promo-text");
-    if promo_text.is_empty() {
-        // same fallback as the archive cards: the tour's style term names
-        let style_tax = if lang == "es" { "estilo" } else { "style" };
-        let names: Vec<String> = conn
-            .prepare(crate::sql!("archive__select_post_term_names"))?
-            .query_map(rusqlite::params![post_id, style_tax], |r| r.get::<_, String>(0))?
-            .flatten()
-            .collect();
-        promo_text = names.join(", ");
-    }
-    // display price: tour-price-text → tourmaster-tour-price → price_range
-    let raw_price = {
-        let t = os("tour-price-text");
-        if !t.is_empty() {
-            t
-        } else {
-            let m = meta1(conn, post_id, "tourmaster-tour-price");
-            if !m.is_empty() {
-                m
-            } else {
-                conn.query_row::<String, _, _>(
-                    "SELECT COALESCE(price_range,'') FROM tours WHERE post_id=?1",
-                    [post_id],
-                    |r| r.get(0),
-                )
-                .unwrap_or_default()
-            }
-        }
-    };
-    let display = crate::render_tour::display_slug(conn, post_id, &slug, &title);
-    let prefix = if lang == "es" { "/es" } else { "" };
-    let url = format!("{site_url}{prefix}/{tour_base}/{display}/");
-
-    // Thumbnail: media sizes_json 'thumbnail' → the 150x150 file rendered
-    // at 96×96; otherwise the full image at 128×85 (the two shapes the
-    // capture carries).
-    let (img_path, iw, ih, alt) = match fid.and_then(|f| {
-        conn.query_row(
-            "SELECT path, COALESCE(alt,''), sizes_json FROM media WHERE id=?1",
-            [f],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)),
-        )
-        .ok()
-    }) {
-        Some((path, alt, sizes)) => {
-            let thumb = serde_json::from_str::<Value>(&sizes)
-                .ok()
-                .and_then(|sj| {
-                    sj.get("thumbnail")
-                        .and_then(|t| t.get("file"))
-                        .and_then(|f| f.as_str())
-                        .map(|f| f.to_string())
-                });
-            match thumb {
-                Some(file) => {
-                    let dir = path.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
-                    (format!("{dir}/{file}"), 96, 96, alt)
-                }
-                None => (path, 128, 85, alt),
-            }
-        }
-        None => (String::new(), 0, 0, String::new()),
-    };
-    let img = if img_path.is_empty() {
-        String::new()
-    } else {
-        format!(
-            "<img src=\"{site_url}/wp-content/uploads/{img_path}\" alt=\"{}\" width=\"{iw}\" height=\"{ih}\">",
-            crate::render_archive::esc_attr_pub(&alt),
-        )
-    };
-
-    let promo_bg = os("promo-text-ribbon-background");
-    let promo_color = os("promo-text-ribbon-text-color");
-    let ribbon = if promo_text.is_empty() {
-        String::new()
-    } else {
-        format!(
-            "<div class=\"tourmaster-thumbnail-ribbon gdlr-core-outer-frame-element\" style=\"color: {};background-color: {};\"><div class=\"tourmaster-thumbnail-ribbon-cornor\" style=\"border-right-color: {};\"></div>{}</div>",
-            if promo_color.is_empty() { "#ffffff".to_string() } else { crate::render_archive::esc_attr_pub(&promo_color) },
-            crate::render_archive::esc_attr_pub(&promo_bg),
-            crate::render_archive::rgba_pub(&promo_bg, 0.5),
-            crate::render_archive::esc(&promo_text),
-        )
-    };
-    let price = crate::render_archive::fmt_price_pub(&raw_price);
-    let price_html = if price.is_empty() {
-        String::new()
-    } else {
-        format!(
-            "<div class=\"tourmaster-tour-price-wrap \"><span class=\"tourmaster-tour-price\"><span class=\"tourmaster-head\">{}</span><span class=\"tourmaster-tail\">{}</span></span></div>",
-            if lang == "es" { "Desde" } else { "De" },
-            price,
-        )
-    };
-    let info_class = if ribbon.is_empty() {
-        "tourmaster-tour-content-info clearfix"
-    } else {
-        "tourmaster-tour-content-info clearfix tourmaster-with-ribbon"
-    };
-    Ok(Some(format!(
-        "<div class=\"tourmaster-item-list tourmaster-tour-widget tourmaster-item-pdlr\"><div class=\"tourmaster-tour-widget-inner clearfix\"><div class=\"tourmaster-tour-thumbnail tourmaster-media-image \"><a href=\"{url}\">{img}</a></div><div class=\"tourmaster-tour-content-wrap\"><h3 class=\"tourmaster-tour-title gdlr-core-skin-title\"><a href=\"{url}\">{}</a></h3><div class=\"{info_class}\">{ribbon}{price_html}</div></div></div></div>",
-        crate::render_archive::wp_title_pub(&title.replace('<', "&lt;").replace('>', "&gt;")),
-    )))
-}
-
-/// Live `tour_list` widget: the custom_html-13 wrapper shape (outer
-/// custom-html widget div + tourmaster-tour-widget inner) around live
-/// cards. `wrapper`/`inner` settings override the emitted ids so seeded
-/// rows keep their capture ids.
-fn render_tour_list(
-    conn: &Connection,
-    wid: &str,
-    s: &Value,
-    row_title: &str,
-    site_url: &str,
-    lang: &str,
-    tour_base: &str,
-) -> Result<String> {
-    let title = s
-        .get("title")
-        .and_then(|t| t.as_str())
-        .filter(|t| !t.is_empty())
-        .unwrap_or(row_title);
-    let count: i64 = s
-        .get("count")
-        .and_then(|c| c.as_i64().or_else(|| c.as_str().and_then(|x| x.parse().ok())))
-        .unwrap_or(10);
-    let mode = s.get("mode").and_then(|m| m.as_str()).unwrap_or("recent");
-    let ids: Vec<i64> = if mode == "manual" {
-        s.get("manual_ids")
-            .and_then(|a| a.as_array())
-            .map(|a| {
-                a.iter()
-                    .filter_map(|v| v.as_i64().or_else(|| v.as_str().and_then(|x| x.parse().ok())))
-                    .collect()
-            })
-            .unwrap_or_default()
-    } else {
-        let mut st = conn.prepare(crate::sql!("widgets__recent_tours"))?;
-        let v: Vec<i64> = st
-            .query_map(rusqlite::params![lang, count], |r| r.get::<_, i64>(0))?
-            .flatten()
-            .collect();
-        v
-    };
-    let mut cards = String::new();
-    for id in ids {
-        if let Some(card) = tour_card(conn, id, site_url, lang, tour_base)? {
-            cards.push_str(&card);
-        }
-    }
-    let heading = if title.is_empty() {
-        String::new()
-    } else {
-        format!(
-            "<h2 class=\"traveltour-widget-title\"><span class=\"traveltour-widget-head-text\">{}</span></h2><span class=\"clear\"></span>",
-            crate::render_archive::esc(title),
-        )
-    };
-    let wrapper = s
-        .get("wrapper")
-        .and_then(|w| w.as_str())
-        .filter(|w| !w.is_empty())
-        .unwrap_or(wid);
-    let inner = s
-        .get("inner")
-        .and_then(|w| w.as_str())
-        .filter(|w| !w.is_empty())
-        .map(|w| w.to_string())
-        .unwrap_or_else(|| {
-            // tourmaster-tour-widget-N: the instance number mirrors the
-            // widget id suffix when it has one.
-            let n: i64 = wid
-                .rsplit('-')
-                .next()
-                .and_then(|x| x.parse().ok())
-                .unwrap_or(2);
-            format!("tourmaster-tour-widget-{n}")
-        });
-    Ok(format!(
-        "<div id=\"{wrapper}\" class=\"widget_text widget widget_custom_html traveltour-widget\"><div class=\"textwidget custom-html-widget\"><div id=\"{inner}\" class=\"widget widget_tourmaster-tour-widget traveltour-widget\">{heading}<div class=\"tourmaster-recent-tour-widget tourmaster-tour-item\">{cards}</div></div></div></div>",
-        wrapper = crate::render_archive::esc_attr_pub(wrapper),
-        inner = crate::render_archive::esc_attr_pub(&inner),
-    ))
-}
-
 /// Structured widget values for sidebars rendered by a template loop
 /// (sidebar-archive-* → `{% for w in widgets %}` in archive.html).
 /// `categories` widgets with a taxonomy emit the `{id, taxonomy, title,
@@ -1194,7 +1022,7 @@ pub(crate) fn sidebar_widgets(
     sidebar_id: &str,
     site_url: &str,
     lang: &str,
-    tour_base: &str,
+    kind_base: &str,
 ) -> Result<Vec<Value>> {
     ensure(conn)?;
     let sid = resolve_id(sidebar_id, lang);
@@ -1211,7 +1039,7 @@ pub(crate) fn sidebar_widgets(
             && s.get("taxonomy").and_then(|t| t.as_str()).is_some()
             && s.get("html").and_then(|h| h.as_str()).is_none();
         if !is_live_categories {
-            let html = render_widget(conn, &wid, &typ, &title, &s, site_url, lang, "", tour_base)
+            let html = render_widget(conn, &wid, &typ, &title, &s, site_url, lang, "", kind_base)
                 .with_context(|| format!("widget {wid} in {sid}: render"))?;
             if !html.is_empty() {
                 out.push(json!({"id": wid, "html": html}));

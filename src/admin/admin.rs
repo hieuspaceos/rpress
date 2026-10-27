@@ -37,7 +37,7 @@ pub(crate) async fn api_generate(
     let templates = sc.templates.clone();
     let out = sc.out.clone();
     let flag = sc.generating.clone();
-    let tour_base = sc.tour_base.clone();
+    let tour_base = crate::admin::tour_base(&sc).to_string();
     tokio::task::spawn_blocking(move || {
         // "Rebuild site files" under the render-first model: NOT a page
         // bake — just the scheduled duties + utility files + cache bust.
@@ -1099,7 +1099,7 @@ pub(crate) fn regen_posts_with_terms(sc: &SiteCtx, ids: &[i64], extra_terms: &[(
     let db = sc.db.clone();
     let templates = sc.templates.clone();
     let out = sc.out.clone();
-    let tour_base = sc.tour_base.clone();
+    let tour_base = crate::admin::tour_base(sc).to_string();
     tokio::task::spawn_blocking(move || {
         let conn = match crate::db::conn(&db) {
             Ok(c) => c,

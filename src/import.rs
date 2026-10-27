@@ -131,10 +131,17 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
                 {
                     // Carry every option the runtime reads so a migrated site
                     // keeps its source site's moderation/media/feed config
-                    // instead of falling back to built-in defaults.
-                    if matches!(
+                    // instead of falling back to built-in defaults. Plugin
+                    // options whitelist by the adapter's declared prefixes
+                    // (`ImportHooks.option_prefixes`).
+                    let plugin_opt = crate::admin::plugins::adapters()
+                        .iter()
+                        .filter_map(|a| a.import_hooks())
+                        .flat_map(|h| h.option_prefixes.iter())
+                        .any(|p| k.starts_with(p));
+                    if plugin_opt || matches!(
                         k.as_str(),
-                        "page_on_front" | "show_on_front" | "siteurl" | "tourmaster_general"
+                        "page_on_front" | "show_on_front" | "siteurl"
                             | "blogname" | "rss_use_excerpt"
                             | "require_name_email" | "comment_moderation"
                             | "comment_max_links" | "comment_previously_approved"
@@ -292,10 +299,16 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
     }
 
     let kind_of = |t: &str| -> Option<&'static str> {
+        // Plugin adapters claim their wp post_types first; core post/page
+        // fall through.
+        for a in crate::admin::plugins::adapters() {
+            if let Some(kind) = a.import_hooks().and_then(|h| (h.claim_type)(t)) {
+                return Some(kind);
+            }
+        }
         match t {
             "post" => Some("post"),
             "page" => Some("page"),
-            "tour" => Some("tour"),
             "site-review" => Some("site-review"),
             _ => None,
         }
@@ -418,6 +431,12 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
                         if stmt_meta.execute(params![p.id, k, mv])? == 0 {
                             dropped_meta += 1;
                         }
+                    }
+                }
+                // Plugin per-row hooks run inside the import tx (T13).
+                for a in crate::admin::plugins::adapters() {
+                    if let Some(h) = a.import_hooks() {
+                        (h.post_imported)(&tx, p.id)?;
                     }
                 }
             }
@@ -689,6 +708,15 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
         stmt_mi, stmt_trans, stmt_trans_member, stmt_term, stmt_ttrans, stmt_set, stmt_h,
     ));
     tx.commit()?;
+
+    // Post-import plugin hooks: denormalization/promotion over the
+    // committed data (adapter-declared; e.g. a summary table synced from
+    // post_meta).
+    for a in crate::admin::plugins::adapters() {
+        if let Some(h) = a.import_hooks() {
+            (h.after_import)(&conn)?;
+        }
+    }
 
     if dropped_meta > 0 {
         rep.log(format!(

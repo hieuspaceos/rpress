@@ -24,7 +24,8 @@ pub(crate) fn translation_urls(conn: &Connection, id: i64, site: &str, tour_base
     let mut out = Vec::new();
     for (lang, pid) in rows {
         if let Some((slug, kind)) = slug_of(conn, pid) {
-            out.push((lang.clone(), crate::lang::page_url(&cfg, site, &lang, &kind, &slug, tour_base)));
+            let base = crate::admin::plugins::kind_url_base(tour_base, &kind);
+            out.push((lang.clone(), crate::lang::page_url(&cfg, site, &lang, &kind, &slug, base.as_deref())));
         }
     }
     Ok(out)
@@ -50,8 +51,8 @@ pub(crate) fn slug_of(conn: &Connection, id: i64) -> Option<(String, String)> {
 pub(crate) fn page_url(conn: &Connection, site: &str, lang: &str, kind: &str, slug: &str, tour_base: &str) -> String {
     let cfg = crate::lang::config(conn);
     let prefix = crate::lang::url_prefix(&cfg, lang);
-    match kind {
-        "tour" => format!("{site}{prefix}/{tour_base}/{slug}/"),
+    match crate::admin::plugins::kind_url_base(tour_base, kind) {
+        Some(b) if !b.is_empty() => format!("{site}{prefix}/{b}/{slug}/"),
         _ => format!("{site}{prefix}/{slug}/"),
     }
 }

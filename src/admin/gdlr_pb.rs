@@ -1877,7 +1877,7 @@ fn page_builder_var(defs_e: &Value, defs_w: &Value, post_id: i64) -> String {
 pub(crate) fn boot(conn: &Connection, sc: &SiteCtx, post_id: i64, body_json: &str, csrf: &str) -> String {
     let (defs_e, defs_w) = defs(sc);
     PB_DEFS.with(|d| *d.borrow_mut() = defs_e.clone());
-    PB_TOUR_BASE.with(|t| *t.borrow_mut() = sc.tour_base.clone());
+    PB_TOUR_BASE.with(|t| *t.borrow_mut() = crate::admin::tour_base(sc).to_string());
 
     let saved: Value = serde_json::from_str(body_json).unwrap_or(json!([]));
     let items_html = pb_items(conn, &defs_e, &saved);
@@ -2137,7 +2137,7 @@ pub async fn ajax(State(app): State<App>, headers: HeaderMap, body: String) -> R
 pub(crate) fn ajax_dispatch(conn: &Connection, sc: &SiteCtx, form: &Map<String, Value>) -> Response {
     let (defs_e, defs_w) = defs(sc);
     PB_DEFS.with(|d| *d.borrow_mut() = defs_e.clone());
-    PB_TOUR_BASE.with(|t| *t.borrow_mut() = sc.tour_base.clone());
+    PB_TOUR_BASE.with(|t| *t.borrow_mut() = crate::admin::tour_base(sc).to_string());
     let icons_val = icons(sc);
     let action = s(form, "action");
 

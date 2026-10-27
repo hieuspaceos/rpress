@@ -297,12 +297,22 @@ fn term_banner(conn: &Connection, slug: &str) -> String {
 pub(crate) fn page(
     conn: &Connection,
     templates: &Path,
-    ctx: &crate::render_tour::PostCtx,
+    ctx: &crate::admin::plugins::RenderCtx,
     term: &Term,
 ) -> Result<String> {
     let site_url = ctx.site_url.trim_end_matches('/').to_string();
     let is_post_tax = term.taxonomy == "category" || term.taxonomy == "post_tag";
     let lang = ctx.lang.as_str();
+    // The taxonomy's owning adapter (its kind's KindDef.taxonomies claims
+    // the name) supplies member slug canonicalization + taxonomy bases.
+    let tax_adapter = crate::admin::plugins::kind_defs()
+        .iter()
+        .find(|d| {
+            d.taxonomies
+                .iter()
+                .any(|t| t.eq_ignore_ascii_case(&term.taxonomy))
+        })
+        .and_then(|d| crate::admin::plugins::adapter_for_kind(d.kind));
     let es = lang == "es" || (!is_post_tax && matches!(term.taxonomy.as_str(), "region-es" | "perfil" | "duracion" | "estilo"));
     let meta1 = |id: i64, key: &str| -> String {
         conn.query_row(
@@ -319,7 +329,13 @@ pub(crate) fn page(
         match tax {
             "category" => format!("{prefix}/{}/", crate::render_post::cat_path(slug)),
             "post_tag" => format!("{prefix}/etiquette/{slug}/"),
-            t => format!("{prefix}/{}/{}/", t.to_lowercase(), slug),
+            t => {
+                let base = tax_adapter
+                    .and_then(|a| a.taxonomy_base(t))
+                    .map(|b| b.to_lowercase())
+                    .unwrap_or_else(|| t.to_lowercase());
+                format!("{prefix}/{base}/{slug}/")
+            }
         }
     };
     let term_path = term_url_path(&term.taxonomy, &term.slug, &prefix);
@@ -489,8 +505,12 @@ pub(crate) fn page(
                     meta1(*id, "tourmaster-tour-price")
                 }
             };
-            let display = crate::render_tour::display_slug(conn, *id, slug, title);
-            let url = format!("{site_url}{prefix}/{}/{display}/", ctx.tour_base);
+            // Adapter-owned kinds canonicalize the member slug via their
+            // display_slug hook; unowned taxonomies keep the raw slug.
+            let display = tax_adapter
+                .and_then(|a| a.display_slug(conn, *id, slug, title))
+                .unwrap_or_else(|| slug.clone());
+            let url = format!("{site_url}{prefix}/{}/{display}/", ctx.kind_base);
             let image = fid
                 .and_then(|m| crate::render::media_lookup(conn, m))
                 .map(|(p, _)| format!("{site_url}/wp-content/uploads/{p}"))
@@ -569,9 +589,9 @@ pub(crate) fn page(
         &seo_desc,
         "",
         &alternates,
-        &ctx.tour_base,
+        &ctx.kind_base,
     )?;
-    let sidebar_post = crate::widgets::render_sidebar(conn, "sidebar-post", &site_url, lang, &term.slug, &ctx.tour_base)?;
+    let sidebar_post = crate::widgets::render_sidebar(conn, "sidebar-post", &site_url, lang, &term.slug, &ctx.kind_base)?;
     for (k, v) in serde_json::json!({
         "seo_title": esc_attr(&term.name),
         "seo_desc": seo_desc,
@@ -590,7 +610,7 @@ pub(crate) fn page(
         "posts": post_cards,
         "current": &term.slug,
         "term_count": if post_cards.is_empty() { cards.len() } else { post_cards.len() },
-        "widgets": if is_post_tax { Vec::<Value>::new() } else { crate::widgets::sidebar_widgets(conn, "sidebar-archive", &site_url, lang, &ctx.tour_base)? },
+        "widgets": if is_post_tax { Vec::<Value>::new() } else { crate::widgets::sidebar_widgets(conn, "sidebar-archive", &site_url, lang, &ctx.kind_base)? },
         "sidebar_post": sidebar_post,
         "body": "",
     })

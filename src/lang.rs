@@ -77,11 +77,15 @@ pub fn primary_alias<'a>(cfg: &LangConfig, clean: &'a str) -> Option<&'a str> {
     None
 }
 
-pub fn page_path(cfg: &LangConfig, lang: &str, kind: &str, slug: &str, tour_base: &str) -> String {
+pub fn page_path(cfg: &LangConfig, lang: &str, _kind: &str, slug: &str, kind_base: Option<&str>) -> String {
     let mut parts: Vec<String> = Vec::new();
     let lp = rel_prefix(cfg, lang);
     if !lp.is_empty() { parts.push(lp); }
-    if kind == "tour" { parts.push(tour_base.trim_matches('/').to_string()); }
+    // Plugin kinds serve under a URL base segment resolved via KindBases
+    // (today only the tour adapter; root kinds pass None).
+    if let Some(b) = kind_base {
+        if !b.is_empty() { parts.push(b.trim_matches('/').to_string()); }
+    }
     if !slug.is_empty() { parts.push(slug.trim_matches('/').to_string()); }
     if parts.is_empty() { "/".to_string() } else { format!("/{}/", parts.join("/")) }
 }
@@ -105,8 +109,8 @@ pub fn template_name(templates: &std::path::Path, cfg: &LangConfig, lang: &str) 
     "base_es.html".to_string()
 }
 
-pub fn page_url(cfg: &LangConfig, site: &str, lang: &str, kind: &str, slug: &str, tour_base: &str) -> String {
-    format!("{}{}", site.trim_end_matches('/'), page_path(cfg, lang, kind, slug, tour_base))
+pub fn page_url(cfg: &LangConfig, site: &str, lang: &str, kind: &str, slug: &str, kind_base: Option<&str>) -> String {
+    format!("{}{}", site.trim_end_matches('/'), page_path(cfg, lang, kind, slug, kind_base))
 }
 
 /// Flag asset filename for a language code. The vendored Polylang flag set

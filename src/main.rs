@@ -35,7 +35,7 @@ enum Cmd {
         out: PathBuf,
         #[arg(long, default_value = "http://localhost:8400")]
         site_url: String,
-        /// URL segment for the tour CPT (e.g. "voyage").
+        /// URL base for the tour plugin (e.g. "voyage").
         #[arg(long, default_value = "voyage")]
         tour_base: String,
     },
@@ -52,7 +52,7 @@ enum Cmd {
         site_url: String,
         #[arg(long)]
         www: Option<PathBuf>,
-        /// URL segment for the tour CPT (e.g. "voyage").
+        /// URL base for the tour plugin (e.g. "voyage").
         #[arg(long, default_value = "voyage")]
         tour_base: String,
     },
@@ -87,7 +87,7 @@ enum Cmd {
         /// Brand name shown in the admin chrome.
         #[arg(long)]
         name: Option<String>,
-        /// URL segment for the tour CPT (e.g. "voyage").
+        /// URL base for the tour plugin (e.g. "voyage").
         #[arg(long, default_value = "voyage")]
         tour_base: String,
     },
@@ -123,7 +123,7 @@ enum RenderStep {
         out: PathBuf,
         #[arg(long, default_value = "http://localhost:8400")]
         site_url: String,
-        /// URL segment for the tour CPT (e.g. "voyage").
+        /// URL base for the tour plugin (e.g. "voyage").
         #[arg(long, default_value = "voyage")]
         tour_base: String,
     },
@@ -139,7 +139,7 @@ enum RenderStep {
         templates: PathBuf,
         #[arg(long, default_value = "http://localhost:8400")]
         site_url: String,
-        /// URL segment for the tour CPT (e.g. "voyage").
+        /// URL base for the tour plugin (e.g. "voyage").
         #[arg(long, default_value = "voyage")]
         tour_base: String,
     },
@@ -322,7 +322,7 @@ struct InitArgs {
     /// Display name in admin chrome
     #[arg(long)]
     name: Option<String>,
-    /// Tour CPT URL segment
+    /// URL base for the tour plugin (e.g. "voyage")
     #[arg(long)]
     tour_base: Option<String>,
     /// Confirm the pull source is a clone/staging, never production

@@ -541,10 +541,11 @@ fn check(c: &Ctx) -> Result<PhaseOut> {
 
     let mut warns = vec![];
     let mut misses = vec![];
+    let kind_bases = crate::admin::plugins::resolve_bases(&c.env.tour_base);
     for (id, slug, lang, kind) in &rows {
         let mut rel = slug.clone();
-        if kind == "tour" {
-            rel = format!("{}/{rel}", c.env.tour_base);
+        if let Some(b) = crate::admin::plugins::base_for(&kind_bases, kind) {
+            rel = format!("{b}/{rel}");
         }
         if lang != &primary {
             rel = format!("{lang}/{rel}");

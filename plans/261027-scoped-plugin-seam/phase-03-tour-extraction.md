@@ -1,7 +1,7 @@
 ---
 phase: 3
 title: "Tour extraction: render/generate/lang/widgets/import decoupling"
-status: pending
+status: done
 priority: P1
 effort: "3d"
 dependencies: [2]
@@ -158,14 +158,14 @@ present and identical; `/admin/tours` CRUD roundtrip.
 
 ## Todos
 
-- [ ] `KindBases` + resolve + threaded (step 1 compiles green alone)
-- [ ] import_hooks dispatch + after_import(promote_tours)
-- [ ] render_tour move + adapter render dispatch + sql renames
-- [ ] site_data_feeds (tours + site-review)
-- [ ] widget types/sidebars/seeds via adapter
-- [ ] lang.rs/generate.rs KindBases swap
-- [ ] SiteEnv/SiteCtx passthrough deprecation
-- [ ] Literal sweep green; byte-parity diff on fixture site
+- [x] `KindBases` + resolve + threaded (step 1 compiles green alone)
+- [x] import_hooks dispatch + after_import(promote_tours)
+- [x] render_tour move + adapter render dispatch + sql renames
+- [x] site_data_feeds (tours + site-review)
+- [x] widget types/sidebars/seeds via adapter
+- [x] lang.rs/generate.rs KindBases swap
+- [x] SiteEnv/SiteCtx passthrough deprecation
+- [x] Literal sweep green; byte-parity diff on fixture site
 
 ## Risks
 

@@ -20,7 +20,7 @@ pub(crate) use nodes::{register_helpers, render_fragment_db, render_nodes, ELEME
 pub(crate) mod shortcode;
 pub(crate) use shortcode::{esc, esc_attr, expand_shortcodes, media_img_attrs, blog_posts, media_info};
 pub(crate) mod chrome;
-pub(crate) use chrome::{chrome_vars, hreflang_links, iso8601, page_url, slug_of, translation_urls};
+pub(crate) use chrome::{chrome_vars, hreflang_links, iso8601, page_url, translation_urls};
 pub(crate) mod site_data;
 pub(crate) use site_data::{site_data_cached, site_data_bust};
 pub use markdown::{html_to_markdown, post_markdown};
@@ -95,7 +95,7 @@ pub fn render_slug(
         if path.is_empty() && alang_s != lang_cfg.primary {
             if let Some(front_id) = front_id_for_lang(&conn, &alang_s) {
                 let (h, s) = render_slug_by_id_public(&conn, templates, front_id, site_url, tour_base)?;
-                let canonical = crate::lang::page_path(&lang_cfg, &alang_s, "page", "", tour_base);
+                let canonical = crate::lang::page_path(&lang_cfg, &alang_s, "page", "", None);
                 return Ok((h, s, canonical));
             }
         }
@@ -119,7 +119,7 @@ pub fn render_slug(
         };
         if let Some(term) = term {
             let canonical = term_canonical_path(&lang_cfg, &term, alang);
-            let ctx = crate::render_tour::PostCtx {
+            let ctx = crate::admin::plugins::RenderCtx {
                 slug: slug.to_string(),
                 lang: alang.to_string(),
                 title: term.name.clone(),
@@ -128,7 +128,7 @@ pub fn render_slug(
                 body_html: String::new(),
                 body_html_rendered: String::new(),
                 kind: "archive".to_string(),
-                tour_base: tour_base.to_string(),
+                kind_base: tour_base.to_string(),
             };
             let h = crate::render_archive::page(&conn, templates, &ctx, &term)?;
             return Ok((h, "publish".to_string(), canonical));
@@ -138,7 +138,7 @@ pub fn render_slug(
         if !leaf.is_empty() {
             if let Some(term) = crate::render_archive::term_by_path(&conn, "category", leaf) {
                 let canonical = term_canonical_path(&lang_cfg, &term, alang);
-                let ctx = crate::render_tour::PostCtx {
+                let ctx = crate::admin::plugins::RenderCtx {
                     slug: slug.to_string(),
                     lang: alang.to_string(),
                     title: term.name.clone(),
@@ -147,7 +147,7 @@ pub fn render_slug(
                     body_html: String::new(),
                     body_html_rendered: String::new(),
                     kind: "archive".to_string(),
-                    tour_base: tour_base.to_string(),
+                    kind_base: tour_base.to_string(),
                 };
                 let h = crate::render_archive::page(&conn, templates, &ctx, &term)?;
                 return Ok((h, "publish".to_string(), canonical));
@@ -200,14 +200,15 @@ pub(crate) fn post_canonical_path(conn: &Connection, id: i64, tour_base: &str) -
         .ok()?;
     let cfg = crate::lang::config(conn);
     if cfg.langs.iter().any(|l| front_id_for_lang(conn, l) == Some(id)) {
-        return Some(crate::lang::page_path(&cfg, &lang, "page", "", tour_base));
+        return Some(crate::lang::page_path(&cfg, &lang, "page", "", None));
     }
-    let wslug = if kind == "tour" {
-        crate::render_tour::display_slug(conn, id, &slug, &title)
-    } else {
-        slug
-    };
-    Some(crate::lang::page_path(&cfg, &lang, &kind, &wslug, tour_base))
+    // Adapter-owned kinds canonicalize their slug (display_slug); core
+    // kinds use the stored slug verbatim.
+    let wslug = crate::admin::plugins::adapter_for_kind(&kind)
+        .and_then(|a| a.display_slug(conn, id, &slug, &title))
+        .unwrap_or(slug);
+    let base = crate::admin::plugins::kind_url_base(tour_base, &kind);
+    Some(crate::lang::page_path(&cfg, &lang, &kind, &wslug, base.as_deref()))
 }
 
 /// Canonical archive path for a resolved term under request language
@@ -454,23 +455,25 @@ fn render_row(
     let site = site_data_cached(&conn, &lang, site_url, tour_base)?;
     let body = render_nodes(&mut env, &tree, &media, site_url, &site, &lang, &post_v, Some(&conn), true, tour_base)?;
 
-    // tour/post kinds get their full single-page scaffolding from dedicated
-    // modules (banner, booking bar, breadcrumbs, comments, sidebar…).
-    match kind.as_str() {
-        "tour" => {
-            let ctx = crate::render_tour::PostCtx {
-                slug: slug.to_string(),
-                lang: lang.clone(),
-                title: title.clone(),
-                id,
-                site_url: site_url.to_string(),
-                body_html: body_html.clone(),
-                body_html_rendered: body.clone(),
-                kind: kind.clone(),
-                tour_base: tour_base.to_string(),
-            };
-            return crate::render_tour::page(&conn, templates, &ctx);
+    // Adapter-owned kinds get their full single-page scaffolding from the
+    // owning plugin; built-in kinds (post) keep dedicated core modules.
+    if let Some(adapter) = crate::admin::plugins::adapter_for_kind(&kind) {
+        let ctx = crate::admin::plugins::RenderCtx {
+            slug: slug.to_string(),
+            lang: lang.clone(),
+            title: title.clone(),
+            id,
+            site_url: site_url.to_string(),
+            body_html: body_html.clone(),
+            body_html_rendered: body.clone(),
+            kind: kind.clone(),
+            kind_base: tour_base.to_string(),
+        };
+        if let Some(html) = adapter.render(&conn, templates, &ctx)? {
+            return Ok(html);
         }
+    }
+    match kind.as_str() {
         "post" => {
             let ctx = crate::render_post::PostCtx {
                 slug: slug.to_string(),
@@ -490,14 +493,14 @@ fn render_row(
 
     let lang_cfg = crate::lang::config(conn);
     let mut alternates = translation_urls(conn, id, site_url, tour_base)?;
-    let mut canonical = crate::lang::page_url(&lang_cfg, site_url, &lang, kind.as_str(), slug, tour_base);
+    let mut canonical = crate::lang::page_url(&lang_cfg, site_url, &lang, kind.as_str(), slug, crate::admin::plugins::kind_url_base(tour_base, &kind).as_deref());
     // Front pages: WP permalinks them at the language root regardless of
     // stored slug; generate one alternate root per configured language.
     if lang_cfg.langs.iter().any(|l| front_id_for_lang(conn, l) == Some(id)) {
-        canonical = crate::lang::page_url(&lang_cfg, site_url, &lang, "page", "", tour_base);
+        canonical = crate::lang::page_url(&lang_cfg, site_url, &lang, "page", "", None);
         alternates = lang_cfg.langs.iter()
             .filter(|l| front_id_for_lang(conn, l).is_some())
-            .map(|l| (l.clone(), crate::lang::page_url(&lang_cfg, site_url, l, "page", "", tour_base)))
+            .map(|l| (l.clone(), crate::lang::page_url(&lang_cfg, site_url, l, "page", "", None)))
             .collect();
     }
     let hreflang_links = hreflang_links(&alternates);
@@ -722,8 +725,8 @@ pub(crate) fn translation_canonical(
         .ok()
         .flatten()?;
     // Prefer the group's primary-lang member when the post is grouped —
-    // its permalink is the canonical one. Tours permalink under their
-    // display slug (meta-derived), not the stored slug.
+    // its permalink is the canonical one. Adapter-owned kinds permalink
+    // under their display slug (meta-derived), not the stored slug.
     let target = conn
         .query_row(
             "SELECT m2.post_id, p.lang, p.kind, p.slug FROM post_translation_members m \
@@ -739,19 +742,22 @@ pub(crate) fn translation_canonical(
         .map(|(_pid, l, k, s)| (l, k, s))
         .unwrap_or((plang, pkind, pslug));
     let (tlang, tkind, tslug) = target;
-    let url_slug = if tkind == "tour" {
-        let tid: i64 = conn
-            .query_row("SELECT id FROM posts WHERE slug=?1 AND lang=?2 AND kind='tour' AND status='publish' LIMIT 1",
-                rusqlite::params![tslug, tlang], |r| r.get(0))
-            .unwrap_or(id);
-        let title: String = conn
-            .query_row("SELECT title FROM posts WHERE id=?1", [tid], |r| r.get(0))
-            .unwrap_or_default();
-        crate::render_tour::display_slug(conn, tid, &tslug, &title)
-    } else {
-        tslug
+    let url_slug = match crate::admin::plugins::adapter_for_kind(&tkind) {
+        Some(adapter) => {
+            // Adapter-owned kinds permalink under a canonical display slug,
+            // not the stored slug — resolve the row first.
+            let tid: i64 = conn
+                .query_row("SELECT id FROM posts WHERE slug=?1 AND lang=?2 AND kind=?3 AND status='publish' LIMIT 1",
+                    rusqlite::params![tslug, tlang, tkind], |r| r.get(0))
+                .unwrap_or(id);
+            let title: String = conn
+                .query_row("SELECT title FROM posts WHERE id=?1", [tid], |r| r.get(0))
+                .unwrap_or_default();
+            adapter.display_slug(conn, tid, &tslug, &title).unwrap_or(tslug)
+        }
+        None => tslug,
     };
-    Some(crate::lang::page_url(cfg, "", &tlang, &tkind, &url_slug, tour_base))
+    Some(crate::lang::page_url(cfg, "", &tlang, &tkind, &url_slug, crate::admin::plugins::kind_url_base(tour_base, &tkind).as_deref()))
 }
 
 /// Admin draft preview (phase 6.1): render any post — including drafts,

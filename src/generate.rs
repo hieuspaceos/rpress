@@ -2,6 +2,7 @@
 
 #[allow(unused_imports)]
 use crate::sql;
+use crate::admin::plugins::{self, KindBases};
 use crate::render;
 use anyhow::{Context, Result};
 use rusqlite::Connection;
@@ -30,8 +31,10 @@ pub fn atomic_write(path: &Path, contents: impl AsRef<[u8]>) -> Result<()> {
 pub fn run(db: &Path, templates: &Path, out: &Path, site_url: &str, tour_base: &str) -> Result<()> {
     let t0 = Instant::now();
     fs::create_dir_all(out)?;
+    // CLI/env boundary value → per-kind URL bases; everything below
+    // resolves its own base via plugins::base_for.
+    let kind_bases = plugins::resolve_bases(tour_base);
     let conn = crate::db::conn(db)?;
-    crate::widgets::ensure(&conn)?;
     let front: i64 = conn
         .query_row(
             sql!("generate__select_cast_value"),
@@ -70,27 +73,30 @@ pub fn run(db: &Path, templates: &Path, out: &Path, site_url: &str, tour_base: &
     let mut harvested = 0u64;
     let mut harvest_failed = 0u64;
 
-    let mut raw_redirects: Vec<(String, String)> = Vec::new(); // raw slug → canonical (tours)
+    let mut raw_redirects: Vec<(String, String)> = Vec::new(); // raw slug → canonical (display_slug kinds)
     for (id, slug, lang, kind) in &rows {
-        // Tours write at the canonical display_slug path — the same value
-        // render_tour::page puts in canonical/og:url. When it differs from
-        // the stored slug the raw URL joins redirects.map instead of 404ing.
+        // Base-prefixed kinds (the tour adapter) write at the canonical
+        // display_slug path — the same value the adapter render puts in
+        // canonical/og:url. When it differs from the stored slug the raw
+        // URL joins redirects.map instead of 404ing.
         let mut wslug = slug.clone();
-        if kind == "tour" {
+        let kind_base = plugins::base_for(&kind_bases, kind);
+        if let (Some(b), Some(adapter)) = (kind_base, plugins::adapter_for_kind(kind)) {
             let title: String = conn
                 .query_row("SELECT title FROM posts WHERE id=?1", [id], |r| r.get(0))
                 .unwrap_or_default();
-            let display = crate::render_tour::display_slug(&conn, *id, slug, &title);
-            if display != *slug {
-                let prefix = crate::lang::url_prefix(&lang_cfg, lang);
-                raw_redirects.push((
-                    format!("{prefix}/{tour_base}/{slug}/"),
-                    format!("{site_url}{prefix}/{tour_base}/{display}/", site_url = site_url.trim_end_matches('/')),
-                ));
-                wslug = display;
+            if let Some(display) = adapter.display_slug(&conn, *id, slug, &title) {
+                if display != *slug {
+                    let prefix = crate::lang::url_prefix(&lang_cfg, lang);
+                    raw_redirects.push((
+                        format!("{prefix}/{b}/{slug}/"),
+                        format!("{site_url}{prefix}/{b}/{display}/", site_url = site_url.trim_end_matches('/')),
+                    ));
+                    wslug = display;
+                }
             }
         }
-        let rel = rel_path_with_cfg(&lang_cfg, *id, front, lang, kind, &wslug, tour_base);
+        let rel = rel_path_with_cfg(&lang_cfg, *id, front, lang, &wslug, kind_base);
         let dest = out.join(&rel);
         let rendered = if harvest.contains(id) && !legacy_origin.is_empty() {
             let path = rel.to_string_lossy().replace("index.html", "");
@@ -147,7 +153,7 @@ pub fn run(db: &Path, templates: &Path, out: &Path, site_url: &str, tour_base: &
                 let lastmod: Option<String> = conn
                     .query_row("SELECT MAX(modified_at) FROM posts WHERE lang=?1 AND kind='page'", [lang], |r| r.get(0))
                     .ok();
-                urls.push((format!("{}{}", site_url.trim_end_matches('/'), crate::lang::page_path(&lang_cfg, lang, "page", "", tour_base)), "page".into(), lastmod));
+                urls.push((format!("{}{}", site_url.trim_end_matches('/'), crate::lang::page_path(&lang_cfg, lang, "page", "", None)), "page".into(), lastmod));
             }
             Err(e) => {
                 // No localized front post — harvest origin/{lang}/ when the
@@ -213,16 +219,16 @@ pub fn run(db: &Path, templates: &Path, out: &Path, site_url: &str, tour_base: &
         }
     }
 
-    write_404(out, templates, &conn, site_url, tour_base)?;
+    write_404(out, templates, &conn, site_url, &kind_bases)?;
     // Search index must exist (or not) before the search page renders —
     // its template branches on `pagefind` to emit the real UI or an
     // honest "unavailable" notice instead of a dead div (6.5).
     run_pagefind(out);
-    write_search(out, templates, &conn, site_url, tour_base)?;
-    write_feeds(out, &conn, site_url, tour_base)?;
+    write_search(out, templates, &conn, site_url, &kind_bases)?;
+    write_feeds(out, &conn, site_url, &kind_bases)?;
     write_sitemap(out, site_url, &urls)?;
     write_robots(out, site_url)?;
-    write_llms_txt(out, &conn, site_url, tour_base)?;
+    write_llms_txt(out, &conn, site_url, &kind_bases)?;
 
     let dur = t0.elapsed();
     if !harvest.is_empty() {
@@ -245,7 +251,7 @@ pub fn run(db: &Path, templates: &Path, out: &Path, site_url: &str, tour_base: &
     Ok(())
 }
 
-pub(crate) fn rel_path_with_cfg(cfg: &crate::lang::LangConfig, id: i64, front: i64, lang: &str, kind: &str, slug: &str, tour_base: &str) -> PathBuf {
+pub(crate) fn rel_path_with_cfg(cfg: &crate::lang::LangConfig, id: i64, front: i64, lang: &str, slug: &str, kind_base: Option<&str>) -> PathBuf {
     if id == front {
         let lp = crate::lang::rel_prefix(cfg, lang);
         return if lp.is_empty() { PathBuf::from("index.html") } else { PathBuf::from(lp).join("index.html") };
@@ -253,7 +259,7 @@ pub(crate) fn rel_path_with_cfg(cfg: &crate::lang::LangConfig, id: i64, front: i
     let mut p = PathBuf::new();
     let lp = crate::lang::rel_prefix(cfg, lang);
     if !lp.is_empty() { p.push(lp); }
-    if kind == "tour" { p.push(tour_base); }
+    if let Some(b) = kind_base { p.push(b); }
     p.push(slug);
     p.push("index.html");
     p
@@ -261,7 +267,7 @@ pub(crate) fn rel_path_with_cfg(cfg: &crate::lang::LangConfig, id: i64, front: i
 
 /// Resolve a post's rendered output path (lang prefix, kind dir, front-page
 /// special case, tour display_slug) from an existing row.
-fn post_out_rel(conn: &Connection, post_id: i64, tour_base: &str) -> Result<PathBuf> {
+fn post_out_rel(conn: &Connection, post_id: i64, kind_bases: &KindBases) -> Result<PathBuf> {
     let (slug, lang, kind): (String, String, String) = conn
         .query_row(
             "SELECT slug, lang, kind FROM posts WHERE id=?1",
@@ -272,16 +278,18 @@ fn post_out_rel(conn: &Connection, post_id: i64, tour_base: &str) -> Result<Path
     let front: i64 = conn
         .query_row(sql!("generate__select_cast_value"), [], |r| r.get(0))
         .unwrap_or(0);
-    let wslug = if kind == "tour" {
-        let title: String = conn
-            .query_row("SELECT title FROM posts WHERE id=?1", [post_id], |r| r.get(0))
-            .unwrap_or_default();
-        crate::render_tour::display_slug(conn, post_id, &slug, &title)
-    } else {
-        slug
-    };
+    // Adapter-owned canonical display slug (tour). Stored slug when the
+    // kind has no adapter or the adapter declines a rewrite.
+    let wslug = plugins::adapter_for_kind(&kind)
+        .and_then(|a| {
+            let title: String = conn
+                .query_row("SELECT title FROM posts WHERE id=?1", [post_id], |r| r.get(0))
+                .unwrap_or_default();
+            a.display_slug(conn, post_id, &slug, &title)
+        })
+        .unwrap_or(slug);
     let cfg = crate::lang::config(conn);
-    Ok(rel_path_with_cfg(&cfg, post_id, front, &lang, &kind, &wslug, tour_base))
+    Ok(rel_path_with_cfg(&cfg, post_id, front, &lang, &wslug, plugins::base_for(kind_bases, &kind)))
 }
 
 /// Every `(lang, dir)` a term archive renders at — THE shared mapping
@@ -418,6 +426,7 @@ pub fn invalidate_dependents(
     tour_base: &str,
     extra_terms: &[(String, String)],
 ) -> usize {
+    let kind_bases = plugins::resolve_bases(tour_base);
     let mut removed = 0usize;
     let mut del = |p: PathBuf| {
         if p.is_file() {
@@ -432,7 +441,7 @@ pub fn invalidate_dependents(
     // a post-level save must drop it or cache-miss renders serve the old row.
     crate::render::site_data_bust();
     // The post's own variants (canonical + alias copies).
-    if let Ok(rel) = post_out_rel(conn, post_id, tour_base) {
+    if let Ok(rel) = post_out_rel(conn, post_id, &kind_bases) {
         let post_lang: String = conn
             .query_row("SELECT lang FROM posts WHERE id=?1", [post_id], |r| r.get(0))
             .unwrap_or_default();
@@ -496,7 +505,7 @@ pub fn invalidate_dependents(
 /// removal itself — e.g. `posts_empty`, which must snapshot the doomed
 /// files before the hard delete removes the row `post_out_rel` reads.
 pub fn file_variants_for(conn: &Connection, post_id: i64, tour_base: &str) -> Result<Vec<PathBuf>> {
-    let rel = post_out_rel(conn, post_id, tour_base)?;
+    let rel = post_out_rel(conn, post_id, &plugins::resolve_bases(tour_base))?;
     let lang_cfg = crate::lang::config(conn);
     let post_lang: String = conn
         .query_row("SELECT lang FROM posts WHERE id=?1", [post_id], |r| r.get(0))
@@ -553,10 +562,11 @@ pub(crate) fn cdata(s: &str) -> String {
 
 pub fn regen_post(db: &Path, templates: &Path, out: &Path, post_id: i64, tour_base: &str) -> Result<()> {
     let conn = crate::db::conn(db)?;
+    let kind_bases = plugins::resolve_bases(tour_base);
     let status: String = conn
         .query_row("SELECT status FROM posts WHERE id=?1", [post_id], |r| r.get(0))
         .with_context(|| format!("regen_post: post {post_id} not found"))?;
-    let rel = post_out_rel(&conn, post_id, tour_base)?;
+    let rel = post_out_rel(&conn, post_id, &kind_bases)?;
     let dest = out.join(&rel);
     if status != "publish" {
         // Draft/trash: every rendered variant must go, not just stay stale.
@@ -588,7 +598,7 @@ fn bare_ctx(
     lang: &str,
     title: &str,
     canonical: &str,
-    tour_base: &str,
+    kind_base: Option<&str>,
 ) -> Result<serde_json::Map<String, serde_json::Value>> {
     use serde_json::json;
     let mut m = serde_json::Map::new();
@@ -638,19 +648,19 @@ fn bare_ctx(
     // Footer sidebars — same registry the page chrome uses.
     for n in 1..=4 {
         let sidebar = format!("footer-{n}-{lang}");
-        let html = crate::widgets::render_sidebar(conn, &sidebar, site_url, lang, "", tour_base)?;
+        let html = crate::widgets::render_sidebar(conn, &sidebar, site_url, lang, "", kind_base.unwrap_or_default())?;
         m.insert(format!("footer_{n}"), serde_json::json!(html));
     }
     m.insert("body".into(), json!(""));
     Ok(m)
 }
 
-pub(crate) fn write_404(out: &Path, templates: &Path, conn: &Connection, site_url: &str, tour_base: &str) -> Result<()> {
+pub(crate) fn write_404(out: &Path, templates: &Path, conn: &Connection, site_url: &str, kind_bases: &KindBases) -> Result<()> {
     // Real 404 markup from the template — previously this re-emitted the
     // homepage as 404.html.
     let env = render::load_env(templates)?;
     let site = site_url.trim_end_matches('/');
-    let ctx = bare_ctx(conn, site_url, "fr", "404 — Page introuvable", &format!("{site}/404.html"), tour_base)?;
+    let ctx = bare_ctx(conn, site_url, "fr", "404 — Page introuvable", &format!("{site}/404.html"), plugins::base_for(kind_bases, "tour"))?;
     let html = env
         .get_template("404.html")?
         .render(minijinja::Value::from_serialize(serde_json::Value::Object(ctx)))?;
@@ -699,7 +709,7 @@ pub(crate) fn run_pagefind(out: &Path) {
     }
 }
 
-pub(crate) fn write_search(out: &Path, templates: &Path, conn: &Connection, site_url: &str, tour_base: &str) -> Result<()> {
+pub(crate) fn write_search(out: &Path, templates: &Path, conn: &Connection, site_url: &str, kind_bases: &KindBases) -> Result<()> {
     // `pagefind` tells the template whether the index bundle exists this
     // run: real pagefind-ui when present, degraded form + notice when not.
     let indexed = out.join("pagefind").join("pagefind-ui.js").is_file()
@@ -716,7 +726,7 @@ pub(crate) fn write_search(out: &Path, templates: &Path, conn: &Connection, site
             lang,
             if lang == "es" { "Buscar" } else { "Recherche" },
             &format!("{site}/{dir}/"),
-            tour_base,
+            plugins::base_for(kind_bases, "tour"),
         )?;
         ctx.insert("pagefind".into(), serde_json::json!(indexed));
         let html = env
@@ -728,7 +738,7 @@ pub(crate) fn write_search(out: &Path, templates: &Path, conn: &Connection, site
     Ok(())
 }
 
-pub(crate) fn write_feeds(out: &Path, conn: &Connection, site: &str, tour_base: &str) -> Result<()> {
+pub(crate) fn write_feeds(out: &Path, conn: &Connection, site: &str, _kind_bases: &KindBases) -> Result<()> {
     let site = site.trim_end_matches('/');
     // WP "RSS feeds show the most recent / excerpt" setting (Settings →
     // Reading). 0 = full text in <content:encoded>, 1 = excerpt only.
@@ -783,7 +793,7 @@ pub(crate) fn write_feeds(out: &Path, conn: &Connection, site: &str, tour_base: 
             items.push_str(&item);
             items.push_str("</item>\n");
         }
-        let channel_link = xml_esc(&format!("{}{}", site, crate::lang::page_path(&lang_cfg, lang, "page", "", tour_base).trim_end_matches('/')));
+        let channel_link = xml_esc(&format!("{}{}", site, crate::lang::page_path(&lang_cfg, lang, "page", "", None).trim_end_matches('/')));
         let channel_title = conn
             .query_row(
                 "SELECT value FROM settings WHERE key='site_name' LIMIT 1",
@@ -893,7 +903,7 @@ pub(crate) fn write_robots(out: &Path, site: &str) -> Result<()> {
 
 /// llms.txt — curated index of every published page + its markdown sibling,
 /// for LLM crawlers. Same shape as https://llmstxt.org.
-pub(crate) fn write_llms_txt(out: &Path, conn: &Connection, site: &str, tour_base: &str) -> Result<()> {
+pub(crate) fn write_llms_txt(out: &Path, conn: &Connection, site: &str, kind_bases: &KindBases) -> Result<()> {
     let site = site.trim_end_matches('/');
     let mut stmt = conn.prepare(
         "SELECT title, slug, lang, kind FROM posts WHERE status='publish' ORDER BY kind, lang, slug",
@@ -922,7 +932,7 @@ pub(crate) fn write_llms_txt(out: &Path, conn: &Connection, site: &str, tour_bas
     for (title, slug, lang, kind) in &rows {
         let lang_cfg = crate::lang::config(conn);
         let prefix = crate::lang::url_prefix(&lang_cfg, lang);
-        let dir = if kind == "tour" { format!("/{tour_base}") } else { String::new() };
+        let dir = plugins::base_for(kind_bases, kind).map(|b| format!("/{b}")).unwrap_or_default();
         let html = format!("{site}{prefix}{dir}/{slug}/");
         let md = format!("{site}{prefix}{dir}/{slug}/index.md");
         body.push_str(&format!("- [{title}]({html}) ([md]({md}))\n"));

@@ -10,7 +10,6 @@ pub mod php_serialize;
 pub mod render;
 pub mod render_archive;
 pub mod render_post;
-pub mod render_tour;
 pub mod schema;
 pub mod widgets;
 pub mod admin;

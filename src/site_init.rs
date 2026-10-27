@@ -27,6 +27,7 @@ pub struct InitArgs {
     pub site_url: Option<String>,
     pub bind: Option<String>,
     pub name: Option<String>,
+    /// URL base for the tour plugin (persisted as TOUR_BASE).
     pub tour_base: Option<String>,
     pub clone_ok: bool,
     pub force: bool,

@@ -74,8 +74,8 @@ pub(crate) async fn section(
 pub(crate) fn public_path(sc: &SiteCtx, lang: &str, kind: &str, slug: &str) -> String {
     let base = site_url(sc).trim_end_matches('/').to_string();
     let prefix = if lang == "es" { "/es" } else { "" };
-    if kind == "tour" {
-        format!("{base}{prefix}/{}/{slug}/", sc.tour_base)
+    if let Some(b) = plugins::base_for(&sc.kind_bases, kind) {
+        format!("{base}{prefix}/{b}/{slug}/")
     } else {
         format!("{base}{prefix}/{slug}/")
     }
@@ -222,7 +222,7 @@ pub(crate) fn render_list(
             // (6.1) — the public URL would 404 for drafts/future.
             format!("/admin/posts/{}/preview", r.id)
         };
-        let view_label = if r.status == "publish" && kind == "tour" { "View" } else { "Preview" };
+        let view_label = if r.status == "publish" && plugins::kind_def(kind).map(|d| d.url_base_key.is_some()).unwrap_or(false) { "View" } else { "Preview" };
         let (next_status, act) = if r.status == "trash" {
             ("draft", "Restore")
         } else {
@@ -278,8 +278,7 @@ pub(crate) fn render_list(
     };
     let search_label = match kind {
         "page" => "Pages",
-        "tour" => "Tours",
-        _ => "Posts",
+        k => plugins::kind_def(k).map(|d| d.list_title).unwrap_or("Posts"),
     };
     // GET form drops the current query string — carry status/lang/tax
     // forward as hidden inputs so a search or filter doesn't reset them.
@@ -613,7 +612,7 @@ fn snapshot_before_save(sc: &SiteCtx, id: i64) -> Option<PreSave> {
         .into_iter()
         .map(|(t, s, _)| (t, s))
         .collect();
-    let files = generate::file_variants_for(&conn, id, &sc.tour_base).unwrap_or_default();
+    let files = generate::file_variants_for(&conn, id, crate::admin::tour_base(sc)).unwrap_or_default();
     Some(PreSave { slug, lang, kind, terms, files })
 }
 
@@ -659,7 +658,7 @@ pub(crate) async fn posts_empty(
     match crate::db::conn(&sc.db) {
         Ok(conn) => {
             for id in ids {
-                match generate::file_variants_for(&conn, id, &sc.tour_base) {
+                match generate::file_variants_for(&conn, id, crate::admin::tour_base(sc)) {
                     Ok(v) => doomed.extend(v.into_iter().map(|r| sc.out.join(r))),
                     Err(e) => eprintln!("empty_trash: resolve post {id}: {e:#}"),
                 }
@@ -1469,7 +1468,7 @@ pub(crate) async fn preview_post(
     let Ok((_s, sc)) = need_auth(&app, &headers) else {
         return Redirect::to("/admin/login").into_response();
     };
-    match crate::render::render_preview(&sc.db, &sc.templates, id, &site_url(sc), &sc.tour_base) {
+    match crate::render::render_preview(&sc.db, &sc.templates, id, &site_url(sc), crate::admin::tour_base(sc)) {
         Ok(html) => (
             [
                 (header::CONTENT_TYPE, "text/html; charset=utf-8"),

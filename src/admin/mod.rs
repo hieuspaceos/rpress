@@ -40,8 +40,9 @@ mod settings;
 pub(crate) struct SiteCtx {
     pub(crate) slug: String,
     pub(crate) name: String,
-    /// URL segment for the tour CPT (e.g. "voyage").
-    pub(crate) tour_base: String,
+    /// Per-kind URL-base prefixes resolved from the site's TOUR_BASE env
+    /// (plugins::resolve_bases). Replaces the raw tour-base string.
+    pub(crate) kind_bases: plugins::KindBases,
     pub(crate) db: PathBuf,
     pub(crate) templates: PathBuf,
     pub(crate) out: PathBuf,
@@ -66,6 +67,13 @@ pub(crate) struct App {
 pub(crate) const SESSION_COOKIE: &str = "rpress_session";
 pub(crate) const CLEAR_SESSION_COOKIE: &str = "rpress_session=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0";
 
+/// Legacy single-string view of `SiteCtx::kind_bases`: the tour kind's
+/// URL base (`""` when no adapter registers one). Boundary helper for
+/// call sites that still take the pre-KindBases `tour_base: &str`.
+pub(crate) fn tour_base(sc: &SiteCtx) -> &str {
+    plugins::base_for(&sc.kind_bases, "tour").unwrap_or_default()
+}
+
 
 pub(crate) struct Sess {
     pub(crate) site: String,
@@ -83,6 +91,7 @@ pub(crate) struct Sess {
 /// `sites`: `(host_header, db, templates, out, www)` — multi-site support.
 /// `out` = disposable HTML cache; `www` = persistent uploads/plugins/assets.
 pub async fn serve(db: PathBuf, templates: PathBuf, out: PathBuf, www: PathBuf, bind: SocketAddr, site_slug: String, host: String, name: String, tour_base: String) -> Result<()> {
+    let kind_bases = plugins::resolve_bases(&tour_base);
     // Schema must be current before we serve — the post_meta dedupe +
     // unique-index migration lives here; silently continuing would serve
     // on a wrong schema (audit M18).
@@ -110,7 +119,7 @@ pub async fn serve(db: PathBuf, templates: PathBuf, out: PathBuf, www: PathBuf, 
     let site = SiteCtx {
         slug: site_slug.clone(),
         name: name.clone(),
-        tour_base,
+        kind_bases,
         db,
         templates,
         out,
@@ -314,7 +323,7 @@ async fn public_root(State(app): State<App>, headers: HeaderMap) -> Response {
         return StatusCode::NOT_FOUND.into_response();
     };
     match crate::render::front_id(&conn) {
-        Some(id) => match crate::render::render_slug_by_id_public(&conn, &sc.templates, id, &site_url(sc), &sc.tour_base) {
+        Some(id) => match crate::render::render_slug_by_id_public(&conn, &sc.templates, id, &site_url(sc), tour_base(sc)) {
             // Publish-gated render: a draft page_on_front never reaches 200.
             Ok((h, status)) if status == "publish" => {
                 write_cache(sc, "index.html", &h);
@@ -336,8 +345,8 @@ async fn public_root(State(app): State<App>, headers: HeaderMap) -> Response {
 /// 3. A path carrying a file extension that misses is a missing asset →
 ///    allowlisted asset-origin redirect or 404 (never rendered, junk and
 ///    dotfile prefixes die first).
-/// 4. Extension-less paths normalize (`es/` → lang, `{tour_base}/` →
-///    kind=tour) then `render_slug` — publish results write back into the
+/// 4. Extension-less paths normalize (`es/` → lang, `{kind_base}/` →
+///    the kind owning that base) then `render_slug` — publish results
 ///    cache so the next hit is a file read; drafts never cache.
 /// 5. Miss-renders are rate-limited per-IP to cap render cost.
 ///
@@ -459,7 +468,7 @@ async fn public_page(State(app): State<App>, headers: HeaderMap, ConnectInfo(pee
             // Canonical-rel gate (M22): a .md request on a non-canonical
             // alias 301s to the canonical .md instead of writing a stale
             // alias copy.
-            let canonical = crate::render::post_canonical_path(&conn, md_id, &sc.tour_base);
+            let canonical = crate::render::post_canonical_path(&conn, md_id, tour_base(sc));
             let req = format!("/{}/", clean.trim_matches('/'));
             if let Some(c) = canonical {
                 if c != req {
@@ -494,16 +503,17 @@ async fn public_page(State(app): State<App>, headers: HeaderMap, ConnectInfo(pee
         }
     }
     // URL normalization before the slug lookup:
-    //   "{lang}/{slug}"    → lang from settings.languages, lookup "{slug}"
-    //   "{tour_base}/{sl}" → kind="tour", lookup "{sl}"
+    //   "{lang}/{slug}"     → lang from settings.languages, lookup "{slug}"
+    //   "{kind_base}/{sl}"  → the kind owning that base, lookup "{sl}"
     // `clean` still drives the cache path so the write-back lands where the
     // next request will look.
     let (lang_s, rest) = crate::lang::split_path(&lang_cfg, clean);
-    let tb = format!("{}/", sc.tour_base);
-    let (kind, lookup) = match rest.strip_prefix(tb.as_str()) {
-        Some(s) => ("tour", s),
-        None => ("", rest),
-    };
+    let (kind, lookup) = sc
+        .kind_bases
+        .iter()
+        .filter(|(_, b)| !b.is_empty())
+        .find_map(|(k, b)| rest.strip_prefix(format!("{b}/").as_str()).map(|s| (*k, s)))
+        .unwrap_or(("", rest));
     let base = site_url(sc);
     // rusqlite + template render are synchronous — a cache-miss render is
     // ~140ms of work, too heavy to sit on a tokio worker (H14). Everything
@@ -517,7 +527,7 @@ async fn public_page(State(app): State<App>, headers: HeaderMap, ConnectInfo(pee
             lang_s.clone(),
             kind.to_string(),
             base.clone(),
-            sc.tour_base.clone(),
+            tour_base(sc).to_string(),
         );
         tokio::task::spawn_blocking(move || {
             crate::render::render_slug(&db, &tpl, &lookup_s, &lang_c, &kind_c, &base_c, &tb_c)
@@ -547,7 +557,7 @@ async fn public_page(State(app): State<App>, headers: HeaderMap, ConnectInfo(pee
         Err(_) => {
             // The lang variant doesn't exist but a translation-group sibling
             // does → 301 to the canonical permalink, else 404 (Polylang).
-            if let Some(target) = crate::render::translation_canonical(&conn, &lang_cfg, &lang_s, lookup, kind, &sc.tour_base) {
+            if let Some(target) = crate::render::translation_canonical(&conn, &lang_cfg, &lang_s, lookup, kind, tour_base(sc)) {
                 return moved_permanently(&target);
             }
             not_found(sc)
@@ -561,19 +571,21 @@ fn moved_permanently(target: &str) -> Response {
     (StatusCode::MOVED_PERMANENTLY, [(header::LOCATION, target)]).into_response()
 }
 
-/// `.md` lookup: `{lang}/{slug}` → translated post, `{tour_base}/{slug}`
-/// → tour, else post/page. Mirrors the normalization in `public_page`.
-/// Returns (post id, markdown) — the id feeds the canonical-rel gate.
+/// `.md` lookup: `{lang}/{slug}` → translated post, `{kind_base}/{slug}`
+/// → the kind owning that base, else post/page. Mirrors the normalization
+/// in `public_page`. Returns (post id, markdown) — the id feeds the
+/// canonical-rel gate.
 fn md_for_slug(sc: &SiteCtx, clean: &str) -> Option<(i64, String)> {
     let conn = crate::db::conn(&sc.db).ok()?;
     let cfg = crate::lang::config(&conn);
     let (lang, rest) = crate::lang::split_path(&cfg, clean);
-    let tb = format!("{}/", sc.tour_base);
-    let (kind, slug) = match rest.strip_prefix(tb.as_str()) {
-        Some(s) => ("tour", s),
-        None => ("", rest),
-    };
-    crate::render::post_markdown_id(&conn, slug.trim_matches('/'), &lang, kind, &site_url(sc), &sc.tour_base)
+    let (kind, slug) = sc
+        .kind_bases
+        .iter()
+        .filter(|(_, b)| !b.is_empty())
+        .find_map(|(k, b)| rest.strip_prefix(format!("{b}/").as_str()).map(|s| (*k, s)))
+        .unwrap_or(("", rest));
+    crate::render::post_markdown_id(&conn, slug.trim_matches('/'), &lang, kind, &site_url(sc), tour_base(sc))
 }
 
 /// WP-scanner paths that can never be a permalink on this CMS — checked

@@ -104,6 +104,13 @@ pub(crate) fn base_for<'a>(bases: &'a KindBases, kind: &str) -> Option<&'a str> 
     bases.get(kind).map(|s| s.as_str())
 }
 
+/// Single-kind convenience over `resolve_bases`/`base_for` for call sites
+/// that still carry the legacy `tour_base: &str` — returns `None` for
+/// root-served kinds (no `url_base_key`).
+pub(crate) fn kind_url_base(legacy_tour_base: &str, kind: &str) -> Option<String> {
+    base_for(&resolve_bases(legacy_tour_base), kind).map(str::to_string)
+}
+
 /// Render-side context handed to adapter `render()`: the post row plus
 /// its already-rendered page-builder body. Moved here (was
 /// `render_tour::PostCtx`) because `render_archive` and the archive-card
@@ -222,10 +229,21 @@ pub(crate) trait PluginAdapter: Sync {
     fn render(&self, _conn: &Connection, _templates: &Path, _ctx: &RenderCtx) -> Result<Option<String>> {
         Ok(None)
     }
+    /// Canonical permalink slug for a post of this kind. Some kinds keep
+    /// a raw stored slug that is degenerate ('', 'x') and derive the
+    /// public slug from import-era redirects or the title — WP
+    /// `sanitize_title` semantics live with the plugin. `None` → caller
+    /// uses the stored `posts.slug` unchanged.
+    fn display_slug(&self, _conn: &Connection, _id: i64, _slug: &str, _title: &str) -> Option<String> {
+        None
+    }
     /// `(key, value)` pairs merged into the site's shared template data
     /// (`site_data`): adapter-owned feeds like `"tours"` or
     /// `"testimonials"`. Runs once per `(conn, lang)` per render.
-    fn site_data_feeds(&self, _conn: &Connection, _lang: &str) -> Vec<(String, serde_json::Value)> {
+    /// `site_url` is the caller's render origin (may differ from
+    /// `settings.site_url` under local serve); `kind_base` is the
+    /// resolved URL base for this adapter's kind (`None`/`""` → root).
+    fn site_data_feeds(&self, _conn: &Connection, _lang: &str, _site_url: &str, _kind_base: Option<&str>) -> Vec<(String, serde_json::Value)> {
         Vec::new()
     }
     /// Widget type names + admin labels this adapter registers
@@ -359,6 +377,13 @@ pub(crate) fn adapter_for_slug(slug: &str) -> Option<&'static dyn PluginAdapter>
 /// `posts.kind` → owning adapter (core kinds → `None`).
 pub(crate) fn adapter_for_kind(kind: &str) -> Option<&'static dyn PluginAdapter> {
     REGISTRY.kind_adapter.get(kind).copied()
+}
+
+/// Every registered adapter, in declared order — drives feed merges
+/// (`site_data_feeds`) and any "all plugins" pass that must not depend
+/// on the adapter owning a `posts.kind`.
+pub(crate) fn adapters() -> &'static [&'static dyn PluginAdapter] {
+    ADAPTERS
 }
 
 /// Every registered `KindDef` in declared order: core first, then
