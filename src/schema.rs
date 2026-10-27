@@ -106,8 +106,10 @@ CREATE TABLE IF NOT EXISTS menu_items(
 );
 
 CREATE TABLE IF NOT EXISTS theme_locations(
-  location TEXT PRIMARY KEY,
-  menu_id INTEGER REFERENCES menus(id) ON DELETE SET NULL
+  location TEXT NOT NULL,
+  lang TEXT NOT NULL DEFAULT '',
+  menu_id INTEGER REFERENCES menus(id) ON DELETE SET NULL,
+  PRIMARY KEY(location, lang)
 );
 
 CREATE TABLE IF NOT EXISTS media(
@@ -381,6 +383,34 @@ fn dedupe_post_meta(c: &rusqlite::Connection) -> anyhow::Result<()> {
 /// Apply DDL + additive migrations on an open connection.
 pub fn migrate_conn(c: &rusqlite::Connection) -> anyhow::Result<()> {
     dedupe_post_meta(c)?;
+    /* theme_locations pre-lang rebuild: the old PK (location) can't hold
+       Polylang's per-language nav_menu_locations bindings. Detect the
+       legacy shape (no `lang` column) and rebuild — lang backfills from
+       the assigned menu's own lang. */
+    {
+        let has_lang: bool = c
+            .prepare("PRAGMA table_info(theme_locations)")?
+            .query_map([], |r| r.get::<_, String>(1))?
+            .any(|n| n.map(|n| n == "lang").unwrap_or(false));
+        let has_table: bool = c
+            .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='theme_locations'")?
+            .exists([])?;
+        if has_table && !has_lang {
+            c.execute_batch(
+                "ALTER TABLE theme_locations RENAME TO theme_locations_old;
+                 CREATE TABLE theme_locations(
+                   location TEXT NOT NULL,
+                   lang TEXT NOT NULL DEFAULT '',
+                   menu_id INTEGER REFERENCES menus(id) ON DELETE SET NULL,
+                   PRIMARY KEY(location, lang)
+                 );
+                 INSERT INTO theme_locations(location, lang, menu_id)
+                   SELECT o.location, COALESCE((SELECT lang FROM menus WHERE id=o.menu_id),''), o.menu_id
+                   FROM theme_locations_old o;
+                 DROP TABLE theme_locations_old;",
+            )?;
+        }
+    }
     c.execute_batch(DDL)?;
     for (table, col, ddl) in MIGRATIONS {
         let exists: bool = c

@@ -173,7 +173,7 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
                             | "medium_large_size_w" | "medium_large_size_h"
                             | "large_size_w" | "large_size_h" | "uploads_use_yearmonth"
                             | "gdlr-core-page-builder-view-mode" | "polylang"
-                    ) {
+                    ) || k.starts_with("theme_mods_") {
                         options.insert(k, mv);
                     }
                 }
@@ -726,15 +726,65 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
         stmt_set.execute(params![k, v])?;
     }
 
+    // Post-import plugin hooks: denormalization/promotion over the
+    // committed data (adapter-declared; e.g. a summary table synced from
+    // post_meta).
+
+    // nav_menu_locations → theme_locations (per-lang). Child themes store
+    // theme_mods under BOTH `theme_mods_{stylesheet}` and
+    // `theme_mods_{parent}` — under Polylang each carries that language's
+    // binding (aucoeur: parent map main_menu→156 FR, child map
+    // main_menu→579 ES), so MERGE all keys: later maps only overwrite
+    // (location, lang) pairs they rebind. menu_id = nav_menu term wp_id
+    // (menus.id mirrors it); 0 = "no menu" (skip — a NULL row ≠ no row).
+    {
+        let template = options.get("template").cloned().unwrap_or_default();
+        let stylesheet = options.get("stylesheet").cloned().unwrap_or_default();
+        let mut keys: Vec<String> = [
+            format!("theme_mods_{template}"),
+            format!("theme_mods_{stylesheet}"),
+        ]
+        .into_iter()
+        .filter(|k| options.contains_key(k))
+        .collect();
+        keys.dedup();
+        let mut st_loc = tx.prepare(
+            "INSERT OR REPLACE INTO theme_locations(location, lang, menu_id) \
+             SELECT ?1, COALESCE((SELECT lang FROM menus WHERE id=?2),''), ?2 \
+             WHERE EXISTS (SELECT 1 FROM menus WHERE id=?2)",
+        )?;
+        let mut loc_names: Vec<String> = Vec::new();
+        for key in keys {
+            let Some(mods_raw) = options.get(&key) else { continue };
+            let Ok(serde_json::Value::Object(mods)) =
+                crate::php_serialize::unserialize(mods_raw.as_bytes())
+            else {
+                continue;
+            };
+            let Some(serde_json::Value::Object(locs)) = mods.get("nav_menu_locations") else {
+                continue;
+            };
+            for (loc, mid) in locs {
+                let Some(mid) = mid.as_i64().filter(|id| *id > 0) else { continue };
+                st_loc.execute(params![loc, mid])?;
+                loc_names.push(loc.clone());
+            }
+        }
+        if !loc_names.is_empty() {
+            loc_names.sort();
+            loc_names.dedup();
+            stmt_set.execute(params![
+                "theme_locations_available",
+                serde_json::to_string(&loc_names)?
+            ])?;
+        }
+    }
     drop((
         stmt_post, stmt_meta, stmt_media, stmt_pt, stmt_comment, stmt_ra, stmt_redir, stmt_menu,
         stmt_mi, stmt_trans, stmt_trans_member, stmt_term, stmt_ttrans, stmt_set, stmt_h,
     ));
     tx.commit()?;
 
-    // Post-import plugin hooks: denormalization/promotion over the
-    // committed data (adapter-declared; e.g. a summary table synced from
-    // post_meta).
     for a in crate::admin::plugins::adapters() {
         if let Some(h) = a.import_hooks() {
             (h.after_import)(&conn)?;

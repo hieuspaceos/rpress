@@ -376,25 +376,60 @@ pub fn available_locations(db: &Path) -> Vec<String> {
 
 /// Manage Locations assignments: `location → menu_id` for declared locations.
 /// Stored rows for undeclared locations are ignored by the UI.
-pub fn list_locations(db: &Path, locations: &[String]) -> Result<Vec<(String, Option<i64>)>> {
+pub fn list_locations(db: &Path, locations: &[String]) -> Result<Vec<(String, String, Option<i64>)>> {
     let c = crate::db::conn(db)?;
     let mut st = c.prepare(sql!("menus__locations_list"))?;
-    let mut cur: std::collections::HashMap<String, Option<i64>> = st
-        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<i64>>(1)?)))?
-        .collect::<rusqlite::Result<std::collections::HashMap<String, Option<i64>>>>()?;
+    let cur: std::collections::HashMap<(String, String), Option<i64>> = st
+        .query_map([], |r| {
+            Ok((
+                (r.get::<_, String>(0)?, r.get::<_, String>(1)?),
+                r.get::<_, Option<i64>>(2)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<std::collections::HashMap<(String, String), Option<i64>>>>()?;
+    /* Rows exist only for assigned pairs; declared locations with no
+       row appear once per site lang as unassigned — the caller supplies
+       the (location, lang) grid. */
     Ok(locations
         .iter()
-        .map(|loc| (loc.clone(), cur.remove(loc).flatten()))
+        .map(|loc| {
+            cur.iter()
+                .find(|((l, _), _)| l == loc)
+                .map(|((_, lang), mid)| (loc.clone(), lang.clone(), *mid))
+                .unwrap_or_else(|| (loc.clone(), String::new(), None))
+        })
         .collect())
 }
 
-/// Persist the Manage Locations table: every declared location gets a row
-/// (`menu_id` NULL = unassigned) — one transaction.
-pub fn save_locations(db: &Path, assignments: &[(String, Option<i64>)]) -> Result<()> {
+/// Menu assigned to a theme location for `lang`; `None` = unassigned.
+pub fn location_menu(db: &Path, location: &str, lang: &str) -> Option<i64> {
+    let c = crate::db::conn(db).ok()?;
+    c.query_row(
+        "SELECT menu_id FROM theme_locations WHERE location=?1 AND lang=?2",
+        rusqlite::params![location, lang],
+        |r| r.get::<_, Option<i64>>(0),
+    )
+    .ok()
+    .flatten()
+}
+
+/// Persist the Manage Locations table: (location, lang, menu_id) rows —
+/// `menu_id` NULL deletes the binding. One transaction.
+pub fn save_locations(db: &Path, assignments: &[(String, String, Option<i64>)]) -> Result<()> {
     let mut c = crate::db::conn(db)?;
     let tx = c.transaction()?;
-    for (loc, menu_id) in assignments {
-        tx.execute(sql!("menus__location_set"), params![loc, menu_id])?;
+    for (loc, lang, menu_id) in assignments {
+        match menu_id {
+            Some(_) => {
+                tx.execute(sql!("menus__location_set"), params![loc, lang, menu_id])?;
+            }
+            None => {
+                tx.execute(
+                    "DELETE FROM theme_locations WHERE location=?1 AND lang=?2",
+                    params![loc, lang],
+                )?;
+            }
+        }
     }
     tx.commit()?;
     Ok(())

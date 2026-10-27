@@ -646,6 +646,18 @@ fn bare_ctx(
     m.insert("lang".into(), json!(lang));
     m.insert("title".into(), json!(title));
     m.insert("site_url".into(), json!(site_url));
+    /* Dynamic nav: base templates read `site.menus.*`. */
+    if let Ok(site) = crate::render::site_data_cached(
+        conn,
+        lang,
+        site_url,
+        kind_base.unwrap_or_default(),
+    ) {
+        m.insert(
+            "site".into(),
+            serde_json::to_value(&site).unwrap_or(serde_json::Value::Null),
+        );
+    }
     // Footer sidebars — same registry the page chrome uses.
     for n in 1..=4 {
         let sidebar = format!("footer-{n}-{lang}");

@@ -151,7 +151,7 @@ pub(crate) fn page(conn: &Connection, templates: &Path, ctx: &RenderCtx) -> Resu
         .get_template("single_tour.html")?
         .render(minijinja::Value::from_serialize(serde_json::Value::Object(tctx)))
         .map_err(|e| anyhow::anyhow!("render single_tour.html: {e}"))?;
-    Ok(crate::render::apply_navx(&html, &ctx.site_url, &navx))
+    Ok(crate::render::apply_navx(&html, &ctx.site_url, &navx, conn, &ctx.lang))
 }
 
 fn esc(s: &str) -> String {

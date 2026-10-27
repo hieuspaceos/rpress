@@ -344,6 +344,10 @@ fn strip_origin_urls(v: &mut Value) {
     }
 }
 
+// NOTE: the single-string variant for menu/custom URL rewriting lives in
+// `crate::url_util::strip_origin` — this Value-tree walker stays here
+// because it rewrites a fixed path fragment, not a host.
+
 fn icons(sc: &SiteCtx) -> Value {
     std::fs::read_to_string(sc.templates.join("admin/wp/gdlr/icons.json"))
         .ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_else(|| json!({}))

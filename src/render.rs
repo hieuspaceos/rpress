@@ -21,6 +21,7 @@ pub(crate) mod shortcode;
 pub(crate) use shortcode::{esc, esc_attr, expand_shortcodes, media_img_attrs, blog_posts, media_info};
 pub(crate) mod chrome;
 pub(crate) use chrome::{chrome_vars, hreflang_links, iso8601, page_url, translation_urls};
+pub(crate) mod menu_url;
 pub(crate) mod site_data;
 pub(crate) use site_data::{site_data_cached, site_data_bust};
 pub use markdown::{html_to_markdown, post_markdown};
@@ -240,7 +241,13 @@ fn term_canonical_path(
 /// matching permalink. Tour term keys mark just the term's <li> (WP's
 /// current-tour-* classes sit on the item itself); post/page/es-home keys
 /// mark the item plus its <li> ancestors like the archive backstop does.
-pub(crate) fn apply_navx(html: &str, site_url: &str, navx: &Map<String, Value>) -> String {
+pub(crate) fn apply_navx(
+    html: &str,
+    site_url: &str,
+    navx: &Map<String, Value>,
+    conn: &Connection,
+    lang: &str,
+) -> String {
     let site = site_url.trim_end_matches('/');
     let mut out = html.to_string();
     for (key, classes) in navx {
@@ -258,7 +265,23 @@ pub(crate) fn apply_navx(html: &str, site_url: &str, navx: &Map<String, Value>) 
                     let p = if s == "homepage" { String::new() } else { format!("{s}/") };
                     (format!("{site}/{p}"), false)
                 }
-                Some((tax, s)) => (format!("{site}/{tax}/{s}/"), true),
+                Some((tax, s)) => {
+                    /* Menu hrefs are canonical now — resolve the term the
+                       same way term_canonical_path does (category nests,
+                       post_tag lives under the theme tag base, other
+                       taxonomies stay {tax}/{slug}). */
+                    let t = tax.to_lowercase();
+                    let base = if t == "category" {
+                        crate::admin::plugins::theme_traveltour::cat_path(conn, s)
+                    } else if t == "post_tag" {
+                        format!("{}/{}", crate::admin::plugins::theme_traveltour::tag_base(conn), s)
+                    } else {
+                        format!("{t}/{s}")
+                    };
+                    let cfg = crate::lang::config(conn);
+                    let prefix = crate::lang::url_prefix(&cfg, lang);
+                    (format!("{site}{prefix}/{base}/"), true)
+                },
                 None => continue,
             },
         };
@@ -559,7 +582,7 @@ fn render_row(
         .get_template(&base)?
         .render(JVal::from_serialize(Value::Object(ctx)))
         .map_err(|e| anyhow::anyhow!("render {base}: {e}"))?;
-    Ok(apply_navx(&html, site_url, &navx))
+    Ok(apply_navx(&html, site_url, &navx, conn, &lang))
 }
 
 /// Front-page post id for the site's primary language (`page_on_front`,

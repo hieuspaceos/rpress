@@ -447,17 +447,34 @@ fn screen_options_html(sc: &SiteCtx, s: &Sess, ms: &crud::MenuScreen) -> String 
 fn locations_html(sc: &SiteCtx, s: &Sess, menus: &[crud::Menu]) -> String {
     let locs = crud::available_locations(&sc.db);
     let assigned = crud::list_locations(&sc.db, &locs).unwrap_or_default();
+    /* Per-lang assignment grid: each (location, lang) pair gets its own
+       select — Polylang binds different menus to the same location per
+       language. Langs come from the menus on the site plus the row's
+       stored lang. */
     let mut rows = String::new();
-    for (loc, menu_id) in &assigned {
+    let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+    for (loc, lang, menu_id) in &assigned {
+        if !seen.insert((loc.clone(), lang.clone())) {
+            continue;
+        }
+        let key = if lang.is_empty() {
+            format!("assign-{loc}")
+        } else {
+            format!("assign-{loc}-{lang}")
+        };
         let mut opts = String::from("<option value=\"0\">— Select —</option>");
         for m in menus {
             let sel = if *menu_id == Some(m.id) { " selected" } else { "" };
             opts.push_str(&format!("<option value=\"{}\"{sel}>{}</option>", m.id, esc(&m.name)));
         }
+        let loc_label = if lang.is_empty() {
+            esc(loc)
+        } else {
+            format!("{} ({})", esc(loc), esc(lang))
+        };
         rows.push_str(&format!(
-            "<tr><td class=\"location column-location\">{loc}</td>\
-<td class=\"menu column-menu\"><select name=\"assign-{loc}\">{opts}</select></td></tr>",
-            loc = esc(loc)
+            "<tr><td class=\"location column-location\">{loc_label}</td>\
+<td class=\"menu column-menu\"><select name=\"{key}\">{opts}</select></td></tr>"
         ));
     }
     if rows.is_empty() {
@@ -940,16 +957,33 @@ pub(crate) async fn menus_locations_save(
         .map(|id| format!("menu={id}&"))
         .unwrap_or_default();
     let locs = crud::available_locations(&sc.db);
-    let assignments: Vec<(String, Option<i64>)> = locs
-        .iter()
-        .map(|loc| {
+    /* Form posts `assign-{loc}` or `assign-{loc}-{lang}` selects; the lang
+       suffix splits on the LAST '-' segment so locations containing '-'
+       stay intact. */
+    let mut assignments: Vec<(String, String, Option<i64>)> = Vec::new();
+    for loc in &locs {
+        let suffixes: Vec<String> = std::iter::once(String::new())
+            .chain(
+                map.keys()
+                    .filter_map(|k| {
+                        k.strip_prefix(&format!("assign-{loc}-"))
+                            .map(|s| s.to_string())
+                    }),
+            )
+            .collect();
+        for suf in suffixes {
+            let key = if suf.is_empty() {
+                format!("assign-{loc}")
+            } else {
+                format!("assign-{loc}-{suf}")
+            };
             let mid = map
-                .get(&format!("assign-{loc}"))
+                .get(&key)
                 .and_then(|v| v.parse::<i64>().ok())
                 .filter(|id| *id > 0);
-            (loc.clone(), mid)
-        })
-        .collect();
+            assignments.push((loc.clone(), suf, mid));
+        }
+    }
     let _ = crud::save_locations(&sc.db, &assignments);
     crate::admin::admin::bust_cache(&sc);
     Redirect::to(&format!("/admin/menus?{menu_q}action=locations&msg=locations")).into_response()

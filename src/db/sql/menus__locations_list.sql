@@ -1,1 +1,1 @@
-SELECT location, menu_id FROM theme_locations
+SELECT location, lang, menu_id FROM theme_locations

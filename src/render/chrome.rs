@@ -231,10 +231,8 @@ pub(crate) fn body_class(_lang: &str, kind: &str, id: i64, is_front: bool) -> St
     }
 }
 
-/// Header navigation `current-*` classes keyed by `{tax-or-type}/{slug}`
-/// (the base templates annotate each taxonomy/post-type menu <li> with a
-/// navx lookup on the slug inside its hardcoded href — menu_items.object_id
-/// does not line up with terms.id, so the template's own href is the join).
+/// Header navigation `current-*` classes keyed by `{tax-or-type}/{slug}` —
+/// apply_navx matches them against the resolved menu hrefs.
 ///
 /// WP adds for a single tour: `current-tour-ancestor current-menu-parent
 /// current-tour-parent` on taxonomy items pointing at one of the tour's
@@ -252,9 +250,15 @@ pub(crate) fn nav_map(
     let mut m = Map::new();
     match kind {
         "tour" => {
+            /* Only the tour's terms that a menu item actually links to can
+               ever get the ancestor classes — intersect the post's terms
+               with `menu_items.object_id` taxonomy items (terms.id is the
+               WP term id). No hardcoded taxonomy list: theme_data owns it. */
             let mut st = conn.prepare(
-                "SELECT taxonomy, slug FROM post_terms WHERE post_id=?1 \
-                 AND taxonomy IN ('region','duree','style','profil','Pays','Activites','duracion','estilo','perfil','region-es')",
+                "SELECT DISTINCT pt.taxonomy, pt.slug FROM post_terms pt \
+                 JOIN terms t ON t.taxonomy=pt.taxonomy COLLATE NOCASE AND t.slug=pt.slug \
+                 JOIN menu_items mi ON mi.item_type='taxonomy' AND mi.object_id=t.id \
+                 WHERE pt.post_id=?1",
             )?;
             let rows = st.query_map([id], |r| {
                 Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
@@ -453,6 +457,15 @@ pub(crate) fn chrome_vars(
     };
 
     let mut m = Map::new();
+    /* `site` carries the per-lang site_data map (menus, tours feed, …).
+       The base templates iterate `site.menus.*` for header/footer nav —
+       expose the whole cached map under one key. */
+    if let Ok(site) = crate::render::site_data_cached(conn, lang, site_url, tour_base) {
+        m.insert(
+            "site".into(),
+            serde_json::to_value(&site).unwrap_or(Value::Null),
+        );
+    }
     m.insert("html_lang".into(), json!(crate::lang::html_lang(lang)));
     m.insert("og_locale".into(), json!(crate::lang::html_lang(lang).replace('-', "_")));
     m.insert("kind".into(), json!(kind));

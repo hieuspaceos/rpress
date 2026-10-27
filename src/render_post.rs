@@ -342,7 +342,7 @@ pub(crate) fn page(conn: &Connection, templates: &Path, ctx: &PostCtx) -> Result
         .render(minijinja::Value::from_serialize(Value::Object(tctx)))
         .map_err(|e| anyhow::anyhow!("render single_post.html: {e}"))
         .map(|html| inject_post_assets(&html, site, ctx.id))?;
-    Ok(crate::render::apply_navx(&html, site, &navx))
+    Ok(crate::render::apply_navx(&html, site, &navx, conn, &ctx.lang))
 }
 
 /// Post-kind-only assets the frozen base templates lack, extracted verbatim

@@ -129,8 +129,9 @@ pub(crate) fn site_data(
     let mut menus: Map<String, Value> = Map::new();
     {
         let mut istmt = conn.prepare(
-            "SELECT m.id, m.wp_term_id, m.name, m.lang, i.id, i.parent_id, i.ord, \
-             i.label, COALESCE(i.url,'') FROM menus m \
+            "SELECT m.id, m.wp_term_id, m.name, m.lang, m.location, i.id, i.parent_id, i.ord, \
+             i.label, COALESCE(i.url,''), i.object_id, i.item_type, COALESCE(i.classes,''), \
+             COALESCE(i.title_attr,'') FROM menus m \
              JOIN menu_items i ON i.menu_id=m.id ORDER BY i.ord",
         )?;
         let rows = istmt.query_map([], |r| {
@@ -139,30 +140,88 @@ pub(crate) fn site_data(
                 r.get::<_, i64>(1)?,
                 r.get::<_, String>(2)?,
                 r.get::<_, Option<String>>(3)?,
-                r.get::<_, i64>(4)?,
-                r.get::<_, Option<i64>>(5)?,
+                r.get::<_, Option<String>>(4)?,
+                r.get::<_, i64>(5)?,
                 r.get::<_, Option<i64>>(6)?,
-                r.get::<_, Option<String>>(7)?,
-                r.get::<_, String>(8)?,
+                r.get::<_, Option<i64>>(7)?,
+                r.get::<_, Option<String>>(8)?,
+                r.get::<_, String>(9)?,
+                r.get::<_, Option<i64>>(10)?,
+                r.get::<_, Option<String>>(11)?,
+                r.get::<_, String>(12)?,
+                r.get::<_, String>(13)?,
             ))
         })?;
-        let mut by_menu: HashMap<i64, (i64, String, Option<String>, Vec<Value>)> = HashMap::new();
+        /* (menu db id, wp term id, name, lang, location, items) — lang and
+           location drive the render-time menu pick. */
+        let mut by_menu: HashMap<i64, (i64, String, Option<String>, Option<String>, Vec<Value>)> =
+            HashMap::new();
+        let mut menu_meta: Vec<(i64, Option<String>, Option<String>)> = Vec::new(); // (id, lang, location)
         for row in rows {
-            let (mid, wpid, name, mlang, iid, parent, ord, label, iurl) = row?;
+            let (mid, wpid, name, mlang, mloc, iid, parent, ord, label, iurl, oid, itype, cls, tattr) =
+                row?;
             let entry = by_menu
                 .entry(mid)
-                .or_insert_with(|| (wpid, name, mlang, Vec::new()));
-            entry.3.push(json!({
+                .or_insert_with(|| (wpid, name, mlang.clone(), mloc.clone(), Vec::new()));
+            entry.4.push(json!({
                 "id": iid, "parent_id": parent.unwrap_or(0), "ord": ord,
-                "title": label.unwrap_or_default(), "url": iurl, "children": [],
+                "title": label.unwrap_or_default(), "url": iurl,
+                "object_id": oid, "item_type": itype.unwrap_or_default(),
+                "extra_class": cls, "title_attr": tattr,
+                "children": [],
             }));
         }
-        for (mid, (wpid, name, _mlang, flat)) in by_menu {
+        let aliases = menu_aliases(conn, site_url);
+        for (mid, (wpid, name, mlang, mloc, flat)) in by_menu {
             let tree = build_menu_tree(flat);
+            /* Resolve URLs + drop dead items into every stored copy — the
+               tree is per-menu not per-location, and resolution is already
+               scoped to `lang` (the site_data cache key carries it). */
+            let tree = resolve_tree(conn, tree, site_url, tour_base, lang, &aliases);
             let v = json!(tree);
             menus.insert(name.clone(), v.clone());
             menus.insert(mid.to_string(), v.clone());
             menus.insert(format!("wp:{wpid}"), v);
+            menu_meta.push((mid, mlang, mloc));
+        }
+        /* Render picks: theme_locations (location,lang)→menu first —
+           WP's nav_menu_locations imported verbatim; then menus.lang
+           match; then first menu. menu_footer tries footer-ish locations. */
+        let pick = |locs: &[&str]| -> Option<i64> {
+            let mut st = conn
+                .prepare("SELECT menu_id FROM theme_locations WHERE location=?1 AND lang=?2")
+                .ok()?;
+            for loc in locs {
+                if let Ok(Some(mid)) = st.query_row(rusqlite::params![loc, lang], |r| r.get(0)) {
+                    return Some(mid);
+                }
+            }
+            None
+        };
+        let _ = &menu_meta; // kept for the lang fallback below
+        let header_locs = ["main_menu", "main", "primary", "header"];
+        let footer_locs = ["footer", "footer_menu", "secondary"];
+        let mut chosen = pick(&header_locs);
+        if chosen.is_none() {
+            if let Ok(mut s) = conn.prepare(
+                "SELECT id FROM menus WHERE COALESCE(lang,'')=?1 LIMIT 1",
+            ) {
+                chosen = s.query_row([lang], |r| r.get::<_, i64>(0)).ok();
+            }
+        }
+        /* `*_html` pre-renders to WP <li> markup so base templates stay
+           structural (minijinja can't recurse cleanly). */
+        if let Some(v) = chosen.and_then(|mid| menus.get(&mid.to_string()).cloned()) {
+            if let Some(items) = v.as_array() {
+                menus.insert("menu_main_html".into(), json!(menu_li(items)));
+            }
+            menus.insert("menu_main".into(), v);
+        }
+        if let Some(v) = pick(&footer_locs).and_then(|mid| menus.get(&mid.to_string()).cloned()) {
+            if let Some(items) = v.as_array() {
+                menus.insert("menu_footer_html".into(), json!(menu_li(items)));
+            }
+            menus.insert("menu_footer".into(), v);
         }
     }
 
@@ -330,11 +389,18 @@ fn build_menu_tree(flat: Vec<Value>) -> Vec<Value> {
         seen.push(id);
         let mut node = nodes.get(&id)?.clone();
         let mut children = Vec::new();
-        let child_ids: Vec<i64> = nodes
+        let mut child_ids: Vec<i64> = nodes
             .iter()
             .filter(|(_, n)| n.get("parent_id").and_then(|p| p.as_i64()) == Some(id))
             .map(|(cid, _)| *cid)
             .collect();
+        /* WP menu order is `ord` — HashMap iteration is unordered. */
+        child_ids.sort_by_key(|cid| {
+            nodes
+                .get(cid)
+                .and_then(|n| n.get("ord").and_then(|o| o.as_i64()))
+                .unwrap_or(0)
+        });
         for cid in child_ids {
             if let Some(c) = attach(cid, nodes, seen) {
                 children.push(c);
@@ -348,10 +414,14 @@ fn build_menu_tree(flat: Vec<Value>) -> Vec<Value> {
     let mut seen = Vec::new();
     let mut roots = Vec::new();
     for id in order {
+        /* Orphaned item (parent absent from this menu — trashed on origin
+           or filtered at import): WP drops the subtree, never promotes
+           it to root. Promoting inflates the top-level <li> count vs
+           the origin nav. */
         let is_root = nodes
             .get(&id)
             .and_then(|n| n.get("parent_id").and_then(|p| p.as_i64()))
-            .map(|p| p == 0 || !nodes.contains_key(&p))
+            .map(|p| p == 0)
             .unwrap_or(true);
         if is_root {
             if let Some(n) = attach(id, &mut nodes, &mut seen) {
@@ -362,3 +432,154 @@ fn build_menu_tree(flat: Vec<Value>) -> Vec<Value> {
     roots
 }
 
+
+/// Alias hosts for `strip_origin`: the imported origin (`settings.site_url`
+/// is what generated URLs carry) plus `settings.url_aliases` CSV — the
+/// served `site_url` arg is always matched too.
+fn menu_aliases(conn: &Connection, site_url: &str) -> String {
+    let origin = conn
+        .query_row("SELECT value FROM settings WHERE key='site_url'", [], |r| r.get::<_, String>(0))
+        .unwrap_or_default();
+    let extra = conn
+        .query_row("SELECT value FROM settings WHERE key='url_aliases'", [], |r| r.get::<_, String>(0))
+        .unwrap_or_default();
+    let served = site_url
+        .trim_start_matches("http://")
+        .trim_start_matches("https://")
+        .split('/')
+        .next()
+        .unwrap_or("");
+    [origin, extra, served.to_string()]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// Walk a built menu tree: resolve each item's URL via `menu_url`, dropping
+/// items whose resolution returns `None` — WP hides dead menu items, so
+/// their subtrees die with them (never emit `href="#"`).
+fn resolve_tree(
+    conn: &Connection,
+    items: Vec<Value>,
+    site_url: &str,
+    tour_base: &str,
+    lang: &str,
+    aliases: &str,
+) -> Vec<Value> {
+    let mut out = Vec::new();
+    for mut it in items {
+        let item_type = it.get("item_type").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let object_id = it.get("object_id").and_then(|v| v.as_i64());
+        let raw = it.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        /* Empty label on a taxonomy item = WP "navigation label"
+           untouched → the term name renders. */
+        if it.get("title").and_then(|v| v.as_str()).unwrap_or("").is_empty()
+            && item_type == "taxonomy"
+        {
+            if let Some(name) = object_id.and_then(|oid| {
+                conn.query_row("SELECT name FROM terms WHERE id=?1", [oid], |r| {
+                    r.get::<_, String>(0)
+                })
+                .ok()
+            }) {
+                it.as_object_mut().unwrap().insert("title".into(), json!(name));
+            }
+        }
+        match crate::render::menu_url::resolve_menu_url(
+            conn, item_type.as_str(), object_id, &raw, site_url, tour_base, lang, aliases,
+        ) {
+            Some(u) => {
+                let m = it.as_object_mut().unwrap();
+                /* Empty url = `#` container: WP renders a bare <a> (no
+                   href). `nohref` tells the template, keeps `url` "" for
+                   navx (which never marks a no-href <a> anyway). */
+                m.insert("nohref".into(), json!(u.is_empty()));
+                m.insert("url".into(), json!(u));
+            }
+            None => continue, // dead item — subtree dropped wholesale
+        }
+        /* WP <li> classes the theme + apply_navx both key on:
+           menu-item-{id}, menu-item-type-{type}, menu-item-object-{obj},
+           menu-item-has-children. obj = kind for posts, taxonomy for
+           terms, `custom` otherwise. */
+        let obj = match item_type.as_str() {
+            "post_type" | "page" | "post" => object_id
+                .and_then(|oid| {
+                    conn.query_row(
+                        "SELECT kind FROM posts WHERE wp_id=?1",
+                        [oid],
+                        |r| r.get::<_, String>(0),
+                    )
+                    .ok()
+                })
+                .unwrap_or_else(|| "post".into()),
+            "taxonomy" => object_id
+                .and_then(|oid| {
+                    conn.query_row("SELECT taxonomy FROM terms WHERE id=?1", [oid], |r| {
+                        r.get::<_, String>(0)
+                    })
+                    .ok()
+                })
+                .unwrap_or_default(),
+            _ => "custom".into(),
+        };
+                let kids = it
+            .get("children")
+            .and_then(|c| c.as_array().cloned())
+            .unwrap_or_default();
+        let kids = resolve_tree(conn, kids, site_url, tour_base, lang, aliases);
+        let has_kids = !kids.is_empty();
+        let iid = it.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+        let extra = it
+            .get("extra_class")
+            .and_then(|v| v.as_str())
+            .filter(|c| !c.is_empty())
+            .map(|c| format!("{c} "))
+            .unwrap_or_default();
+        let m = it.as_object_mut().unwrap();
+        m.insert("children".into(), Value::Array(kids));
+        m.insert(
+            "classes".into(),
+            json!(format!(
+                "{extra}menu-item-{iid} menu-item-type-{} menu-item-object-{} menu-item{}",
+                item_type,
+                obj,
+                if has_kids { "-has-children" } else { "" },
+                extra = extra,
+            )),
+        );
+        out.push(it);
+    }
+    out
+}
+
+/// Render a resolved menu tree to WP nav markup: `<li class="{classes}">
+/// <a href>{title}</a>{<ul class="sub-menu">…</ul>}</li>`. `nohref` items
+/// emit a bare `<a>`; `title_attr` maps to the anchor's title; the label
+/// may itself be HTML (image menu items) and is emitted verbatim.
+fn menu_li(items: &[Value]) -> String {
+    let mut out = String::new();
+    for it in items {
+        let classes = it.get("classes").and_then(|v| v.as_str()).unwrap_or("menu-item");
+        let url = it.get("url").and_then(|v| v.as_str()).unwrap_or("");
+        let title = it.get("title").and_then(|v| v.as_str()).unwrap_or("");
+        let tattr = it.get("title_attr").and_then(|v| v.as_str()).unwrap_or("");
+        let nohref = it.get("nohref").and_then(|v| v.as_bool()).unwrap_or(false);
+        let kids = it.get("children").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+        out.push_str(&format!("<li class=\"{classes}\">"));
+        if nohref {
+            out.push_str(&format!("<a>{title}</a>"));
+        } else {
+            let t = if tattr.is_empty() { String::new() } else { format!(" title=\"{tattr}\"") };
+            out.push_str(&format!("<a href=\"{url}\"{t}>{title}</a>"));
+        }
+        if !kids.is_empty() {
+            out.push_str("<ul class=\"sub-menu\">");
+            out.push_str(&menu_li(&kids));
+            out.push_str("</ul>");
+        }
+        out.push_str("</li>");
+    }
+    out
+}
