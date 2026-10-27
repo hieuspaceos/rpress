@@ -1,7 +1,7 @@
 ---
 phase: 2
 title: "Tourmaster adapter registration"
-status: pending
+status: done
 priority: P1
 effort: "1.5d"
 dependencies: [1]
@@ -122,12 +122,12 @@ chrome; dashboard Tour count unchanged.
 
 ## Todos
 
-- [ ] `Tourmaster` adapter impl + `ADAPTERS` registration
-- [ ] `/admin/plugins/{slug}/{*path}` dispatch + reserved `plugins` section
-- [ ] Menu/dashboard/tax generic over registry
-- [ ] `migrate_all` boot hook owns `promote_tours` + `tours` DDL
-- [ ] save-option endpoint moved + 307 shim + vendored-JS grep
-- [ ] `clone_post` adapter hook; tours row copy inside adapter
+- [x] `Tourmaster` adapter impl + `ADAPTERS` registration
+- [x] `/admin/plugins/{slug}/{*path}` dispatch + reserved `plugins` section
+- [x] Menu/dashboard/tax generic over registry
+- [x] `migrate_all` boot hook owns `promote_tours` + `tours` DDL
+- [x] save-option endpoint moved + 307 shim + vendored-JS grep
+- [x] `clone_post` adapter hook; tours row copy inside adapter
 
 ## Risks
 

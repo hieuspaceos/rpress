@@ -93,9 +93,23 @@ fn glance_box(c: &Connection) -> String {
     let n = |sql: &str| -> i64 {
         c.query_row(sql, [], |r| r.get(0)).unwrap_or(0)
     };
-    let posts = n("SELECT COUNT(*) FROM posts WHERE kind='post' AND status='publish'");
-    let pages = n("SELECT COUNT(*) FROM posts WHERE kind='page' AND status='publish'");
-    let tours = n("SELECT COUNT(*) FROM posts WHERE kind='tour' AND status='publish'");
+    // One card per registered kind (core built-ins + adapters) — a new
+    // plugin kind appears automatically, no dashboard edit.
+    let mut items = String::new();
+    for def in plugins::kind_defs() {
+        let n = c
+            .query_row(
+                "SELECT COUNT(*) FROM posts WHERE kind=?1 AND status='publish'",
+                [def.kind],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap_or(0);
+        let label = if n == 1 { def.noun.to_string() } else { format!("{}s", def.noun) };
+        items.push_str(&format!(
+            "<li><a href=\"/admin/{}\">{n} {}</a></li>",
+            def.section, label
+        ));
+    }
     let media = n("SELECT COUNT(*) FROM media");
     let comments = n("SELECT COUNT(*) FROM comments WHERE status IN ('approved','pending')");
     let pending = n("SELECT COUNT(*) FROM comments WHERE status='pending'");
@@ -105,9 +119,7 @@ fn glance_box(c: &Connection) -> String {
         format!(
             r#"<div id="dashboard_right_now"><div class="main">
 <ul>
-<li><a href="/admin/posts">{posts} Posts</a></li>
-<li><a href="/admin/pages">{pages} Pages</a></li>
-<li><a href="/admin/tours">{tours} Tours</a></li>
+{items}
 <li><a href="/admin/media">{media} Media</a></li>
 <li><a href="/admin/comments">{comments} Comments</a> · <a href="/admin/comments?status=pending">{pending} in moderation</a></li>
 </ul>

@@ -401,7 +401,7 @@ fn button(f: &Field) -> String {
         ret.push_str(&format!(" data-type=\"{}\" ", esc(f.data_type)));
         if f.data_type == "ajax" {
             let post_id = CTX.with(|c| c.borrow().post_id.clone());
-            ret.push_str(" data-ajax-url=\"/admin/api/tour/save-option\" ");
+            ret.push_str(" data-ajax-url=\"/admin/plugins/tourmaster/save-option\" ");
             ret.push_str(&format!(" data-post-id=\"{}\" ", esc(&post_id)));
         }
     }

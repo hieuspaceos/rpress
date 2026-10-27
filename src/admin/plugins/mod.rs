@@ -17,15 +17,19 @@
 //! The public serve path NEVER loads adapters — it only reads files.
 
 use crate::db::posts::PostForm;
-use crate::admin::{crud, Sess, SiteCtx};
+use crate::admin::{crud, App, Sess, SiteCtx};
 use anyhow::Result;
+use axum::http::HeaderMap;
+use axum::response::Response;
 use rusqlite::Connection;
 use std::collections::HashMap;
-
+use std::future::Future;
+use std::path::Path;
+use std::pin::Pin;
+use std::sync::LazyLock;
 
 pub(crate) mod tourmaster;
-
-use std::sync::LazyLock;
+/// Everything a kind editor needs — the four hooks the old `EditorPlugin`
 /// carried, verbatim. `KindDef.editor` is `None` for kinds with no plugin
 /// editor (core post/page use the classic editor).
 pub(crate) struct EditorHooks {
@@ -66,21 +70,34 @@ pub(crate) struct KindDef {
     /// Taxonomies owned by this kind — `tax_menu` routes their screens
     /// under this kind's section instead of a catch-all.
     pub(crate) taxonomies: &'static [&'static str],
+    /// Dashicons class for the sidebar menu entry ("" → no generic entry).
+    pub(crate) menu_icon: &'static str,
     /// Editor hooks; `None` → classic editor, no metabox.
     pub(crate) editor: Option<&'static EditorHooks>,
 }
 
-/// An adapter-owned admin screen under `/admin/plugins/<slug>/…`
-/// (dispatch lands in phase 02).
-#[allow(dead_code)]
+/// Request lifetime for screen handlers.
+pub(crate) type ScreenFuture<'a> = Pin<Box<dyn Future<Output = Response> + Send + 'a>>;
+
+/// Signature for `/admin/plugins/<slug>/<path>` handlers: dispatch does
+/// `need_auth` once — a screen receives the live session + site ctx and
+/// picks its own body extractors (`Form`, JSON, multipart…).
+pub(crate) type ScreenHandler =
+    for<'a> fn(&'a App, &'a Sess, &'a SiteCtx, HeaderMap, &'a str, axum::extract::Request) -> ScreenFuture<'a>;
+
+/// An adapter-owned admin endpoint under `/admin/plugins/<slug>/<path>`.
+/// One `ScreenDef` per route; GET+POST both dispatch to `handle`.
 pub(crate) struct ScreenDef {
-    /// Route path under the plugin's screen root, e.g. "settings".
+    /// Route path under the plugin's screen root, e.g. "save-option".
     pub(crate) path: &'static str,
     /// Human title for the screen + submenu entry.
+    #[allow(dead_code)]
     pub(crate) title: &'static str,
-    /// Render the screen body; `conn` is the site db.
-    pub(crate) render: fn(&SiteCtx, &Sess, &Connection) -> Result<String>,
+    /// Handle the request; must call `need_auth` itself.
+    pub(crate) handle: ScreenHandler,
 }
+
+
 
 /// Import pipeline hooks (wired into `import.rs` in phase 03).
 #[allow(dead_code)]
@@ -124,6 +141,25 @@ pub(crate) trait PluginAdapter: Sync {
     fn screens(&self) -> &'static [ScreenDef] {
         &[]
     }
+    /// Sidebar submenu for this adapter's kind menu: `(href, label)`
+    /// pairs. `None` → registry builds the default (list + add + owned
+    /// taxonomies).
+    fn submenu(&self, _db: &Path, _def: &KindDef) -> Option<Vec<(String, String)>> {
+        None
+    }
+    /// Boot-time schema + data promotion for the plugin's own tables.
+    /// Runs once at `serve()` startup only when the adapter is registered
+    /// (red-team R7); must be idempotent (`CREATE TABLE IF NOT EXISTS`,
+    /// `INSERT OR REPLACE`).
+    fn migrate(&self, _db: &Path) -> Result<()> {
+        Ok(())
+    }
+    /// Copy plugin-owned rows when `posts` row `old_id` clones to
+    /// `new_id`. Runs inside the clone transaction; a no-op default is
+    /// fine — post_meta is already copied by the caller.
+    fn clone_post(&self, _tx: &Connection, _new_id: i64, _old_id: i64) -> Result<()> {
+        Ok(())
+    }
     /// Import hooks; `None` → core import only.
     fn import_hooks(&self) -> Option<&'static ImportHooks> {
         None
@@ -166,12 +202,14 @@ static CORE_KINDS: &[KindDef] = &[
         add_label: "Add Post", head: HEAD_POST, row_cols: post_row_cols,
         url_base_key: None,
         taxonomies: &["category", "post_tag"],
+        menu_icon: "dashicons-admin-post",
         editor: None,
     },
     KindDef {
         kind: "page", section: "pages", noun: "Page", list_title: "Pages",
         add_label: "Add Page", head: HEAD_PAGE, row_cols: page_row_cols,
-        url_base_key: None, taxonomies: &[], editor: None,
+        url_base_key: None, taxonomies: &[], menu_icon: "dashicons-admin-page",
+        editor: None,
     },
 ];
 
@@ -183,6 +221,8 @@ struct Registry {
     by_slug: HashMap<&'static str, &'static dyn PluginAdapter>,
     by_kind: HashMap<&'static str, &'static KindDef>,
     by_section: HashMap<&'static str, &'static KindDef>,
+    /// kind → owning adapter (core kinds have none).
+    kind_adapter: HashMap<&'static str, &'static dyn PluginAdapter>,
 }
 
 static REGISTRY: LazyLock<Registry> = LazyLock::new(|| {
@@ -190,16 +230,19 @@ static REGISTRY: LazyLock<Registry> = LazyLock::new(|| {
         by_slug: HashMap::new(),
         by_kind: HashMap::new(),
         by_section: HashMap::new(),
+        kind_adapter: HashMap::new(),
     };
     for def in CORE_KINDS {
-        r.by_kind.insert(def.kind, def);
-        r.by_section.insert(def.section, def);
+        assert!(r.by_kind.insert(def.kind, def).is_none(), "duplicate kind {}", def.kind);
+        assert!(r.by_section.insert(def.section, def).is_none(), "duplicate section {}", def.section);
     }
     for adapter in ADAPTERS {
-        r.by_slug.insert(adapter.slug(), *adapter);
+        assert!(r.by_slug.insert(adapter.slug(), *adapter).is_none(), "duplicate slug {}", adapter.slug());
         for def in adapter.kinds() {
-            r.by_kind.insert(def.kind, def);
-            r.by_section.insert(def.section, def);
+            assert_ne!(def.section, "plugins", "kind {} claims reserved section 'plugins'", def.kind);
+            assert!(r.by_kind.insert(def.kind, def).is_none(), "kind {} claimed twice", def.kind);
+            assert!(r.by_section.insert(def.section, def).is_none(), "section {} claimed twice", def.section);
+            r.kind_adapter.insert(def.kind, *adapter);
         }
     }
     r
@@ -216,10 +259,60 @@ pub(crate) fn kind_for_section(section: &str) -> Option<&'static KindDef> {
     REGISTRY.by_section.get(section).copied()
 }
 
-/// Plugin slug → adapter (`/admin/plugins/<slug>` dispatch, phase 02).
-#[allow(dead_code)]
+/// Plugin slug → adapter (`/admin/plugins/<slug>` dispatch).
 pub(crate) fn adapter_for_slug(slug: &str) -> Option<&'static dyn PluginAdapter> {
     REGISTRY.by_slug.get(slug).copied()
+}
+
+/// `posts.kind` → owning adapter (core kinds → `None`).
+pub(crate) fn adapter_for_kind(kind: &str) -> Option<&'static dyn PluginAdapter> {
+    REGISTRY.kind_adapter.get(kind).copied()
+}
+
+/// Every registered `KindDef` in declared order: core first, then
+/// adapters — drives generic menu/dashboard rendering.
+pub(crate) fn kind_defs() -> Vec<&'static KindDef> {
+    CORE_KINDS
+        .iter()
+        .chain(ADAPTERS.iter().flat_map(|a| a.kinds()))
+        .collect()
+}
+
+/// Run every adapter's `migrate()` at boot — each applies only its own
+/// tables/promotions, idempotently.
+pub(crate) fn migrate_all(db: &Path) {
+    for adapter in ADAPTERS {
+        if let Err(e) = adapter.migrate(db) {
+            eprintln!("plugin migrate {}: {e:#}", adapter.slug());
+        }
+    }
+}
+
+/// Dispatch `/admin/plugins/<slug>/<path>` to a `ScreenDef`; `None` → 404.
+pub(crate) fn screen_for(slug: &str, path: &str) -> Option<(&'static dyn PluginAdapter, &'static ScreenDef)> {
+    let a = adapter_for_slug(slug)?;
+    a.screens()
+        .iter()
+        .find(|s| s.path == path)
+        .map(|s| (a, s))
+}
+
+/// Default submenu for a registered kind: list, add-new, then the kind's
+/// declared taxonomies. An adapter's `submenu()` overrides this.
+pub(crate) fn submenu_for(db: &Path, def: &'static KindDef) -> Vec<(String, String)> {
+    let adapter = adapter_for_kind(def.kind);
+    if let Some(sub) = adapter.and_then(|a| a.submenu(db, def)) {
+        return sub;
+    }
+    let mut sub = vec![
+        (format!("/admin/{}", def.section), format!("All {}", def.list_title)),
+        (format!("/admin/new/{}", def.kind), def.add_label.to_string()),
+    ];
+    for t in def.taxonomies {
+        let (label, _) = crate::admin::tax_label(t);
+        sub.push((format!("/admin/tax/{t}"), label));
+    }
+    sub
 }
 
 /// Editor hooks for a kind — the editor-metabox half of the old

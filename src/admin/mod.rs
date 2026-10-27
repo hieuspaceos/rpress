@@ -90,7 +90,7 @@ pub async fn serve(db: PathBuf, templates: PathBuf, out: PathBuf, www: PathBuf, 
     let _ = crud::ensure_media_cols(&db);
     let uploads_root = www.join("wp-content/uploads");
     let _ = crud::media_backfill_dates(&db, &uploads_root);
-    let _ = crud::promote_tours(&db);
+    plugins::migrate_all(&db);
     // Boot duties that used to live inside `rpress generate`:
     //   1. seed default widgets/sidebars so a fresh DB isn't empty
     //   2. purge 30-day-old trash (WP _wp_scheduled_delete equivalent)
@@ -153,7 +153,7 @@ pub async fn serve(db: PathBuf, templates: PathBuf, out: PathBuf, www: PathBuf, 
         .route("/admin/revisions/{rid}/restore", post(revisions::revision_restore))
         .route("/admin/seo/cell/{id}", get(rankmath::seo_cell_frag))
         .route("/admin/seo/analysis/{id}", get(rankmath::seo_analysis_frag))
-        .route("/admin/tax/new-filter", get(tax::tax_new_filter_page).post(tax::tax_new_filter))
+        .route("/admin/tax/new-filter", get(tax::tax_new_filter_redirect).post(tax::tax_new_filter_redirect))
         .route("/admin/tax/{tax}", get(tax::tax_page))
         .route("/admin/tax/save", post(tax::tax_save))
         .route("/admin/tax/edit/{id}", get(tax::tax_edit))
@@ -166,7 +166,8 @@ pub async fn serve(db: PathBuf, templates: PathBuf, out: PathBuf, www: PathBuf, 
         .route("/admin/media/save", post(admin::media_save))
         .route("/admin/media/delete", post(admin::media_delete))
         .route("/admin/media/detach", post(admin::media_detach))
-        .route("/admin/api/tour/save-option", post(posts::save_tour_option))
+        .route("/admin/plugins/{slug}/{*rest}", get(plugin_screen).post(plugin_screen))
+        .route("/admin/api/tour/save-option", post(save_option_shim))
         .route("/admin/media/bulk", post(admin::media_bulk))
         .route("/admin/media/download/{id}", get(admin::media_download))
         .route("/admin/media/json/{id}", get(admin::media_json))
@@ -1207,14 +1208,22 @@ pub(crate) fn chrome_start(active: &str, s: &Sess) -> String {
         active,
         &[] as &[(&str, &str)],
     ));
-    html.push_str(&menu_li(
-        "tours",
-        "/admin/tours",
-        "Tour",
-        "dashicons-palmtree",
-        active,
-        &tour_submenu(&s.db),
-    ));
+    // Registered plugin kinds get one generic menu entry each (adapter
+    // may override the submenu via `PluginAdapter::submenu`).
+    for def in plugins::kind_defs() {
+        if def.menu_icon.is_empty() || matches!(def.kind, "post" | "page") {
+            continue;
+        }
+        html.push_str(&menu_li(
+            def.section,
+            &format!("/admin/{}", def.section),
+            def.list_title,
+            def.menu_icon,
+            active,
+            &plugins::submenu_for(&s.db, def),
+        ));
+    }
+
     html.push_str(&menu_li(
         "contact",
         "/admin/contact",
@@ -1323,23 +1332,28 @@ pub(crate) fn chrome_end(s: &Sess) -> String {
 </div>
 </div><!-- wpwrap -->"#)
 }
-/// Tour submenu mirrors tourmaster: All/Add Tour, Add New Filter, then every
-/// non-post taxonomy present in `terms`/`post_terms` (custom tour taxs +
-/// theme taxonomies like Activites/Pays).
-fn tour_submenu(db: &std::path::Path) -> Vec<(String, String)> {
-    let mut sub = vec![
-        ("/admin/tours".into(), "All Tour".into()),
-        ("/admin/new/tour".into(), "Add New Tour".into()),
-        ("/admin/tax/new-filter".into(), "Add New Filter".into()),
-    ];
-    for t in crud::list_taxonomies(db).unwrap_or_default() {
-        if t == "category" || t == "post_tag" {
-            continue;
-        }
-        let (label, _) = tax_label(&t);
-        sub.push((format!("/admin/tax/{t}"), label));
-    }
-    sub
+/// `/admin/plugins/{slug}/{*rest}` — dispatch to the adapter's
+/// `ScreenDef`. Registered before `/admin/{section}`; `"plugins"` is a
+/// reserved section name (no KindDef may claim it — red-team R5).
+async fn plugin_screen(
+    State(app): State<App>,
+    headers: HeaderMap,
+    Path((slug, rest)): Path<(String, String)>,
+    req: axum::extract::Request,
+) -> Response {
+    let Ok((s, sc)) = need_auth(&app, &headers) else {
+        return Redirect::to("/admin/login").into_response();
+    };
+    let Some((_adapter, screen)) = plugins::screen_for(&slug, &rest) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    (screen.handle)(&app, &s, sc, headers, &rest, req).await
+}
+
+/// Legacy tourmaster ajax URL — 307 preserves POST+body; vendored JS and
+/// any cached edit pages keep working until assets are republished.
+async fn save_option_shim() -> Response {
+    Redirect::temporary("/admin/plugins/tourmaster/save-option").into_response()
 }
 
 /// Human label for a taxonomy (shared with tax.rs).

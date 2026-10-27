@@ -438,8 +438,11 @@ pub fn clone_post(db: &Path, id: i64, as_draft: bool) -> Result<i64> {
         .map_err(|e| anyhow::anyhow!("clone post_terms {new_id}<={id}: {e}"))?;
     tx.execute(sql!("posts__insert_into_post_meta"), rusqlite::params![new_id, id])
         .map_err(|e| anyhow::anyhow!("clone post_meta {new_id}<={id}: {e}"))?;
-    tx.execute(sql!("posts__insert_into_tours"), rusqlite::params![new_id, id])
-        .map_err(|e| anyhow::anyhow!("clone tours {new_id}<={id}: {e}"))?;
+    let kind: String = tx
+        .query_row(sql!("verify__select_kind_from"), [new_id], |r| r.get(0))?;
+    if let Some(a) = crate::admin::plugins::adapter_for_kind(&kind) {
+        a.clone_post(&tx, new_id, id)?;
+    }
     tx.commit()?;
     Ok(new_id)
 }
@@ -1206,37 +1209,7 @@ fn sync_translation_members(c: &Connection, id: i64, other: Option<i64>) -> Resu
     Ok(())
 }
 
-pub fn promote_tours(db: &Path) -> Result<u64> {
-    let c = crate::db::conn(db)?;
-    let ids: Vec<i64> = {
-        let mut s = c.prepare(sql!("posts__select_id_from"))?;
-        let v: Vec<i64> = s.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
-        v
-    };
-    let mut n = 0u64;
-    for id in ids {
-        let meta = |k: &str| -> Option<String> {
-            c.query_row(
-                sql!("posts__select_meta_value_from"),
-                params![id, k],
-                |r| r.get(0),
-            )
-            .ok()
-        };
-        let duration: Option<i64> = meta("tourmaster-tour-duration").and_then(|s| s.parse().ok());
-        let price = meta("tourmaster-tour-price-range");
-        let max_p: Option<i64> = meta("tourmaster-max-people").and_then(|s| s.parse().ok());
-        let dates = meta("tourmaster-tour-date");
-        let views: Option<i64> = meta("tourmaster-view-count").and_then(|s| s.parse().ok());
-        let rating: Option<f64> = meta("tourmaster-tour-rating").and_then(|s| s.parse().ok());
-        c.execute(
-            sql!("posts__insert_into_tours_24"),
-            params![id, duration, price, max_p, dates, views, rating],
-        )?;
-        n += 1;
-    }
-    Ok(n)
-}
+
 
 fn terms_payload(db: &Path, id: i64, f: &PostForm) -> String {
     if f.kind != "post" {

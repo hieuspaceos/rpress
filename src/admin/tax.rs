@@ -14,12 +14,7 @@ pub(crate) struct TaxForm {
     parent: Option<i64>,
 }
 
-#[derive(Deserialize)]
-pub(crate) struct NewFilterForm {
-    csrf: String,
-    label: String,
-    slug: String,
-}
+
 
 fn tax_labels(tax: &str) -> (String, String) {
     let (pl, sg) = tax_label(tax);
@@ -34,47 +29,9 @@ fn custom_taxs(db: &std::path::Path) -> std::collections::BTreeMap<String, Strin
     crud::plugin_setting_json_map(db, "tourmaster", "tour_custom_taxs")
 }
 
-fn new_filter_html(s: &Sess) -> String {
-    format!(
-        r#"{chrome}<div class="wrap"><h1>Add New Filter</h1>
-<p>Create a custom tour taxonomy (tourmaster filter). It appears under Tour → menu and on the tour edit screen.</p>
-<form method="post" action="/admin/tax/new-filter" class="form-table">
-<input type="hidden" name="csrf" value="{csrf}">
-<table class="form-table"><tbody>
-<tr><th scope="row"><label for="nf-label">Label</label></th>
-<td><input id="nf-label" name="label" type="text" class="regular-text" required></td></tr>
-<tr><th scope="row"><label for="nf-slug">Slug</label></th>
-<td><input id="nf-slug" name="slug" type="text" class="regular-text" placeholder="auto from label"></td></tr>
-</tbody></table>
-<p class="submit"><button class="button button-primary">Add Filter</button></p>
-</form></div>"#,
-        chrome = chrome("tours", s),
-        csrf = s.csrf,
-    )
-}
-
-pub(crate) async fn tax_new_filter_page(State(app): State<App>, headers: HeaderMap) -> Response {
-    let Ok((s, _sc)) = need_auth(&app, &headers) else {
-        return Redirect::to("/admin/login").into_response();
-    };
-    html_admin(&s, "Add New Filter", &new_filter_html(&s), true, "edit-tags").into_response()
-}
-
-pub(crate) async fn tax_new_filter(State(app): State<App>, headers: HeaderMap, Form(f): Form<NewFilterForm>) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
-        return Redirect::to("/admin/login").into_response();
-    };
-    if let Err(r) = check_csrf(&s, &f.csrf) {
-        return r;
-    }
-    let slug = if f.slug.trim().is_empty() { crud::slugify(&f.label) } else { f.slug.trim().to_string() };
-    if slug.is_empty() {
-        return StatusCode::BAD_REQUEST.into_response();
-    }
-    let mut taxs = custom_taxs(&sc.db);
-    taxs.insert(slug.clone(), f.label.trim().to_string());
-    let _ = crud::plugin_setting_json_put_map(&sc.db, "tourmaster", "tour_custom_taxs", &taxs);
-    Redirect::to(&format!("/admin/tax/{slug}")).into_response()
+/// Legacy path → the tourmaster adapter's screen (307 keeps POST+body).
+pub(crate) async fn tax_new_filter_redirect() -> Response {
+    Redirect::temporary("/admin/plugins/tourmaster/new-filter").into_response()
 }
 #[derive(Deserialize)]
 pub(crate) struct TaxDelete {
@@ -467,10 +424,7 @@ pub(crate) async fn tax_page(State(app): State<App>, headers: HeaderMap, Path(ta
     let Ok((s, sc)) = need_auth(&app, &headers) else {
         return Redirect::to("/admin/login").into_response();
     };
-    // "Add New Filter" (tourmaster custom taxonomy creator) lives under /tax/.
-    if tax == "new-filter" {
-        return html_admin(&s, "Add New Filter", &new_filter_html(&s), true, "edit-tags").into_response();
-    }
+
     if !crud::taxonomy_exists(&sc.db, &tax).unwrap_or(false)
         && !custom_taxs(&sc.db).contains_key(tax.as_str())
     {
