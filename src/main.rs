@@ -1,6 +1,6 @@
 // Single module list: the binary consumes the `rpress` library crate so
 // the two targets can't drift on module visibility (module hygiene L).
-use rpress::{admin, auth, generate, import, render, site_build, site_deploy, site_init, site_serve, verify};
+use rpress::{admin, auth, generate, import, render, site_bridge, site_build, site_deploy, site_init, site_serve, verify};
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -64,6 +64,13 @@ enum Cmd {
     Site {
         #[command(subcommand)]
         step: SiteStep,
+    },
+    /// PhpBridge operator tooling: inspect/kill plugin bridge workdirs
+    Bridge {
+        /// Site slug (sites/<slug>.env)
+        site: String,
+        #[command(subcommand)]
+        action: site_bridge::BridgeAction,
     },
     Serve {
         #[arg(long, default_value = "127.0.0.1:8400")]
@@ -201,6 +208,7 @@ fn main() -> Result<()> {
                 bind: args.bind,
                 name: args.name,
                 tour_base: args.tour_base,
+                plugins_php: args.plugins_php,
                 clone_ok: args.clone_ok,
                 force: args.force,
             }),
@@ -220,8 +228,9 @@ fn main() -> Result<()> {
             let www = www.unwrap_or_else(|| {
                 out.parent().unwrap_or(std::path::Path::new(".")).join("www")
             });
-            tokio::runtime::Runtime::new()?.block_on(admin::serve(db, templates, out, www, addr, site, host, name, tour_base))
+            tokio::runtime::Runtime::new()?.block_on(admin::serve(db, templates, out, www, addr, site, host, name, tour_base, std::env::var("PLUGINS_PHP").unwrap_or_default()))
         }
+        Cmd::Bridge { site, action } => site_bridge::run(site_bridge::BridgeArgs { site, action }),
     }
 }
 
@@ -325,6 +334,10 @@ struct InitArgs {
     /// URL base for the tour plugin (e.g. "voyage")
     #[arg(long)]
     tour_base: Option<String>,
+    /// Comma-separated plugin slugs allowed to run on the PHP bridge
+    /// (persisted as PLUGINS_PHP; empty = bridge off)
+    #[arg(long)]
+    plugins_php: Option<String>,
     /// Confirm the pull source is a clone/staging, never production
     #[arg(long)]
     clone_ok: bool,

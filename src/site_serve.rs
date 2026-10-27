@@ -64,6 +64,7 @@ pub fn run(a: ServeArgs) -> Result<()> {
         env.host.clone(),
         env.name.clone(),
         env.tour_base.clone(),
+        env.plugins_php.clone(),
     ))
 }
 
@@ -127,6 +128,7 @@ fn smoke(env: &SiteEnv, db: &PathBuf, templates: &PathBuf, cache: &PathBuf, www:
             "--name", &env.name,
             "--tour-base", &env.tour_base,
         ])
+        .env("PLUGINS_PHP", &env.plugins_php)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())

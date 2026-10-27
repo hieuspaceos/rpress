@@ -120,7 +120,7 @@ editor UI cannot be economically reproduced.
 | 03 | [Tour extraction: render/generate/lang/widgets decoupling](./phase-03-tour-extraction.md) | 02 | 3d | Done |
 | 04 | [Theme-as-data: CAT_TREE / etiquette / ES_ROOTS / seeds](./phase-04-theme-data.md) | 01 | 2d | Done |
 | 05 | [Back-compat & migration for existing sites](./phase-05-backcompat-migration.md) | 02–04 | 1d | Done |
-| 06 | [PhpBridge runtime MVP (php-cgi or Playground) + write whitelist](./phase-06-phpbridge-runtime.md) | 01 | 3d | Pending |
+| 06 | [PhpBridge runtime MVP (php-cgi or Playground) + write whitelist](./phase-06-phpbridge-runtime.md) | 01 | 3d | Done |
 | 07 | [gdlr_pb → PhpBridge cutover](./phase-07-gdlr-bridge.md) | 06 | 3d | Pending |
 
 Total ≈ 15.5 dev-days. Phases 03 and 04 are independent of each other

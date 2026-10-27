@@ -1,7 +1,7 @@
 ---
 phase: 6
 title: "PhpBridge runtime MVP + write whitelist"
-status: pending
+status: done
 priority: P1
 effort: "3d"
 dependencies: [1]
@@ -29,6 +29,10 @@ php-wasm-in-process remains the documented target runtime, not MVP.
 The bridge is a `PhpRuntime` trait (`request(method, path, headers,
 body) -> Response`) with Playground and php-cgi impls behind it, so
 swapping runtimes later is a config change.
+
+**Verdict (2026-10-27):** `@wp-playground/cli` — `php-cgi` absent on
+dev host; Node v26 + npx present. `RuntimeKind::PhpCgi` stays behind
+`#[allow(dead_code)]` for hosts without Node.
 
 ## Findings covered
 
@@ -125,13 +129,13 @@ Manual (with real runtime installed):
 
 ## Todos
 
-- [ ] `PhpRuntime` trait + lifecycle manager + TTL reaper
-- [ ] wp.db projection + bootstrap
-- [ ] Pull-write with WriteSpec validation + tests
-- [ ] Proxy dispatch + bridge token
-- [ ] Opt-in env gate + degrade screen
-- [ ] Runtime choice documented (Playground vs php-cgi) + hardening
-- [ ] `bridge status/kill` CLI
+- [x] `PhpRuntime` trait + lifecycle manager + TTL reaper
+- [x] wp.db projection + bootstrap
+- [x] Pull-write with WriteSpec validation + tests
+- [x] Proxy dispatch + bridge token
+- [x] Opt-in env gate + degrade screen
+- [x] Runtime choice documented (Playground vs php-cgi) + hardening
+- [x] `bridge status/kill` CLI
 
 ## Risks
 

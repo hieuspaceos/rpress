@@ -46,6 +46,9 @@ pub struct SiteEnv {
     pub tour_base: String,
     /// Origin URL the dump came from (parity target + asset fallback).
     pub site_url: String,
+    /// Comma-separated PhpBridge opt-in slugs (`PLUGINS_PHP=`). Empty =
+    /// bridge fully off — no runtime surface unless explicitly listed.
+    pub plugins_php: String,
     pub clone_source_ok: bool,
     // pull source — exactly one family populated
     /// vps.sh hosts.conf alias (password/keyfile helper at ../vps-ssh)
@@ -98,6 +101,7 @@ impl SiteEnv {
             local_url: get("LOCAL_URL"),
             tour_base: get("TOUR_BASE"),
             site_url: get("SITE_URL"),
+            plugins_php: get("PLUGINS_PHP"),
             clone_source_ok: get("CLONE_SOURCE_OK") == "yes",
             vps_host: opt("VPS_HOST"),
             ssh_target: opt("SSH_TARGET"),
@@ -123,7 +127,7 @@ impl SiteEnv {
         s.push_str(&format!("BIND={}\n", self.bind));
         s.push_str(&format!("LOCAL_URL={}\n", self.local_url));
         s.push_str(&format!("TOUR_BASE={}\n", self.tour_base));
-        s.push_str(&format!("SITE_URL={}\n", self.site_url));
+        s.push_str(&format!("PLUGINS_PHP={}\n", self.plugins_php));
         s.push_str(&format!(
             "CLONE_SOURCE_OK={}\n",
             if self.clone_source_ok { "yes" } else { "no" }

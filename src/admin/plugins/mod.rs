@@ -286,6 +286,12 @@ pub(crate) trait PluginAdapter: Sync {
     fn archive_term_url(&self, _lang_cfg: &crate::lang::LangConfig, _tax: &str, _lang: &str, _slug: &str) -> Option<String> {
         None
     }
+    /// Whitelisted wp.db rows the bridge pull copies into rpress.db
+    /// after each proxied request (`Backend::PhpBridge` only). Empty —
+    /// the default — means *no* writes ever land.
+    fn write_specs(&self) -> &'static [crate::admin::bridge::pull::WriteSpec] {
+        &[]
+    }
     /// Which backend the plugin runs on.
     fn backend(&self) -> Backend;
 }

@@ -18,6 +18,7 @@ pub mod site_build;
 pub mod site_init;
 pub mod site_deploy;
 pub mod site_serve;
+pub mod site_bridge;
 pub mod sitefx;
 pub mod sqldump;
 pub mod verify;

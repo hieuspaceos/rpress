@@ -29,6 +29,8 @@ pub struct InitArgs {
     pub name: Option<String>,
     /// URL base for the tour plugin (persisted as TOUR_BASE).
     pub tour_base: Option<String>,
+    /// PhpBridge opt-in plugin slugs (persisted as PLUGINS_PHP).
+    pub plugins_php: Option<String>,
     pub clone_ok: bool,
     pub force: bool,
 }
@@ -68,6 +70,7 @@ pub fn run(a: InitArgs) -> Result<()> {
         name: a.name.clone().unwrap_or_else(|| site.clone()),
         host: "127.0.0.1".into(),
         tour_base: a.tour_base.clone().unwrap_or_else(|| "voyage".into()),
+        plugins_php: a.plugins_php.clone().unwrap_or_default(),
         ..Default::default()
     };
 

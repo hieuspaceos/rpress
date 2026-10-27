@@ -21,6 +21,7 @@ mod admin;
 mod auth;
 mod dashboard;
 mod gdlr;
+pub(crate) mod bridge;
 pub(crate) mod gdlr_pb;
 pub(crate) mod plugins;
 mod posts;
@@ -39,6 +40,8 @@ mod settings;
 #[derive(Clone)]
 pub(crate) struct SiteCtx {
     pub(crate) slug: String,
+    /// Comma-separated PhpBridge opt-in slugs from SiteEnv; "" = off.
+    pub(crate) plugins_php: String,
     pub(crate) name: String,
     /// Per-kind URL-base prefixes resolved from the site's TOUR_BASE env
     /// (plugins::resolve_bases). Replaces the raw tour-base string.
@@ -49,9 +52,11 @@ pub(crate) struct SiteCtx {
     /// Persistent data dir: user uploads + vendored plugin assets.
     /// Unlike `out` (disposable cache), `www` must be backed up.
     pub(crate) www: PathBuf,
+    /// Per-plugin bridge state (`{site}:{slug}` → BridgeState); bridges
+    /// spawn lazily on the first proxied admin request.
+    pub(crate) bridges: bridge::Bridges,
     pub(crate) generating: Arc<AtomicBool>,
 }
-
 #[derive(Clone)]
 pub(crate) struct App {
     pub(crate) sites: Arc<HashMap<String, SiteCtx>>,
@@ -90,7 +95,7 @@ pub(crate) struct Sess {
 
 /// `sites`: `(host_header, db, templates, out, www)` — multi-site support.
 /// `out` = disposable HTML cache; `www` = persistent uploads/plugins/assets.
-pub async fn serve(db: PathBuf, templates: PathBuf, out: PathBuf, www: PathBuf, bind: SocketAddr, site_slug: String, host: String, name: String, tour_base: String) -> Result<()> {
+pub async fn serve(db: PathBuf, templates: PathBuf, out: PathBuf, www: PathBuf, bind: SocketAddr, site_slug: String, host: String, name: String, tour_base: String, plugins_php: String) -> Result<()> {
     let kind_bases = plugins::resolve_bases(&tour_base);
     // Schema must be current before we serve — the post_meta dedupe +
     // unique-index migration lives here; silently continuing would serve
@@ -118,12 +123,14 @@ pub async fn serve(db: PathBuf, templates: PathBuf, out: PathBuf, www: PathBuf, 
     }
     let site = SiteCtx {
         slug: site_slug.clone(),
+        plugins_php,
         name: name.clone(),
         kind_bases,
         db,
         templates,
         out,
         www,
+        bridges: bridge::Bridges::default(),
         generating: Arc::new(AtomicBool::new(false)),
     };
     let mut sites = HashMap::new();
@@ -262,7 +269,23 @@ pub async fn serve(db: PathBuf, templates: PathBuf, out: PathBuf, www: PathBuf, 
         // Outermost layer: the multi-site Host gate runs before anything
         // that touches a site context.
         .layer(axum::middleware::from_fn_with_state(state.clone(), host_known))
-        .with_state(state);
+        .with_state(state.clone());
+    // Bridge TTL reaper: kill PHP runtimes idle > 10min. Per-site maps
+    // live on SiteCtx; sweep them all every minute.
+    {
+        let sites = state.sites.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                for sc in sites.values() {
+                    let mut map = sc.bridges.lock();
+                    for k in bridge::reap(&mut map, bridge::TTL_IDLE) {
+                        eprintln!("bridge: idle kill {k}");
+                    }
+                }
+            }
+        });
+    }
     let listener = tokio::net::TcpListener::bind(bind).await?;
     eprintln!("rpress listening on http://{bind}");
     axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await?;
@@ -1356,10 +1379,116 @@ async fn plugin_screen(
     let Ok((s, sc)) = need_auth(&app, &headers) else {
         return Redirect::to("/admin/login").into_response();
     };
-    let Some((_adapter, screen)) = plugins::screen_for(&slug, &rest) else {
+    let Some(adapter) = plugins::adapter_for_slug(&slug) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    // PhpBridge plugins proxy to their isolated WP runtime; every other
+    // backend resolves a local ScreenDef. The opt-in env gate is absolute:
+    // unlisted slugs never reach spawn.
+    if adapter.backend() == plugins::Backend::PhpBridge {
+        return bridge_dispatch(&app, &s, sc, adapter, headers, &rest, req).await;
+    }
+    let Some((_a, screen)) = plugins::screen_for(&slug, &rest) else {
         return StatusCode::NOT_FOUND.into_response();
     };
     (screen.handle)(&app, &s, sc, headers, &rest, req).await
+}
+
+/// Proxy `/admin/plugins/<slug>/<rest>` into a PhpBridge runtime.
+/// Opt-in gate (`PLUGINS_PHP` env) → spawn-on-demand → forward → pull
+/// whitelisted writes. Missing runtime degrades to an install note;
+/// the rest of admin is unaffected (R10).
+async fn bridge_dispatch(
+    _app: &App,
+    s: &Sess,
+    sc: &SiteCtx,
+    adapter: &'static dyn plugins::PluginAdapter,
+    headers: HeaderMap,
+    rest: &str,
+    req: axum::extract::Request,
+) -> Response {
+    let slug = adapter.slug();
+    if !bridge::opt_in(&sc.plugins_php, slug) {
+        return html_admin(
+            s,
+            "Plugin bridge",
+            &format!(
+                "<div class=\"wrap\"><h1>{} (PHP bridge)</h1>\
+                 <p>This plugin runs on the PHP bridge backend and is not enabled for this site.</p>\
+                 <p>Add <code>PLUGINS_PHP={}</code> to the site env and restart to enable it.</p></div>",
+                slug, slug
+            ),
+            false,
+            "plugins",
+        )
+        .into_response();
+    }
+    let method = req.method().to_string();
+    let body = match axum::body::to_bytes(req.into_body(), 8 * 1024 * 1024).await {
+        Ok(b) => b,
+        Err(_) => return StatusCode::BAD_REQUEST.into_response(),
+    };
+    let hdrs: Vec<(String, String)> = headers
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or_default().to_string()))
+        .collect();
+    let path = format!("/{rest}");
+
+    let site = sc.slug.clone();
+    let www = sc.www.clone();
+    let db = sc.db.clone();
+    let specs = adapter.write_specs();
+    let bridges = sc.bridges.clone();
+    // T25: the post being edited is the last numeric path segment
+    // (e.g. `/admin/plugins/gdlr/page-builder/edit/42` → 42). No match
+    // → empty wp.db: the plugin screens that need no post context.
+    let post_id = rest
+        .rsplit('/')
+        .find_map(|seg| seg.parse::<i64>().ok());
+    let resp = tokio::task::spawn_blocking(move || {
+        let mut map = bridges.lock();
+        let st = bridge::bridge_for(&mut map, &site, slug, bridge::RuntimeKind::Playground, &www, &db, post_id)?;
+        let token = st.token.clone();
+        let mut fwd = hdrs.clone();
+        fwd.push(("X-Rpress-Bridge".into(), token));
+        let r = st.rt.request(&method, &path, &fwd, &body)?;
+        // Pull whitelisted writes in the same task — no drift window.
+        let _ = bridge::pull::pull(&st.wp_db, &db, specs);
+        Ok::<_, anyhow::Error>(r)
+    })
+    .await;
+
+    match resp {
+        Ok(Ok(r)) => {
+            let mut b = axum::response::Response::builder().status(
+                axum::http::StatusCode::from_u16(r.status).unwrap_or(StatusCode::OK),
+            );
+            for (k, v) in &r.headers {
+                let kl = k.to_ascii_lowercase();
+                if matches!(kl.as_str(), "transfer-encoding" | "connection" | "content-length") {
+                    continue;
+                }
+                if let (Ok(n), Ok(val)) = (header::HeaderName::from_bytes(k.as_bytes()), HeaderValue::from_str(v)) {
+                    b = b.header(n, val);
+                }
+            }
+            b.body(Body::from(r.body)).unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+        }
+        Ok(Err(e)) => html_admin(
+            s,
+            "Plugin bridge",
+            &format!(
+                "<div class=\"wrap\"><h1>{} (PHP bridge)</h1>\
+                 <p>Bridge unavailable: <code>{}</code></p>\
+                 <p>Install Node + <code>@wp-playground/cli</code>, or check the runtime log.</p></div>",
+                slug, e
+            ),
+            false,
+            "plugins",
+        )
+        .into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
 }
 
 /// Legacy tourmaster ajax URL — 307 preserves POST+body; vendored JS and
