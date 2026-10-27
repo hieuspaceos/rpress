@@ -94,6 +94,7 @@ pub async fn serve(db: PathBuf, templates: PathBuf, out: PathBuf, www: PathBuf, 
         let _ = crate::widgets::ensure(&boot_conn);
     }
     crate::sitefx::purge_duties(&db, &out);
+    purge_alias_caches(&db, &out);
     {
         let site_url_boot = crate::db::setting_value(&db, "site_url", "/");
         if let Err(e) = crate::sitefx::emit_site_files(&db, &templates, &out, &site_url_boot) {
@@ -242,11 +243,52 @@ pub async fn serve(db: PathBuf, templates: PathBuf, out: PathBuf, www: PathBuf, 
         // headroom leaves room for multipart framing over the file bytes.
         .layer(axum::extract::DefaultBodyLimit::max((crud::UPLOAD_LIMIT_BYTES + 1024 * 1024) as usize))
         .layer(axum::middleware::from_fn_with_state(state.clone(), clear_dead_session_cookie))
+        // Outermost layer: the multi-site Host gate runs before anything
+        // that touches a site context.
+        .layer(axum::middleware::from_fn_with_state(state.clone(), host_known))
         .with_state(state);
     let listener = tokio::net::TcpListener::bind(bind).await?;
     eprintln!("rpress listening on http://{bind}");
     axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await?;
     Ok(())
+}
+
+/// One-time upgrade sweep (audit remediation, phase 1): pre-301 alias
+/// cache files keep serving from the cache-hit path even though
+/// `/fr/<slug>` now redirects — the file check runs before split_path, so
+/// the redirect alone can't retire them. Deletes:
+///   - `{out}/{primary_lang}/` — primary-prefix alias trees (nothing
+///     legitimate renders under the primary prefix after the 301)
+///   - every `{rel}.html` leaf that isn't `index.html`/`404.html` —
+///     legacy flat write-backs that survive unpublish (regen only removes
+///     `{slug}/index.html`). Loud, idempotent, cheap once swept.
+fn purge_alias_caches(db: &PathBuf, out: &PathBuf) {
+    let mut removed = 0usize;
+    if let Ok(conn) = crate::db::conn(db) {
+        let primary = crate::lang::config(&conn).primary;
+        let dir = out.join(&primary);
+        if !primary.is_empty() && dir.is_dir() && std::fs::remove_dir_all(&dir).is_ok() {
+            removed += 1;
+        }
+    }
+    fn sweep(dir: &PathBuf, removed: &mut usize) {
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for e in entries.flatten() {
+            let p = e.path();
+            let name = e.file_name().to_string_lossy().to_string();
+            if p.is_dir() {
+                sweep(&p, removed);
+            } else if name.ends_with(".html") && name != "index.html" && name != "404.html" {
+                if std::fs::remove_file(&p).is_ok() {
+                    *removed += 1;
+                }
+            }
+        }
+    }
+    sweep(out, &mut removed);
+    if removed > 0 {
+        eprintln!("alias-cache purge: removed {removed} stale cache artifact(s) under {}", out.display());
+    }
 }
 
 async fn health() -> &'static str {
@@ -265,12 +307,13 @@ async fn public_root(State(app): State<App>, headers: HeaderMap) -> Response {
         return StatusCode::NOT_FOUND.into_response();
     };
     match crate::render::front_ids(&conn).0 {
-        Some(id) => match crate::render::render_slug_by_id(&conn, &sc.db, &sc.templates, id, &site_url(sc)) {
-            Ok(h) => {
+        Some(id) => match crate::render::render_slug_by_id_public(&conn, &sc.templates, id, &site_url(sc)) {
+            // Publish-gated render: a draft page_on_front never reaches 200.
+            Ok((h, status)) if status == "publish" => {
                 write_cache(sc, "index.html", &h);
                 html_response(h)
             }
-            Err(_) => not_found(sc),
+            _ => not_found(sc),
         },
         None => not_found(sc),
     }
@@ -280,19 +323,37 @@ async fn public_root(State(app): State<App>, headers: HeaderMap) -> Response {
 ///
 /// 1. `out/{path}.html` → `out/{path}/index.html` → `out/{path}` verbatim
 ///    (per-extension mime + nosniff).
-/// 2. A path carrying a file extension that misses is a missing asset →
-///    asset-origin redirect or 404 (never rendered).
-/// 3. Extension-less paths normalize (`es/` → lang, `{tour_base}/` →
+/// 2. Primary-lang prefix (`/fr/…` on an fr-primary site) → 301 to the
+///    canonical no-prefix URL; a resolved non-primary lang whose post is
+///    missing → 301 to the translation-group canonical or 404.
+/// 3. A path carrying a file extension that misses is a missing asset →
+///    allowlisted asset-origin redirect or 404 (never rendered, junk and
+///    dotfile prefixes die first).
+/// 4. Extension-less paths normalize (`es/` → lang, `{tour_base}/` →
 ///    kind=tour) then `render_slug` — publish results write back into the
 ///    cache so the next hit is a file read; drafts never cache.
-/// 4. Junk prefixes (`/wp-*`, `xmlrpc`, `.env` style) die before the render
-///    path; misses are rate-limited per-IP to cap render cost.
+/// 5. Miss-renders are rate-limited per-IP to cap render cost.
+///
+/// Cache-write contract (phase 5 consumes this enumeration): every rel
+/// this handler can leave under `out/` is
+///   - `{clean}/index.html`  canonical page render
+///   - `{clean}/index.md`    markdown sibling (on-demand .md/Accept)
+///   - `{lang}/{clean}/index.html|index.md`  non-primary-lang aliases —
+///    same two suffixes under a lang dir, since `clean` keeps the prefix
+///   - `index.html`          front page (public_root)
+/// Legacy `{clean}.html` flat aliases are read candidates but never
+/// written; the serve() boot sweep deletes them.
 async fn public_page(State(app): State<App>, headers: HeaderMap, ConnectInfo(peer): ConnectInfo<SocketAddr>, Path(path): Path<String>) -> Response {
     let sc = site_for(&app, &headers);
     let clean = path.trim_matches('/');
-    if clean.contains("..") || clean.starts_with('/') || clean.contains('\\') {
+    // Path charset allowlist: slugs/dirs are lowercase ASCII + the
+    // separators WP permits; anything else can only be a probe.
+    if clean.contains("..") || clean.starts_with('/') || clean.contains('\\')
+        || clean.bytes().any(|b| !matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'/' | b'_' | b'%' | b'.' | b'~' | b'-'))
+    {
         return not_found(sc);
     }
+
     // .md → the markdown sibling; a .html suffix maps the same way so a
     // permalink URL + ".md" resolves the post (WP-style content negotiation).
     let (mut md_path, mut html_path): (Option<String>, Option<String>) = (None, None);
@@ -336,6 +397,24 @@ async fn public_page(State(app): State<App>, headers: HeaderMap, ConnectInfo(pee
                 .into_response();
         }
     }
+    // Cache missed — resolve what this URL is allowed to become before
+    // paying for a render.
+    let conn = match crate::db::conn(&sc.db) { Ok(c) => c, Err(_) => return not_found(sc) };
+    let lang_cfg = crate::lang::config(&conn);
+    // Primary-lang prefix (`/fr/<slug>` on an fr-primary site): duplicate of
+    // the canonical URL — 301 before any lookup. Pre-existing `{out}/fr/`
+    // alias files are swept at serve() boot, so this is only reached on a
+    // genuine miss. The .md/.html suffix (already stripped) rides along.
+    if let Some(rest) = crate::lang::primary_alias(&lang_cfg, clean) {
+        let suffix = if md_path.is_some() { ".md" } else if html_path.is_some() { ".html" } else { "" };
+        return moved_permanently(&format!("/{rest}{suffix}"));
+    }
+    // Junk-prefix block: WP-scanner paths that can never resolve to a post.
+    // Runs before the rate limiter so real lookups still count, but these
+    // die cheap either way.
+    if is_junk_prefix(clean) {
+        return not_found(sc);
+    }
     // ".md" miss → generate the markdown for this slug on demand (post only;
     // archives/front return 404). Write-back so the next hit is static.
     if md_path.is_some() {
@@ -347,19 +426,14 @@ async fn public_page(State(app): State<App>, headers: HeaderMap, ConnectInfo(pee
         return not_found(sc);
     }
     // A path carrying a file extension that didn't resolve above is a missing
-    // asset, not a permalink — redirect to the asset origin (WP box) when it
-    // differs from this host, else 404.
+    // asset, not a permalink — only the real WP asset trees may bounce to the
+    // (settings-controlled, allowlisted) asset origin; every other miss 404s.
     if PathBuf::from(clean).extension().is_some() {
-        let origin = asset_origin(sc).trim_end_matches('/').to_string();
-        if origin != site_url(sc).trim_end_matches('/') && origin.starts_with("http") {
-            return Redirect::temporary(&format!("{origin}/{clean}")).into_response();
+        if redirect_prefix(clean) {
+            if let Some(origin) = asset_redirect_target(&asset_origin(sc), &site_url(sc), &ASSET_ORIGIN_ALLOW) {
+                return Redirect::temporary(&format!("{origin}/{clean}")).into_response();
+            }
         }
-        return not_found(sc);
-    }
-    // Junk-prefix block: WP-scanner paths that can never resolve to a post.
-    // Runs before the rate limiter so real lookups still count, but these
-    // die cheap either way.
-    if is_junk_prefix(clean) {
         return not_found(sc);
     }
     // Rate-limit miss-renders: a render is ~140ms of SQLite+template work —
@@ -377,8 +451,6 @@ async fn public_page(State(app): State<App>, headers: HeaderMap, ConnectInfo(pee
     //   "{tour_base}/{sl}" → kind="tour", lookup "{sl}"
     // `clean` still drives the cache path so the write-back lands where the
     // next request will look.
-    let conn = match crate::db::conn(&sc.db) { Ok(c) => c, Err(_) => return not_found(sc) };
-    let lang_cfg = crate::lang::config(&conn);
     let (lang_s, rest) = crate::lang::split_path(&lang_cfg, clean);
     let tb = format!("{}/", sc.tour_base);
     let (kind, lookup) = match rest.strip_prefix(tb.as_str()) {
@@ -388,13 +460,29 @@ async fn public_page(State(app): State<App>, headers: HeaderMap, ConnectInfo(pee
     let base = site_url(sc);
     match crate::render::render_slug(&sc.db, &sc.templates, lookup, &lang_s, kind, &base) {
         Ok((h, status)) => {
-            if status == "publish" {
-                write_cache(sc, &format!("{clean}/index.html"), &h);
+            // Defense in depth: only publish ever caches — and only publish
+            // ever serves, even if a render path slips a status through.
+            if status != "publish" {
+                return not_found(sc);
             }
+            write_cache(sc, &format!("{clean}/index.html"), &h);
             html_response(h)
         }
-        Err(_) => not_found(sc),
+        Err(_) => {
+            // The lang variant doesn't exist but a translation-group sibling
+            // does → 301 to the canonical permalink, else 404 (Polylang).
+            if let Some(target) = crate::render::translation_canonical(&conn, &lang_cfg, &lang_s, lookup, kind, &sc.tour_base) {
+                return moved_permanently(&target);
+            }
+            not_found(sc)
+        }
     }
+}
+
+/// `301 Moved Permanently` — axum's `Redirect::permanent` is 308, but the
+/// canonical/prefix redirects want the SEO-canonical 301.
+fn moved_permanently(target: &str) -> Response {
+    (StatusCode::MOVED_PERMANENTLY, [(header::LOCATION, target)]).into_response()
 }
 
 /// `.md` lookup: `{lang}/{slug}` → translated post, `{tour_base}/{slug}`
@@ -412,13 +500,65 @@ fn md_for_slug(sc: &SiteCtx, clean: &str) -> Option<String> {
 }
 
 /// WP-scanner paths that can never be a permalink on this CMS — checked
-/// only on extension-less misses, so real assets keep their route.
-fn is_junk_prefix(clean: &str) -> bool {
-    clean.starts_with("wp-admin")
+/// only on extension-less misses (and before the asset-redirect gate), so
+/// real assets keep their route. Dotfiles (`.env`, `.git/…`) are probes by
+/// definition; `.well-known` stays servable for ACME-style challenges.
+/// `wp-includes/` is deliberately NOT junk: it's a real WP asset tree that
+/// may legitimately 307 to the origin under `redirect_prefix`.
+pub(crate) fn is_junk_prefix(clean: &str) -> bool {
+    (clean.starts_with('.') && !clean.starts_with(".well-known"))
+        || clean.starts_with("wp-admin")
         || clean.starts_with("wp-login")
         || clean.starts_with("xmlrpc")
-        || clean.starts_with("wp-includes")
         || clean.starts_with("wp-config")
+}
+
+/// Only the real WP asset trees may bounce an extension-miss to the asset
+/// origin — everything else 404s locally (a bare `/{slug}.php` probe must
+/// never become an origin redirect).
+pub(crate) fn redirect_prefix(clean: &str) -> bool {
+    clean.starts_with("wp-content/")
+        || clean.starts_with("wp-includes/")
+        || clean.starts_with("uploads/")
+}
+
+/// Origins an asset-miss may 307 to, beyond the site's own URL host:
+/// `RPRESS_ASSET_ORIGINS` = comma-separated hostnames (e.g. the WP box's
+/// domain). Empty = only same-site origins — a settings-written
+/// `asset_origin` pointing elsewhere can never turn a probe into an
+/// open-redirect to an arbitrary host.
+static ASSET_ORIGIN_ALLOW: std::sync::LazyLock<Vec<String>> = std::sync::LazyLock::new(|| {
+    std::env::var("RPRESS_ASSET_ORIGINS")
+        .unwrap_or_default()
+        .split(',')
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect()
+});
+
+/// Host part of an origin URL ("https://cdn.example.com:8443" → "cdn.example.com").
+fn url_host(url: &str) -> String {
+    let no_scheme = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
+    let hostport = no_scheme.split('/').next().unwrap_or("");
+    hostport.split(':').next().unwrap_or("").to_lowercase()
+}
+
+/// The origin an asset-miss redirect may target, or None to 404:
+/// requires http(s), rejects the site's own URL (a self-redirect loops),
+/// and requires the origin host to be the site's host or env-allowlisted.
+pub(crate) fn asset_redirect_target(origin: &str, site_url: &str, allow: &[String]) -> Option<String> {
+    let origin = origin.trim_end_matches('/');
+    if !origin.starts_with("http") || origin == site_url.trim_end_matches('/') {
+        return None;
+    }
+    let (o_host, s_host) = (url_host(origin), url_host(site_url));
+    if o_host.is_empty() {
+        return None;
+    }
+    if o_host == s_host && !s_host.is_empty() {
+        return Some(origin.to_string());
+    }
+    allow.contains(&o_host).then(|| origin.to_string())
 }
 
 /// Atomic write into the cache dir: tmp+rename so a reader never catches a
@@ -498,17 +638,39 @@ fn not_found(sc: &SiteCtx) -> Response {
     }
 }
 
-/// Resolve the per-site context from the Host header.
-/// Unknown hosts fall back to the configured default site (single-site safe).
-pub(crate) fn site_for<'a>(app: &'a App, headers: &HeaderMap) -> &'a SiteCtx {
-    let host = headers
+/// Request Host header, normalized to a bare lowercase hostname.
+fn request_host(headers: &HeaderMap) -> Option<String> {
+    headers
         .get(header::HOST)
         .and_then(|v| v.to_str().ok())
-        .map(|h| h.split(':').next().unwrap_or(h).to_lowercase());
-    match host.as_deref().and_then(|h| app.sites.get(h)) {
+        .map(|h| h.split(':').next().unwrap_or(h).to_lowercase())
+}
+
+/// Resolve the per-site context from the Host header.
+/// Unknown hosts fall back to the configured default site — reachable only
+/// single-site; multi-site requests pass the `host_known` gate first.
+pub(crate) fn site_for<'a>(app: &'a App, headers: &HeaderMap) -> &'a SiteCtx {
+    match request_host(headers).as_deref().and_then(|h| app.sites.get(h)) {
         Some(sc) => sc,
         None => &app.sites[&app.default_site],
     }
+}
+
+/// Multi-site gate: with more than one site configured there is no safe
+/// default host, so a request for an unknown (or missing) Host gets 421
+/// Misdirected Request instead of silently serving the default site's
+/// content. Single-site keeps the fallback — dev requests hit localhost.
+async fn host_known(
+    State(app): State<App>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    if app.sites.len() > 1
+        && !request_host(req.headers()).is_some_and(|h| app.sites.contains_key(&h))
+    {
+        return StatusCode::MISDIRECTED_REQUEST.into_response();
+    }
+    next.run(req).await
 }
 
 /// Proxy addresses allowed to set X-Forwarded-For. `RPRESS_TRUSTED_PROXY` is a
@@ -1053,7 +1215,8 @@ async fn wp_asset(State(app): State<App>, headers: HeaderMap, Path(path): Path<S
 /// `/wp-content/uploads/*` — imported media lives under `www/` when copied
 /// locally. Serve safe media inline; force scriptable legacy extensions to
 /// download as octet-stream so copied WP uploads cannot become same-origin XSS.
-/// Missing local files redirect to `asset_origin` for preview parity.
+/// A miss 307s to the asset origin only through the `asset_redirect_target`
+/// gate (same-site or `RPRESS_ASSET_ORIGINS`-listed host), else 404.
 async fn uploads(State(app): State<App>, headers: HeaderMap, Path(path): Path<String>) -> Response {
     let sc = site_for(&app, &headers);
     let root = sc.www.join("wp-content/uploads");
@@ -1073,8 +1236,9 @@ async fn uploads(State(app): State<App>, headers: HeaderMap, Path(path): Path<St
             .body(Body::from(bytes))
             .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
     }
-    let origin = asset_origin(sc).trim_end_matches('/').to_string();
-    if origin.starts_with("http") {
+    // Same gate as public_page's asset-miss redirect: the origin must be
+    // http(s), not a self-loop, and same-site or env-allowlisted — else 404.
+    if let Some(origin) = asset_redirect_target(&asset_origin(sc), &site_url(sc), &ASSET_ORIGIN_ALLOW) {
         Redirect::temporary(&format!("{origin}/wp-content/uploads/{path}")).into_response()
     } else {
         StatusCode::NOT_FOUND.into_response()

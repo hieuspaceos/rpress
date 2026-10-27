@@ -59,6 +59,24 @@ pub fn split_path<'a>(cfg: &LangConfig, clean: &'a str) -> (String, &'a str) {
     (cfg.primary.clone(), clean)
 }
 
+/// Canonicalize signal for the primary-language prefix: `/fr/<rest>` on an
+/// fr-primary site is a duplicate of `/<rest>` — return `rest` so the
+/// handler can 301 to the canonical URL. `None` for primary-less and
+/// non-primary-prefixed paths (split_path handles those).
+pub fn primary_alias<'a>(cfg: &LangConfig, clean: &'a str) -> Option<&'a str> {
+    if cfg.primary.is_empty() {
+        return None;
+    }
+    let prefix = format!("{}/", cfg.primary);
+    if let Some(rest) = clean.strip_prefix(&prefix) {
+        return Some(rest);
+    }
+    if clean == cfg.primary {
+        return Some("");
+    }
+    None
+}
+
 pub fn page_path(cfg: &LangConfig, lang: &str, kind: &str, slug: &str, tour_base: &str) -> String {
     let mut parts: Vec<String> = Vec::new();
     let lp = rel_prefix(cfg, lang);

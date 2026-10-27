@@ -1113,6 +1113,9 @@ fn save_post_on(db: &Path, c: &Connection, f: &PostForm) -> Result<i64> {
             sql!("posts__insert_into_post_translations"),
             params![id, es],
         )?;
+        // Render/hreflang read post_translation_members (import-written);
+        // mirror admin links so front/translation lookups see them too.
+        sync_translation_members(c, id, es)?;
     }
     if f.kind == "post" {
         // cat[] + tags fields are authoritative for posts; other taxonomies
@@ -1127,6 +1130,65 @@ fn save_post_on(db: &Path, c: &Connection, f: &PostForm) -> Result<i64> {
 
 
     Ok(id)
+}
+
+/// Mirror the admin translation link into post_translation_members so the
+/// N-language render lookups (hreflang, front pages, missing-translation
+/// redirects) see admin-maintained links, not just import-written ones.
+///
+/// Membership semantics mirror the pair table: unlink removes only this
+/// post's own row — other group members keep their link (a >2-language
+/// group loses a member, not the group). Group id = the partner's
+/// existing group, else `p{id}`.
+fn sync_translation_members(c: &Connection, id: i64, other: Option<i64>) -> Result<()> {
+    c.execute("DELETE FROM post_translation_members WHERE post_id=?1", [id])?;
+    let Some(other) = other else { return Ok(()) };
+    let group: Option<String> = c
+        .query_row(
+            "SELECT group_id FROM post_translation_members WHERE post_id=?1",
+            [other],
+            |r| r.get(0),
+        )
+        .ok();
+    let group = group.unwrap_or_else(|| format!("p{id}"));
+    let other_lang: String = c
+        .query_row("SELECT lang FROM posts WHERE id=?1", [other], |r| r.get(0))
+        .unwrap_or_default();
+    if other_lang.is_empty() {
+        return Ok(());
+    }
+    // Claim the (group, lang) slot: a different post already sitting there
+    // loses its membership — scrub its post_translations pair too, or the
+    // two tables disagree (front_id_for_lang's paired fallback would
+    // resolve a link the group no longer has).
+    let evict = |lang: &str, new_pid: i64| -> Result<()> {
+        let evicted: Option<i64> = c
+            .query_row(
+                "SELECT post_id FROM post_translation_members WHERE group_id=?1 AND lang=?2",
+                params![group, lang],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(ep) = evicted.filter(|&p| p != new_pid) {
+            c.execute("DELETE FROM post_translation_members WHERE post_id=?1", [ep])?;
+            c.execute(
+                "DELETE FROM post_translations WHERE fr_post_id=?1 OR es_post_id=?1",
+                [ep],
+            )?;
+        }
+        Ok(())
+    };
+    evict("fr", id)?;
+    evict(&other_lang, other)?;
+    c.execute(
+        "INSERT OR REPLACE INTO post_translation_members(group_id, lang, post_id) VALUES(?1,'fr',?2)",
+        params![group, id],
+    )?;
+    c.execute(
+        "INSERT OR REPLACE INTO post_translation_members(group_id, lang, post_id) VALUES(?1,?2,?3)",
+        params![group, other_lang, other],
+    )?;
+    Ok(())
 }
 
 pub fn promote_tours(db: &Path) -> Result<u64> {
@@ -1394,4 +1456,73 @@ pub fn restore_revision(db: &Path, rid: i64) -> Result<i64> {
     Ok(post_id)
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn memdb() -> Connection {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(crate::schema::DDL).unwrap();
+        c
+    }
+
+    fn post(c: &Connection, id: i64, lang: &str) {
+        c.execute(
+            "INSERT INTO posts(id, slug, lang, title, body_json, status, kind) VALUES(?1,?1,?2,'t','[]','publish','page')",
+            params![id, lang],
+        )
+        .unwrap();
+    }
+
+    fn members(c: &Connection, post_id: i64) -> Vec<(String, String)> {
+        let mut s = c
+            .prepare("SELECT group_id, lang FROM post_translation_members WHERE post_id=?1")
+            .unwrap();
+        s.query_map([post_id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .flatten()
+            .collect()
+    }
+
+    #[test]
+    fn link_writes_members_and_unlink_removes_own_row() {
+        let c = memdb();
+        post(&c, 10, "fr");
+        post(&c, 11, "es");
+        post(&c, 20, "fr");
+        post(&c, 21, "es");
+        post(&c, 22, "de");
+
+        // Import-style 3-language group g3 plus a link 10↔11 (group p10).
+        c.execute_batch(
+            "INSERT INTO post_translation_members(group_id,lang,post_id) VALUES('g3','fr',20),('g3','es',21),('g3','de',22);
+             INSERT INTO post_translations(fr_post_id,es_post_id) VALUES(20,21);",
+        )
+        .unwrap();
+        sync_translation_members(&c, 10, Some(11)).unwrap();
+        assert_eq!(members(&c, 10), vec![("p10".into(), "fr".into())]);
+        assert_eq!(members(&c, 11), vec![("p10".into(), "es".into())]);
+
+        // Re-link 10↔21: 10 joins g3 and takes its 'fr' slot → 20 is
+        // evicted; 20's member row AND its post_translations pair are
+        // removed, while 22 keeps its group membership and 11 keeps hers.
+        sync_translation_members(&c, 10, Some(21)).unwrap();
+        assert_eq!(members(&c, 10), vec![("g3".into(), "fr".into())]);
+        assert_eq!(members(&c, 21), vec![("g3".into(), "es".into())]);
+        assert_eq!(members(&c, 22), vec![("g3".into(), "de".into())]);
+        assert!(members(&c, 20).is_empty(), "evicted member lingers");
+        assert_eq!(members(&c, 11), vec![("p10".into(), "es".into())]);
+        let pairs: i64 = c
+            .query_row("SELECT COUNT(*) FROM post_translations WHERE fr_post_id=20 OR es_post_id=20", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(pairs, 0, "evicted post's pair row left behind");
+
+        // Unlink removes only 10's own row — the rest of g3 stays grouped.
+        sync_translation_members(&c, 10, None).unwrap();
+        assert!(members(&c, 10).is_empty());
+        assert_eq!(members(&c, 21), vec![("g3".into(), "es".into())]);
+        assert_eq!(members(&c, 22), vec![("g3".into(), "de".into())]);
+    }
+}
 

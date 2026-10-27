@@ -111,8 +111,10 @@ pub fn run(db: &Path, templates: &Path, slug: &str, out: &Path, site_url: &str) 
 }
 
 /// Render one permalink. `lang`/`kind` scope the posts.slug lookup (the
-/// import keeps FR+ES rows sharing a slug, e.g. `bun-bo-hue`); pass "" to
-/// leave an axis open — archive dispatches go through the term rules below.
+/// import keeps FR+ES rows sharing a slug, e.g. `bun-bo-hue`): `lang` is the
+/// resolved request language — matched exactly, publish-only; `kind=""`
+/// leaves the kind axis open. Archive dispatches go through the term rules
+/// below.
 pub fn render_slug(
     db: &Path,
     templates: &Path,
@@ -158,8 +160,7 @@ pub fn render_slug(
         let (alang_s, path) = crate::lang::split_path(&lang_cfg, clean);
         if path.is_empty() && alang_s != lang_cfg.primary {
             if let Some(front_id) = front_id_for_lang(&conn, &alang_s) {
-                let h = render_slug_by_id(&conn, db, templates, front_id, site_url)?;
-                return Ok((h, "publish".to_string()));
+                return render_slug_by_id_public(&conn, templates, front_id, site_url);
             }
         }
         // Term/archive permalinks (the posts.slug lookup already missed):
@@ -226,8 +227,7 @@ pub fn render_slug(
                 )
                 .optional()
             {
-                let h = render_slug_by_id(&conn, db, templates, pid, site_url)?;
-                return Ok((h, "publish".to_string()));
+                return render_slug_by_id_public(&conn, templates, pid, site_url);
             }
         }
         anyhow::bail!("slug not found: {slug}");
@@ -561,10 +561,10 @@ fn render_row(
     Ok(apply_navx(&html, site_url, &navx))
 }
 
-/// FR + ES front-page post ids. `page_on_front` gives the FR post; its ES
-/// twin lives in post_translations, but the import drops NULL pair members
-/// (9761's row is `(5225, NULL)`) — so fall back to the single trashed ES
-/// page WP kept as the localized front.
+/// FR + ES front-page post ids. `page_on_front` gives the FR post (publish-
+/// gated by `generate__select_cast_value`); its translation lives in
+/// post_translation_members (or the legacy post_translations pair table),
+/// else the lone trashed ES page WP kept as the localized front.
 pub(crate) fn front_ids(conn: &Connection) -> (Option<i64>, Option<i64>) {
     let fr: Option<i64> = conn
         .query_row(
@@ -576,12 +576,17 @@ pub(crate) fn front_ids(conn: &Connection) -> (Option<i64>, Option<i64>) {
     (fr, es_front_id(conn))
 }
 
-/// ES front post id: post_translations(fr_front → es), else the lone
-/// `__trashed` ES page (Polylang's trashed localized front).
+/// ES front post id — see `front_id_for_lang`.
 fn es_front_id(conn: &Connection) -> Option<i64> {
     front_id_for_lang(conn, "es")
 }
 
+/// Localized front page for `lang`, deterministic and publish-only:
+///   1. the primary `page_on_front`'s translation-group member in `lang`;
+///   2. the legacy post_translations pair member in `lang` (admin writes
+///      land here on sites imported before members sync);
+///   3. Polylang's `__trashed` localized front — `ORDER BY id LIMIT 1`
+///      pins the pick instead of an arbitrary row.
 fn front_id_for_lang(conn: &Connection, lang: &str) -> Option<i64> {
     let cfg = crate::lang::config(conn);
     let fr: Option<i64> = conn
@@ -594,10 +599,44 @@ fn front_id_for_lang(conn: &Connection, lang: &str) -> Option<i64> {
     if lang == cfg.primary {
         return fr;
     }
-    // Generic fallback for localized front pages: Polylang often keeps the
-    // localized static front as a publish page whose slug is a trashed artifact.
+    if let Some(front) = fr {
+        // Translation-group member of the primary front in the target lang.
+        let grouped: Option<i64> = conn
+            .query_row(
+                "SELECT m2.post_id FROM post_translation_members m \
+                 JOIN post_translation_members m2 ON m2.group_id=m.group_id \
+                 JOIN posts p ON p.id=m2.post_id AND p.status='publish' \
+                 WHERE m.post_id=?1 AND m2.lang=?2 LIMIT 1",
+                rusqlite::params![front, lang],
+                |r| r.get(0),
+            )
+            .optional()
+            .ok()
+            .flatten();
+        if grouped.is_some() {
+            return grouped;
+        }
+        // Legacy fr/es pair table — admin translation links land here too.
+        let paired: Option<i64> = conn
+            .query_row(
+                "SELECT p.id FROM post_translations t \
+                 JOIN posts p ON p.id=CASE WHEN t.fr_post_id=?1 THEN t.es_post_id ELSE t.fr_post_id END \
+                 WHERE p.lang=?2 AND p.status='publish' \
+                   AND (t.fr_post_id=?1 OR t.es_post_id=?1) LIMIT 1",
+                rusqlite::params![front, lang],
+                |r| r.get(0),
+            )
+            .optional()
+            .ok()
+            .flatten();
+        if paired.is_some() {
+            return paired;
+        }
+    }
+    // Generic fallback: Polylang often keeps the localized static front as
+    // a publish page whose slug is a trashed artifact.
     conn.query_row(
-        "SELECT id FROM posts WHERE lang=?1 AND kind='page' AND slug LIKE '%__trashed%' AND status='publish' LIMIT 1",
+        "SELECT id FROM posts WHERE lang=?1 AND kind='page' AND slug LIKE '%__trashed%' AND status='publish' ORDER BY id LIMIT 1",
         [lang],
         |r| r.get::<_, i64>(0),
     )
@@ -607,25 +646,32 @@ fn front_id_for_lang(conn: &Connection, lang: &str) -> Option<i64> {
 }
 
 /// Render a post addressed by id (the ES front alias — its slug carries a
-/// `__trashed` suffix WP strips at the permalink level).
-pub(crate) fn render_slug_by_id(
+/// `__trashed` suffix WP strips at the permalink level). `publish_only`
+/// picks the publish-gated query for public paths; preview passes false so
+/// drafts stay previewable. Returns (html, real status) — callers must not
+/// fabricate "publish".
+fn render_by_id(
     conn: &Connection,
-    db: &Path,
     templates: &Path,
     id: i64,
     site_url: &str,
-) -> Result<String> {
-    let _ = db;
-    let (lang, title, body_json, seo_title, seo_desc, kind): (
+    publish_only: bool,
+) -> Result<(String, String)> {
+    let (lang, title, body_json, seo_title, seo_desc, kind, status): (
         String,
         String,
         String,
         Option<String>,
         Option<String>,
+        String,
         String,
     ) = conn
         .query_row(
-            sql!("render__select_by_id"),
+            if publish_only {
+                sql!("render__select_by_id_public")
+            } else {
+                sql!("render__select_by_id")
+            },
             [id],
             |r| {
                 Ok((
@@ -635,6 +681,7 @@ pub(crate) fn render_slug_by_id(
                     r.get(3)?,
                     r.get(4)?,
                     r.get(5)?,
+                    r.get(6)?,
                 ))
             },
         )
@@ -646,7 +693,80 @@ pub(crate) fn render_slug_by_id(
         .query_row("SELECT slug FROM posts WHERE id=?1", [id], |r| r.get(0))
         .unwrap_or_default();
     let h = render_row(conn, templates, id, &slug, lang, title, body_json, seo_title, seo_desc, kind, site_url)?;
-    Ok(crate::render_post::rewrite_origin(&h, site_url, conn))
+    Ok((crate::render_post::rewrite_origin(&h, site_url, conn), status))
+}
+
+/// Public by-id render (front-page aliases, old-slug fallback): publish-
+/// gated — a draft/trash id resolves to Err, which the handler turns into
+/// a 404 *without* a cache write.
+pub(crate) fn render_slug_by_id_public(
+    conn: &Connection,
+    templates: &Path,
+    id: i64,
+    site_url: &str,
+) -> Result<(String, String)> {
+    render_by_id(conn, templates, id, site_url, true)
+}
+
+/// Canonical URL of a post's translation group for a missed `/{lang}/{slug}`:
+/// the request asked for a `lang` rendering of `slug` that doesn't exist —
+/// when a published sibling holds the slug (or a group member carries the
+/// primary lang), Polylang redirects to the existing variant instead of a
+/// 404. Returns the canonical path (no scheme/host).
+pub(crate) fn translation_canonical(
+    conn: &Connection,
+    cfg: &crate::lang::LangConfig,
+    lang: &str,
+    slug: &str,
+    kind: &str,
+    tour_base: &str,
+) -> Option<String> {
+    if lang == cfg.primary || slug.is_empty() {
+        return None;
+    }
+    // A published sibling in another language holding this exact slug.
+    let (id, plang, pkind, pslug): (i64, String, String, String) = conn
+        .query_row(
+            "SELECT id, lang, kind, slug FROM posts \
+             WHERE slug=?1 AND lang<>?2 AND (?3='' OR kind=?3) \
+             AND status='publish' LIMIT 1",
+            rusqlite::params![slug, lang, kind],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()
+        .ok()
+        .flatten()?;
+    // Prefer the group's primary-lang member when the post is grouped —
+    // its permalink is the canonical one. Tours permalink under their
+    // display slug (meta-derived), not the stored slug.
+    let target = conn
+        .query_row(
+            "SELECT m2.post_id, p.lang, p.kind, p.slug FROM post_translation_members m \
+             JOIN post_translation_members m2 ON m2.group_id=m.group_id AND m2.lang=?2 \
+             JOIN posts p ON p.id=m2.post_id AND p.status='publish' \
+             WHERE m.post_id=?1 LIMIT 1",
+            rusqlite::params![id, cfg.primary],
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?)),
+        )
+        .optional()
+        .ok()
+        .flatten()
+        .map(|(_pid, l, k, s)| (l, k, s))
+        .unwrap_or((plang, pkind, pslug));
+    let (tlang, tkind, tslug) = target;
+    let url_slug = if tkind == "tour" {
+        let tid: i64 = conn
+            .query_row("SELECT id FROM posts WHERE slug=?1 AND lang=?2 AND kind='tour' AND status='publish' LIMIT 1",
+                rusqlite::params![tslug, tlang], |r| r.get(0))
+            .unwrap_or(id);
+        let title: String = conn
+            .query_row("SELECT title FROM posts WHERE id=?1", [tid], |r| r.get(0))
+            .unwrap_or_default();
+        crate::render_tour::display_slug(conn, tid, &tslug, &title)
+    } else {
+        tslug
+    };
+    Some(crate::lang::page_url(cfg, "", &tlang, &tkind, &url_slug, tour_base))
 }
 
 /// Admin draft preview (phase 6.1): render any post — including drafts,
@@ -660,9 +780,10 @@ pub fn render_preview(
     site_url: &str,
 ) -> Result<String> {
     let conn = crate::db::conn(db)?;
-    let html = render_slug_by_id(&conn, db, templates, post_id, site_url)?;
+    let (html, _status) = render_by_id(&conn, templates, post_id, site_url, false)?;
     Ok(force_noindex(&html))
 }
+
 
 /// Set every `<meta name="robots" content="…">` to `noindex, nofollow`
 /// (published posts carry index directives that must not survive into a
@@ -3002,6 +3123,71 @@ mod tests {
             }
         }
         assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+}
+
+#[cfg(test)]
+mod exposure_tests {
+    use super::*;
+
+    /// In-memory DB with the migration DDL applied.
+    fn memdb() -> Connection {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(crate::schema::DDL).unwrap();
+        c
+    }
+
+    fn post(c: &Connection, id: i64, slug: &str, lang: &str, status: &str, kind: &str) {
+        c.execute(
+            "INSERT INTO posts(id, slug, lang, title, body_json, status, kind) VALUES(?1,?2,?3,'t','[]',?4,?5)",
+            rusqlite::params![id, slug, lang, status, kind],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn front_id_prefers_group_member_and_is_deterministic() {
+        let c = memdb();
+        c.execute_batch(
+            "INSERT INTO settings(key,value) VALUES
+             ('languages','fr,es'),('primary_lang','fr'),('page_on_front','10');",
+        )
+        .unwrap();
+        post(&c, 10, "accueil", "fr", "publish", "page");
+        post(&c, 11, "inicio", "es", "publish", "page");
+        // Translation group → ES member wins over the __trashed fallback.
+        c.execute_batch(
+            "INSERT INTO post_translation_members(group_id,lang,post_id) VALUES('g','fr',10),('g','es',11);
+             INSERT INTO posts(id,slug,lang,title,body_json,status,kind) VALUES(12,'x__trashed','es','t','[]','publish','page'),(13,'y__trashed','es','t','[]','publish','page');",
+        )
+        .unwrap();
+        assert_eq!(front_id_for_lang(&c, "es"), Some(11));
+        assert_eq!(front_id_for_lang(&c, "fr"), Some(10));
+        // Group gone → legacy pair table → 11.
+        c.execute_batch("DELETE FROM post_translation_members; INSERT INTO post_translations(fr_post_id,es_post_id) VALUES(10,11);").unwrap();
+        assert_eq!(front_id_for_lang(&c, "es"), Some(11));
+        // Neither → lowest-id published __trashed page, deterministic.
+        c.execute("DELETE FROM post_translations", []).unwrap();
+        assert_eq!(front_id_for_lang(&c, "es"), Some(12));
+    }
+
+    #[test]
+    fn front_id_skips_unpublished() {
+        let c = memdb();
+        c.execute_batch(
+            "INSERT INTO settings(key,value) VALUES
+             ('languages','fr,es'),('primary_lang','fr'),('page_on_front','10');",
+        )
+        .unwrap();
+        post(&c, 10, "accueil", "fr", "draft", "page");
+        post(&c, 11, "inicio", "es", "draft", "page");
+        c.execute("INSERT INTO post_translation_members(group_id,lang,post_id) VALUES('g','fr',10),('g','es',11)", []).unwrap();
+        assert_eq!(front_id_for_lang(&c, "fr"), None);
+        // Draft group member must not leak; no publish __trashed page → None.
+        assert_eq!(front_id_for_lang(&c, "es"), None);
+        post(&c, 12, "x__trashed", "es", "draft", "page");
+        post(&c, 13, "y__trashed", "es", "publish", "page");
+        assert_eq!(front_id_for_lang(&c, "es"), Some(13));
     }
 }
 
