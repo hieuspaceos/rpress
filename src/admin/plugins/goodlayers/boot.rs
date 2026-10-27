@@ -1,17 +1,12 @@
-//! GoodLayers page-builder server-side port.
-//!
-//! Faithful Rust reimplementation of the WP plugin PHP that backs the
-//! vendored `framework/js/page-builder.js` + `html-option.js`:
-//!   - metabox boot DOM + `page_builder_var` / `html_option_val` localization
-//!   - admin-ajax actions (get_pb_options, previews, save, templates, skins)
-//!   - server-rendered option dialogs (gdlr_core_html_option::get_element)
-//!   - wrapper/element canvas templates (pb-wrapper-*.php get_template)
-//!
-//! Source of truth: `reference/gdlr/framework/function/*.php` and
-//! `reference/gdlr/include/pb-wrapper/*.php`. Keep markup byte-compatible
-//! where practical — the JS is class-name-sensitive.
+//! GoodLayers builder boot DOM + `page_builder_var` localization — the
+//! JS contract the vendored `framework/js/page-builder.js` depends on.
+//! Moved from `admin::gdlr_pb` (deleted after bridge parity, phase-07):
+//! these emitters are pure DOM/JS serialization — no business logic.
+//! All admin-ajax behaviour (options, previews, templates, skins, save)
+//! now runs inside the real plugin via the PHP bridge.
 
-use super::*;
+use super::super::*;
+use crate::admin::esc;
 use rusqlite::Connection;
 use serde_json::{json, Map, Value};
 
@@ -24,11 +19,15 @@ const COL_LIST: [(&str, &str); 12] = [
     ("36", "3/5"), ("48", "4/5"), ("10", "1/6"), ("50", "5/6"),
 ];
 
-/* ---------------- small PHP-semantics helpers ---------------- */
+
+
+
+
 
 fn get<'a>(m: &'a Map<String, Value>, k: &str) -> Option<&'a Value> {
     m.get(k).or_else(|| m.get(&k.replace('_', "-")))
 }
+
 fn val_str(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(),
@@ -38,6 +37,7 @@ fn val_str(v: &Value) -> String {
     }
 }
 /// PHP empty(): "", "0", 0, null, false, [], {} are empty.
+
 fn is_empty(v: Option<&Value>) -> bool {
     match v {
         None | Some(Value::Null) => true,
@@ -48,16 +48,20 @@ fn is_empty(v: Option<&Value>) -> bool {
         Some(Value::Object(o)) => o.is_empty(),
     }
 }
+
 fn val<'a>(m: &'a Map<String, Value>, k: &str) -> Option<&'a Value> {
     let v = get(m, k)?;
     if is_empty(Some(v)) { None } else { Some(v) }
 }
+
 fn s(m: &Map<String, Value>, k: &str) -> String {
     val(m, k).map(val_str).unwrap_or_default()
 }
+
 fn enabled(m: &Map<String, Value>, k: &str) -> bool {
     s(m, k) == "enable"
 }
+
 fn space_eq(v: Option<&Value>, t: &str, r: &str, b: &str, l: &str, settings: &str) -> bool {
     match v {
         Some(Value::Object(o)) => {
@@ -70,12 +74,14 @@ fn space_eq(v: Option<&Value>, t: &str, r: &str, b: &str, l: &str, settings: &st
         _ => false,
     }
 }
+
 fn obj(v: Option<&Value>) -> Map<String, Value> {
     match v {
         Some(Value::Object(o)) => o.clone(),
         _ => Map::new(),
     }
 }
+
 
 fn rnd_id() -> u32 {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -84,6 +90,7 @@ fn rnd_id() -> u32 {
 }
 
 /* ---------------- gdlr_core_format_datatype ---------------- */
+
 
 fn fmt_rgba(hex: &str) -> String {
     let h = hex.replace('#', "");
@@ -96,11 +103,6 @@ fn fmt_rgba(hex: &str) -> String {
     };
     format!("{}, {}, {}", r, g, b)
 }
-fn fmt_pixel(v: &str) -> String {
-    if v.parse::<f64>().is_ok() { format!("{v}px") } else { v.to_string() }
-}
-
-/* ---------------- gdlr_core_get_image_url ---------------- */
 
 fn image_url(conn: &Connection, image: &Value) -> String {
     match image {
@@ -125,12 +127,15 @@ fn image_url(conn: &Connection, image: &Value) -> String {
 /// PHP arrays are ordered.
 type StyleAtts = Vec<(String, Value)>;
 
+
 fn esc_style(atts: &[(String, Value)]) -> String {
     esc_style_ex(atts, true, false)
 }
+
 fn esc_style_inner(atts: &[(String, Value)], important: bool) -> String {
     esc_style_ex(atts, false, important)
 }
+
 fn esc_style_ex(atts: &[(String, Value)], wrap: bool, important: bool) -> String {
     let mut att_style = String::new();
     let mut shadow: Option<(&Value, &Value, &Value)> = None;
@@ -287,9 +292,11 @@ fn esc_style_ex(atts: &[(String, Value)], wrap: bool, important: bool) -> String
     }
     String::new()
 }
+
 fn nn(v: &str) -> String {
     if v.is_empty() { "0".into() } else { v.to_string() }
 }
+
 
 fn animation_atts(m: &Map<String, Value>) -> String {
     let anim = s(m, "animation");
@@ -306,6 +313,7 @@ fn animation_atts(m: &Map<String, Value>) -> String {
 
 /* ---------------- option defs ---------------- */
 
+
 fn defs(sc: &SiteCtx) -> (Value, Value) {
     let dir = sc.templates.join("admin/wp/gdlr");
     let e = std::fs::read_to_string(dir.join("elements.json"))
@@ -314,6 +322,7 @@ fn defs(sc: &SiteCtx) -> (Value, Value) {
         .ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_else(|| json!({}));
     (e, w)
 }
+
 fn icons(sc: &SiteCtx) -> Value {
     std::fs::read_to_string(sc.templates.join("admin/wp/gdlr/icons.json"))
         .ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_else(|| json!({}))
@@ -322,16 +331,11 @@ fn icons(sc: &SiteCtx) -> Value {
 // GoodLayers options live under the `plugin:goodlayers:` settings
 // namespace; reads fall back to the legacy bare key until phase 05's
 // key migration (write whitelist boundary, phase 06).
+
 fn get_setting(conn: &Connection, key: &str) -> Value {
     crate::db::plugin_setting_json_value_conn(conn, "goodlayers", key)
 }
-fn put_setting(conn: &Connection, key: &str, v: &Value) {
-    let _ = crate::db::plugin_setting_json_put_conn(conn, "goodlayers", key, v);
-}
 
-/* ================= canvas templates (pb-*.php get_template) ================= */
-
-/// gdlr_core_page_builder::get_page_builder_item — recursive children render.
 fn pb_items(conn: &Connection, defs_e: &Value, items: &Value) -> String {
     let mut ret = String::new();
     if let Value::Array(a) = items {
@@ -341,6 +345,7 @@ fn pb_items(conn: &Connection, defs_e: &Value, items: &Value) -> String {
     }
     ret
 }
+
 fn pb_item(conn: &Connection, defs_e: &Value, node: &Value) -> String {
     let Value::Object(n) = node else { return String::new() };
     let template = s(n, "template");
@@ -353,6 +358,7 @@ fn pb_item(conn: &Connection, defs_e: &Value, node: &Value) -> String {
 }
 
 /// gdlr_core_page_builder_element::get_template
+
 fn element_template(conn: &Connection, defs_e: &Value, n: &Map<String, Value>) -> String {
     let typ = s(n, "type");
     let settings = defs_e.get(&typ).and_then(|e| e.get("settings")).cloned().unwrap_or_else(|| json!({}));
@@ -375,6 +381,7 @@ fn element_template(conn: &Connection, defs_e: &Value, n: &Map<String, Value>) -
 /// Element preview inside the builder canvas. PHP calls each element's
 /// `get_preview`; our equivalent is the CMS frontend renderer (stable,
 /// and identical to what the public site outputs).
+
 fn element_preview_html(conn: &Connection, typ: &str, value: &Value) -> String {
     let node = json!({"template": "element", "type": typ, "value": value});
     let tour_base = PB_TOUR_BASE.with(|t| t.borrow().clone());
@@ -389,6 +396,7 @@ thread_local! {
 
 /// gdlr_core_page_builder_wrapper::get_template — dispatch per type,
 /// honouring sync-template substitution.
+
 fn wrapper_template(conn: &Connection, n: &Map<String, Value>) -> String {
     let mut n = n.clone();
     if let Some(slug) = val(&n, "sync-template") {
@@ -407,6 +415,7 @@ fn wrapper_template(conn: &Connection, n: &Map<String, Value>) -> String {
 }
 
 /// pb-wrapper-column.php::get_template
+
 fn column_template(conn: &Connection, n: &Map<String, Value>) -> String {
     let value = obj(get(n, "value"));
 
@@ -712,6 +721,7 @@ fn column_template(conn: &Connection, n: &Map<String, Value>) -> String {
 /// Same as pb_items but pulls element defs lazily per call (column recursion
 /// happens inside wrapper_template which doesn't carry defs through in PHP —
 /// defs are global there; here we re-read cheap JSON per page render).
+
 fn pb_items_scoped(conn: &Connection, items: &Value) -> String {
     // defs for element titles come from a thread-local-style param; to keep the
     // signature simple we re-dispatch with a cached static.
@@ -725,6 +735,7 @@ thread_local! {
 }
 
 /// pb-wrapper-background.php::get_template
+
 fn background_template(conn: &Connection, n: &Map<String, Value>) -> String {
     let value = obj(get(n, "value"));
     let zero_sp = |v: Option<&Value>| space_eq(v, "0px", "0px", "0px", "0px", "link");
@@ -1048,6 +1059,7 @@ fn background_template(conn: &Connection, n: &Map<String, Value>) -> String {
 }
 
 /// pb-wrapper-sidebar.php::get_template
+
 fn sidebar_template(conn: &Connection, n: &Map<String, Value>) -> String {
     let value = obj(get(n, "value"));
     let sidebar = if s(&value, "sidebar").is_empty() { "right".into() } else { s(&value, "sidebar") };
@@ -1114,6 +1126,7 @@ fn sidebar_template(conn: &Connection, n: &Map<String, Value>) -> String {
 }
 
 /// pb-wrapper-sidebar.php::get_background (shared 4-type background switch)
+
 fn sidebar_background(conn: &Connection, value: &Map<String, Value>) -> String {
     let bg_type = s(value, "background-type");
     if bg_type.is_empty() { return String::new(); }
@@ -1171,6 +1184,7 @@ fn sidebar_background(conn: &Connection, value: &Map<String, Value>) -> String {
 }
 
 /// gdlr_core_get_video — youtube/vimeo/self-hosted iframe (background mode).
+
 fn pb_video(video: &str, width: &str, height: &str, background: bool) -> String {
     if video.contains("youtube") || video.contains("youtu.be") {
         let id = if video.contains("youtube") {
@@ -1202,422 +1216,7 @@ fn pb_video(video: &str, width: &str, height: &str, background: bool) -> String 
 
 /* ================= gdlr_core_html_option::get_element ================= */
 
-fn opt_val(st: &Map<String, Value>) -> Value {
-    if let Some(v) = st.get("value") { v.clone() }
-    else if let Some(d) = st.get("default") { d.clone() }
-    else { Value::Null }
-}
 
-fn thumbnail_sizes(conn: &Connection) -> Map<String, Value> {
-    // WP intermediate sizes used on this site (media stores only 'full'
-    // for generated files; list matches the WP clone's registered sizes).
-    let mut m = Map::new();
-    m.insert("full".into(), json!("full size"));
-    for (k, w, h) in [
-        ("thumbnail", 150, 150), ("medium", 300, 300), ("medium_large", 768, 0),
-        ("large", 1024, 1024), ("1536x1536", 1536, 1536), ("2048x2048", 2048, 2048),
-        ("gdlr-core-full", 0, 0),
-    ] {
-        let _ = (w, h);
-        m.insert(k.into(), json!(k));
-    }
-    let _ = conn;
-    m
-}
-
-fn skin_list(conn: &Connection) -> Map<String, Value> {
-    match get_setting(conn, "gdlr-core-skins") {
-        Value::Object(o) => o,
-        _ => Map::new(),
-    }
-}
-
-fn radioimage_opts(conn: &Connection, kind: &str, with_default: bool, without_none: bool) -> (Map<String, Value>, Option<&'static str>, bool) {
-    // returns (options map slug->url, max-width, force frame type)
-    let mut m = Map::new();
-    let mut maxw = None;
-    let mut frame = false;
-    match kind {
-        "text-align" => {
-            for (k, f) in [("left", "left.png"), ("center", "center.png"), ("right", "right.png")] {
-                m.insert(k.into(), json!(format!("{GDLR_URL}/include/images/text-align/{f}")));
-            }
-            if with_default {
-                let mut n = Map::new();
-                n.insert("default".into(), json!(format!("{GDLR_URL}/include/images/text-align/default.jpg")));
-                n.extend(m.clone()); m = n;
-            }
-            maxw = Some("61px"); frame = true;
-        }
-        "sidebar" => {
-            for (k, f) in [("none", "none.jpg"), ("left", "left.jpg"), ("right", "right.jpg"), ("both", "both.jpg")] {
-                m.insert(k.into(), json!(format!("{GDLR_URL}/include/images/sidebar/{f}")));
-            }
-            if with_default {
-                let mut n = Map::new();
-                n.insert("default".into(), json!(format!("{GDLR_URL}/include/images/sidebar/default.jpg")));
-                n.extend(m.clone()); m = n;
-            }
-            if without_none { m.remove("none"); }
-        }
-        "pattern" => {
-            for i in 1..=26 {
-                m.insert(format!("pattern-{i}"), json!(format!("{GDLR_URL}/include/images/pattern/thumbnail/pattern-{i}.png")));
-            }
-        }
-        "hover-icon-link" => {
-            for (k, f) in [
-                ("arrow_right-up", "arrow_right-up.jpg"), ("fa fa-external-link", "fa-external-link.jpg"),
-                ("fa fa-external-link-square", "fa-external-link-square.jpg"), ("fa fa-link", "fa-link.jpg"),
-                ("icon_link", "icon_link.jpg"), ("icon_link_alt", "icon_link_alt.jpg"),
-            ] { m.insert(k.into(), json!(format!("{GDLR_URL}/include/images/hover-icon/link/{f}"))); }
-            maxw = Some("30px"); frame = true;
-        }
-        "hover-icon-image" => {
-            for (k, f) in [
-                ("arrow_expand", "arrow_expand.jpg"), ("fa fa-expand", "fa-expand.jpg"),
-                ("fa fa-picture-o", "fa-picture-o.jpg"), ("fa fa-plus", "fa-plus.jpg"),
-                ("fa fa-plus-circle", "fa-plus-circle.jpg"), ("fa fa-search", "fa-search.jpg"),
-                ("fa fa-search-plus", "fa-search-plus.jpg"), ("icon_plus", "icon_plus.jpg"),
-                ("icon_plus_alt2", "icon_plus_alt2.jpg"), ("icon_search", "icon_search.jpg"),
-                ("icon_zoom-in_alt", "icon_zoom-in_alt.jpg"),
-            ] { m.insert(k.into(), json!(format!("{GDLR_URL}/include/images/hover-icon/image/{f}"))); }
-            maxw = Some("30px"); frame = true;
-        }
-        "hover-icon-video" => {
-            for (k, f) in [
-                ("fa fa-file-video-o", "fa-file-video-o.jpg"), ("fa fa-film", "fa-film.jpg"),
-                ("fa fa-play", "fa-play.jpg"), ("fa fa-play-circle", "fa-play-circle.jpg"),
-                ("fa fa-play-circle-o", "fa-play-circle-o.jpg"), ("fa fa-video-camera", "fa-video-camera.jpg"),
-                ("icon_film", "icon_film.jpg"),
-            ] { m.insert(k.into(), json!(format!("{GDLR_URL}/include/images/hover-icon/video/{f}"))); }
-            maxw = Some("30px"); frame = true;
-        }
-        _ => {}
-    }
-    let _ = conn;
-    (m, maxw, frame)
-}
-
-/// Decode the standard named entities (`&lt; &gt; &amp; &quot; &#039; &nbsp;`).
-/// text-box content arriving from a TinyMCE save is stored entity-encoded;
-/// WP renders it back to markup, so callers decode before `|safe` output.
-pub(crate) fn html_decode_pub(s: &str) -> String { html_decode(s) }
-
-/// PHP option defs pass `esc_html__()` output — strings arrive pre-escaped
-/// (`&amp;`, `&eacute;`…). Decode before re-escaping for HTML context so
-/// labels show `&` not `&amp;`.
-fn html_decode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut rest = s;
-    while let Some(i) = rest.find('&') {
-        out.push_str(&rest[..i]);
-        let tail = &rest[i..];
-        let semi = tail.find(';').filter(|&j| j < 10);
-        match semi {
-            Some(j) => {
-                let ent = &tail[..=j];
-                let dec = match ent {
-                    "&amp;" => "&", "&lt;" => "<", "&gt;" => ">", "&quot;" => "\"",
-                    "&#039;" | "&#39;" | "&apos;" => "'", "&nbsp;" => " ",
-                    "&eacute;" => "é", "&egrave;" => "è", "&agrave;" => "à",
-                    "&ecirc;" => "ê", "&ocirc;" => "ô", "&ucirc;" => "û",
-                    "&iuml;" => "ï", "&ccedil;" => "ç", "&ndash;" => "–",
-                    "&mdash;" => "—", "&hellip;" => "…", "&middot;" => "·",
-                    _ => { out.push_str(ent); rest = &tail[j + 1..]; continue; }
-                };
-                out.push_str(dec);
-                rest = &tail[j + 1..];
-            }
-            None => { out.push('&'); rest = &tail[1..]; }
-        }
-    }
-    out.push_str(rest);
-    out
-}
-
-fn combobox_options(conn: &Connection, st: &Map<String, Value>) -> Map<String, Value> {
-    let opts = st.get("options").cloned().unwrap_or(Value::Null);
-    let mut m = match &opts {
-        Value::String(opt_kind) => match opt_kind.as_str() {
-            "sidebar" => {
-                // Registered sidebars (const ∪ admin-registered custom).
-                let mut n = Map::new();
-                n.insert("".into(), json!("None"));
-                if let Ok(list) = crate::widgets::list(conn) {
-                    for (id, name) in list {
-                        n.insert(id, json!(name));
-                    }
-                }
-                n
-            }
-            "thumbnail-size" => thumbnail_sizes(conn),
-            "skin" => skin_list(conn),
-            "post_type" => {
-                let pt = s(st, "options-data");
-                let mut n = Map::new();
-                if st.get("allow-none").is_some() { n.insert("".into(), json!("None")); }
-                if let Ok(mut stmt) = conn.prepare("SELECT id, title FROM posts WHERE post_type=?1 ORDER BY title") {
-                    let typ = if pt.is_empty() { "page".to_string() } else { pt };
-                    if let Ok(rows) = stmt.query_map([typ], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))) {
-                        // Option dropdown builder is best-effort; skipped rows omit one option.
-                        for r in rows.flatten() { n.insert(r.0.to_string(), json!(r.1)); }
-                    }
-                }
-                n
-            }
-            "tax_id" => {
-                let tax = s(st, "options-data");
-                let mut n = Map::new();
-                if let Ok(mut stmt) = conn.prepare("SELECT id, name FROM terms WHERE taxonomy=?1 ORDER BY name") {
-                    if let Ok(rows) = stmt.query_map([tax], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))) {
-                        // Same best-effort option-builder contract as post_type above.
-                        for r in rows.flatten() { n.insert(r.0.to_string(), json!(r.1)); }
-                    }
-                }
-                n
-            }
-            _ => Map::new(),
-        },
-        Value::Object(o) => o.clone(),
-        _ => Map::new(),
-    };
-    if !st.get("with-default").is_none() && st.get("with-default").map(|v| !is_empty(Some(v))).unwrap_or(false) {
-        let mut n = Map::new();
-        n.insert("default".into(), json!("Default"));
-        n.extend(m); m = n;
-    }
-    m
-}
-
-/// gdlr_core_html_option::get_element — one field row.
-fn option_element(conn: &Connection, icons_val: &Value, st_in: &Map<String, Value>) -> String {
-    let ty = st_in.get("type").and_then(|t| t.as_str()).unwrap_or("");
-    if ty.is_empty() || ty == "customizer-description" { return String::new(); }
-    let mut st = st_in.clone();
-
-    let wrapper_class = format!("{} gdlr-core-html-option-{}", s(&st, "wrapper-class"), ty);
-    let condition = st.get("condition").map(|c| format!("data-condition=\"{}\" ", esc(&c.to_string()))).unwrap_or_default();
-
-    let mut ret = format!("<div class=\"gdlr-core-html-option-item {}-item\" {}>", esc(&wrapper_class.trim().to_string()), condition);
-    if let Some(t) = st.get("title").and_then(|t| t.as_str()) {
-        ret += &format!("<div class=\"gdlr-core-html-option-item-title\" >{}</div>", esc(&html_decode(t)));
-    }
-    if s(&st, "description-position") == "top" && !s(&st, "description").is_empty() {
-        ret += &format!("<div class=\"gdlr-core-html-option-item-description\" >{}</div>", esc(&html_decode(&s(&st, "description"))));
-    }
-    ret += "<div class=\"gdlr-core-html-option-item-input\">";
-    let slug = s(&st, "slug");
-    let with_name = st.get("with-name").map(|v| !is_empty(Some(v))).unwrap_or(false);
-    let name_attr = |with_name: bool| if with_name { format!(" name=\"{}\" ", esc(&slug)) } else { String::new() };
-
-    match ty {
-        "text" => {
-            let v = opt_val(&st);
-            ret += &format!("<input type=\"text\" class=\"gdlr-core-html-option-text\" data-type=\"text\" data-slug=\"{}\" value=\"{}\" {}{} />",
-                esc(&slug), esc(&val_str(&v)), name_attr(with_name),
-                if s(&st, "data-input-type").is_empty() { String::new() } else { format!(" data-input-type=\"{}\"", esc(&s(&st, "data-input-type"))) });
-        }
-        "datepicker" => {
-            let v = opt_val(&st);
-            ret += &format!("<input type=\"text\" class=\"gdlr-core-html-option-text gdlr-core-html-option-datepicker\" data-type=\"text\" data-slug=\"{}\" value=\"{}\" /><i class=\"gdlr-core-html-option-datepicker-icon fa fa-calendar\" ></i>", esc(&slug), esc(&val_str(&v)));
-        }
-        "textarea" => {
-            let v = opt_val(&st);
-            ret += &format!("<textarea class=\"gdlr-core-html-option-textarea\" data-type=\"textarea\" data-slug=\"{}\" >{}</textarea>", esc(&slug), esc(&val_str(&v)));
-        }
-        "combobox" => {
-            let v = opt_val(&st);
-            ret += "<div class=\"gdlr-core-custom-combobox\" >";
-            ret += &format!("<select class=\"gdlr-core-html-option-combobox\" data-type=\"combobox\" {}data-slug=\"{}\" >", name_attr(with_name), esc(&slug));
-            for (k, label) in combobox_options(conn, &st) {
-                let sel = if val_str(&v) == k { "selected" } else { "" };
-                ret += &format!("<option value=\"{}\" {} >{}</option>", esc(&k), sel, esc(&val_str(&label)));
-            }
-            ret += "</select></div>";
-        }
-        "multi-combobox" => {
-            let v = opt_val(&st);
-            let vals: Vec<String> = match &v {
-                Value::Array(a) => a.iter().map(val_str).collect(),
-                Value::String(s) if !s.is_empty() => s.split(',').map(|x| x.trim().to_string()).collect(),
-                Value::String(s) if s == "all" => vec!["all".into()],
-                _ => vec![],
-            };
-            let all = matches!(&v, Value::String(s) if s == "all");
-            ret += &format!("<select class=\"gdlr-core-html-option-multi-combobox\" {}data-type=\"multi-combobox\" data-slug=\"{}\" multiple >",
-                if with_name { format!(" name=\"{}[]\" ", esc(&slug)) } else { String::new() }, esc(&slug));
-            if let Value::Object(o) = st.get("options").cloned().unwrap_or(Value::Null) {
-                for (k, label) in o {
-                    let sel = if all || vals.contains(&k) { "selected" } else { "" };
-                    ret += &format!("<option value=\"{}\" {} >{}</option>", esc(&k), sel, esc(&val_str(&label)));
-                }
-            }
-            ret += "</select>";
-        }
-        "checkbox" => {
-            let v = opt_val(&st);
-            let v = if is_empty(Some(&v)) { "enable".to_string() } else { val_str(&v) };
-            ret += &format!("<label><input type=\"checkbox\" class=\"gdlr-core-html-option-checkbox\" data-type=\"checkbox\" data-slug=\"{}\" {} /><div class=\"gdlr-core-html-option-checkbox-appearance gdlr-core-noselect\"><span class=\"gdlr-core-checkbox-button gdlr-core-on\">On</span><span class=\"gdlr-core-checkbox-separator\"></span><span class=\"gdlr-core-checkbox-button gdlr-core-off\">Off</span></div></label>",
-                esc(&slug), if v == "enable" { "checked" } else { "" });
-        }
-        "radioimage" | "radioimage-frame" => {
-            let opts_raw = st.get("options").cloned().unwrap_or(Value::Null);
-            let (mut opts, mut maxw, mut frame) = (Map::new(), None, ty == "radioimage-frame");
-            match &opts_raw {
-                Value::String(kind) => {
-                    let (o, mw, f) = radioimage_opts(conn, kind, st.get("with-default").is_some(), st.get("without-none").is_some());
-                    opts = o; maxw = mw; frame = frame || f;
-                }
-                Value::Object(o) => opts = o.clone(),
-                _ => {}
-            }
-            if let Some(mw) = st.get("max-width").and_then(|v| v.as_str()) { maxw = Some(Box::leak(mw.to_string().into_boxed_str())); }
-            let v = opt_val(&st);
-            let v = if is_empty(Some(&v)) {
-                opts.keys().next().cloned().unwrap_or_default()
-            } else { val_str(&v) };
-            let style = maxw.map(|w| format!("style=\"max-width: {}\"", esc(&fmt_pixel(w)))).unwrap_or_default();
-            for (k, url) in opts {
-                let ck = if v == k { "checked" } else { "" };
-                ret += &format!("<label {} ><input class=\"gdlr-core-html-option-radioimage\" type=\"radio\" name=\"{}\" data-type=\"radioimage\" data-slug=\"{}\" value=\"{}\" {}/>", style, esc(&slug), esc(&slug), esc(&k), ck);
-                ret += if frame { "<div class=\"gdlr-core-radioimage-frame\" ></div>" } else { "<div class=\"gdlr-core-radioimage-checked\" ></div>" };
-                ret += &format!("<img src=\"{}\" alt=\"{}\" /></label>", esc(&val_str(&url)), esc(&k));
-            }
-        }
-        "upload" => {
-            let v = opt_val(&st);
-            let url = if is_empty(Some(&v)) { String::new() } else { image_url(conn, &v) };
-            let active = if url.is_empty() { "" } else { "gdlr-core-active" };
-            let bg = if url.is_empty() { String::new() } else { format!(" style=\"background-image: url('{}');\"", esc(&url)) };
-            ret += &format!("<div class=\"gdlr-core-html-option-upload-appearance {}\" ><input type=\"hidden\" class=\"gdlr-core-html-option-upload\" data-type=\"upload\" data-slug=\"{}\" value=\"{}\" {} /><div class=\"gdlr-core-upload-image-container\"{} ></div><div class=\"gdlr-core-upload-image-overlay\" ><div class=\"gdlr-core-upload-image-button-hover\"><span class=\"gdlr-core-upload-image-button gdlr-core-upload-image-add\"><i class=\"icon_plus\" ></i></span><span class=\"gdlr-core-upload-image-button gdlr-core-upload-image-remove\"><i class=\"icon_minus-06\" ></i></span></div></div></div>",
-                active, esc(&slug), esc(&val_str(&v)), name_attr(with_name), bg);
-        }
-        "colorpicker" => {
-            let v = opt_val(&st);
-            let d = s(&st, "default");
-            ret += &format!("<input type=\"text\" class=\"gdlr-core-html-option-colorpicker\" data-type=\"colorpicker\" data-slug=\"{}\" value=\"{}\" data-default-color=\"{}\" />",
-                esc(&slug), esc(&val_str(&v)), esc(&d));
-        }
-        "font" => {
-            let v = opt_val(&st);
-            let v = if is_empty(Some(&v)) { "Helvetica, sans-serif".into() } else { val_str(&v) };
-            let display_url = format!("{GDLR_URL}/font-preview?family={}", urlenc(&v));
-            ret += &format!("<iframe class=\"gdlr-core-html-option-font-display\" src=\"{}\" data-base-url=\"{}\" ></iframe>", esc(&display_url), esc(&format!("{GDLR_URL}/font-preview")));
-            ret += "<div class=\"gdlr-core-custom-combobox\" >";
-            ret += &format!("<select class=\"gdlr-core-html-option-font\" data-type=\"font\" data-slug=\"{}\" >", esc(&slug));
-            for f in FONT_LIST {
-                let sel = if *f == v { "selected" } else { "" };
-                ret += &format!("<option value=\"{}\" {} >{}</option>", esc(f), sel, esc(f));
-            }
-            ret += &format!("<option value=\"{}\" selected style=\"display:none\" ></option>", esc(&v));
-            ret += "</select></div>";
-        }
-        "fontslider" => {
-            let v = opt_val(&st);
-            let mut atts = String::new();
-            if s(&st, "data-type") == "opacity" {
-                st.insert("data-min".into(), json!(0));
-                st.insert("data-max".into(), json!(100));
-                st.insert("data-suffix".into(), json!("none"));
-            }
-            for (k, attr) in [("data-min", "data-min-value"), ("data-max", "data-max-value"), ("data-suffix", "data-suffix")] {
-                if let Some(x) = st.get(k) { atts += &format!(" {}=\"{}\"", attr, esc(&val_str(x))); }
-            }
-            ret += &format!("<input type=\"text\" class=\"gdlr-core-html-option-fontslider\" data-type=\"text\" value=\"{}\" data-slug=\"{}\" {} />",
-                esc(&val_str(&v)), esc(&slug), atts);
-        }
-        "tinymce" => {
-            let v = opt_val(&st);
-            ret += &format!("<div class=\"gdlr-core-html-option-tinymce\" data-type=\"tinymce\" data-slug=\"{}\" >{}</div>", esc(&slug), val_str(&v));
-        }
-        "icons" => {
-            let v = opt_val(&st);
-            let v = val_str(&v);
-            let allow_none = st.get("allow-none").map(|x| !is_empty(Some(x))).unwrap_or(false);
-            let font_type = if v == "none" { "none".to_string() } else { icon_font_type(&v, allow_none) };
-            let icon_lists = icons_val.as_object().cloned().unwrap_or_default();
-            let types: Vec<String> = icon_lists.keys().cloned().collect();
-            let font_type = if font_type == "none" || types.contains(&font_type) { font_type } else { types.first().cloned().unwrap_or_else(|| "font-awesome".into()) };
-
-            ret += "<div class=\"gdlr-core-custom-combobox gdlr-core-html-option-icons-type-combobox\" >";
-            ret += "<select class=\"gdlr-core-html-option-combobox gdlr-core-html-option-icons-type-select\" >";
-            if allow_none {
-                ret += &format!("<option value=\"none\" {} >None</option>", if font_type == "none" { "selected" } else { "" });
-            }
-            for t in &types {
-                ret += &format!("<option value=\"{}\" {} >{}</option>", esc(t), if *t == font_type { "selected" } else { "" }, esc(&icon_font_title(t)));
-            }
-            ret += "</select></div>";
-            ret += &format!("<input type=\"text\" class=\"gdlr-core-html-option-text gdlr-core-html-option-icons-search\" placeholder=\"Search Icons\" {} />",
-                if font_type == "none" { "style=\"display: none;\"" } else { "" });
-            ret += &format!("<div class=\"gdlr-core-html-option-icons-type-wrapper\" {} >",
-                if font_type == "none" { "style=\"display: none;\"" } else { "" });
-            for (t, list) in &icon_lists {
-                ret += &format!("<div class=\"gdlr-core-html-option-icons-type{}\"  data-icon-type=\"{}\" >",
-                    if *t == font_type { " gdlr-core-active" } else { "" }, esc(t));
-                if let Value::Array(l) = list {
-                    for icon in l {
-                        let ic = val_str(icon);
-                        ret += &format!("<i class=\"{}{}\" ></i>", esc(&ic), if ic == v { " gdlr-core-active" } else { "" });
-                    }
-                }
-                ret += "</div>";
-            }
-            ret += "</div>";
-            ret += &format!("<input type=\"hidden\" value=\"{}\" data-type=\"text\" data-slug=\"{}\" {}/>", esc(&v), esc(&slug), name_attr(with_name));
-        }
-        "custom" => {
-            let v = opt_val(&st);
-            ret += &format!("<div class=\"gdlr-core-html-option-custom\" data-type=\"custom\" data-item-type=\"{}\" data-slug=\"{}\" {}{}>",
-                esc(&s(&st, "item-type")), esc(&slug),
-                if s(&st, "data-input-type").is_empty() { String::new() } else { format!(" data-input-type=\"{}\" ", esc(&s(&st, "data-input-type"))) },
-                st.get("extra").map(|x| format!(" data-extra=\"{}\" ", esc(&x.to_string()))).unwrap_or_default());
-            if let Some(o) = st.get("options") {
-                ret += &format!("<span class=\"gdlr-core-html-option-custom-options\" data-value=\"{}\" ></span>", esc(&o.to_string()));
-            }
-            if !is_empty(Some(&v)) {
-                ret += &format!("<span class=\"gdlr-core-html-option-custom-value\" data-value=\"{}\" ></span>", esc(&v.to_string()));
-            }
-            ret += "</div>";
-        }
-        "import" => {
-            ret += &format!("<div class=\"gdlr-core-html-option-import\" data-action=\"{}\" ><form method=\"post\" enctype=\"multipart/form-data\" ><input class=\"gdlr-core-html-option-import-file\" type=\"file\" name=\"gdlr-core-import\" ><div class=\"gdlr-core-html-option-import-button\" >Import</div></form></div>", esc(&s(&st, "action")));
-        }
-        "export" => {
-            ret += &format!("<div class=\"gdlr-core-html-option-export\" data-action=\"{}\" >", esc(&s(&st, "action")));
-            if let Some(Value::Object(o)) = st.get("options") {
-                ret += "<div class=\"gdlr-core-custom-combobox\" ><select class=\"gdlr-core-html-option-export-option gdlr-core-html-option-combobox\" data-type=\"combobox\" >";
-                for (k, label) in o {
-                    ret += &format!("<option value=\"{}\" >{}</option>", esc(k), esc(&val_str(label)));
-                }
-                ret += "</select></div>";
-            }
-            ret += "<div class=\"gdlr-core-html-option-export-button\" >Export</div></div>";
-        }
-        _ => {}
-    }
-    ret += "</div>";
-    if s(&st, "description-position").is_empty() && !s(&st, "description").is_empty() {
-        ret += &format!("<div class=\"gdlr-core-html-option-item-description\" >{}</div>", esc(&html_decode(&s(&st, "description"))));
-    }
-    if st.get("options") == Some(&Value::String("skin".into())) {
-        ret += "<div class=\"gdlr-core-html-option-skin-edit\" >Create Skin<i class=\"fa fa-plus-circle\" ></i></div>";
-    }
-    ret += "<div class=\"clear\"></div></div>";
-    ret
-}
-
-fn icon_font_type(icon_class: &str, allow_none: bool) -> String {
-    if allow_none && (icon_class.is_empty() || icon_class == "none") { return "none".into(); }
-    if icon_class.starts_with("icon_") || icon_class.starts_with("arrow_") || icon_class.starts_with("social_") { "elegant-font".into() }
-    else if icon_class.starts_with("ion-") { "ionicons".into() }
-    else if icon_class.starts_with("fa6") { "fa6".into() }
-    else if icon_class.starts_with("fa5") { "fa5".into() }
-    else if icon_class.starts_with("gdlr-icon-") { "gdlr-custom-icon".into() }
-    else if icon_class.starts_with("icon-") { "simpleline".into() }
-    else { "font-awesome".into() }
-}
 fn icon_font_title(t: &str) -> String {
     match t {
         "font-awesome" => "Font Awesome",
@@ -1635,63 +1234,8 @@ fn icon_font_title(t: &str) -> String {
 // byte-wise encoding shared via `urlenc` (mod.rs) — `urlencoding_simple`
 // encoded code points not UTF-8 bytes (M16-adjacent mojibake).
 
-const FONT_LIST: &[&str] = &[
-    "Helvetica, sans-serif", "Georgia, serif", "Palatino, serif",
-    "Times New Roman, serif", "Arial, sans-serif", "Arial Black, sans-serif",
-    "Comic Sans MS, cursive", "Impact, sans-serif", "Lucida Sans, sans-serif",
-    "Tahoma, sans-serif", "Trebuchet MS, sans-serif", "Verdana, sans-serif",
-    "Courier New, monospace", "Lucida Console, monospace",
-];
 
 /// gdlr_core_page_builder_options::get_content — the options lightbox body.
-fn options_lightbox(conn: &Connection, icons_val: &Value, options_def: &Value, values: &Map<String, Value>) -> String {
-    let mut ret = String::from("<div class=\"gdlr-core-page-builder-options\" >");
-    ret += "<div class=\"gdlr-core-page-builder-options-head\"><div class=\"gdlr-core-page-builder-options-head-title\"><i class=\"fa fa-gears\"></i>Item Options</div>";
-    let id = s(values, "id");
-    let class = s(values, "class");
-    ret += &format!("<div class=\"gdlr-core-page-builder-options-head-right\" ><span class=\"gdlr-core-page-builder-options-head-id-title\" >Elem ID :</span><input type=\"text\" class=\"gdlr-core-page-builder-options-head-id\" data-type=\"text\" data-slug=\"id\" value=\"{}\" /><span class=\"gdlr-core-page-builder-options-head-id-title\" >Elem Class :</span><input type=\"text\" class=\"gdlr-core-page-builder-options-head-class\" data-type=\"text\" data-slug=\"class\" value=\"{}\" /><span class=\"gdlr-core-page-builder-options-head-close\" id=\"gdlr-core-page-builder-options-head-close\" ></span></div></div>", esc(&id), esc(&class));
-
-    ret += "<div class=\"gdlr-core-page-builder-options-content\">";
-    if let Value::Object(tabs) = options_def {
-        ret += "<div class=\"gdlr-core-page-builder-options-tab-head\" id=\"gdlr-core-page-builder-options-tab-head\" >";
-        let mut first = true;
-        for (tab_slug, tab) in tabs {
-            let title = tab.get("title").and_then(|t| t.as_str()).unwrap_or(tab_slug);
-            ret += &format!("<div class=\"gdlr-core-page-builder-options-tab-head-item {}\" data-tab-slug=\"{}\" >{}</div>",
-                if first { "gdlr-core-active" } else { "" }, esc(tab_slug), esc(title));
-            first = false;
-        }
-        ret += "</div>";
-        ret += "<div class=\"gdlr-core-page-builder-options-tab-content\" id=\"gdlr-core-page-builder-options-tab-content\" >";
-        let mut first = true;
-        for (tab_slug, tab) in tabs {
-            ret += &format!("<div class=\"gdlr-core-page-builder-option-tab-content-item {}\" data-tab-slug=\"{}\" >",
-                if first { "gdlr-core-active" } else { "" }, esc(tab_slug));
-            if let Value::Object(fields) = tab.get("options").cloned().unwrap_or(json!({})) {
-                for (oslug, odef) in fields {
-                    let mut o = odef.clone();
-                    if let Value::Object(om) = &mut o {
-                        om.insert("slug".into(), json!(oslug));
-                        if let Some(v) = values.get(&oslug) {
-                            om.insert("value".into(), v.clone());
-                        } else if !values.is_empty() && odef.get("type").and_then(|t| t.as_str()) == Some("custom") {
-                            om.insert("value".into(), json!(""));
-                        }
-                    }
-                    ret += &option_element(conn, icons_val, &obj(Some(&o)));
-                }
-            }
-            ret += "</div>";
-            first = false;
-        }
-        ret += "</div>";
-    }
-    ret += "</div>";
-    ret += "<div class=\"gdlr-core-page-builder-options-end\"><div class=\"gdlr-core-page-builder-options-save\" id=\"gdlr-core-page-builder-options-save\" ><i class=\"fa fa-save\"></i>Save Options</div></div></div>";
-    ret
-}
-
-/* ================= boot (create_page_builder_meta_box) ================= */
 
 fn section_head_list(conn: &Connection, sc: &SiteCtx, defs_e: &Value, defs_w: &Value, post_id: i64) -> (String, String) {
     // Returns (nav-items html, head-content html) in PHP section order:
@@ -1794,6 +1338,7 @@ fn section_head_list(conn: &Connection, sc: &SiteCtx, defs_e: &Value, defs_w: &V
     (nav, content)
 }
 
+
 fn page_builder_var(defs_e: &Value, defs_w: &Value, post_id: i64) -> String {
     // wp_localize_script equivalent.
     let mut var = json!({
@@ -1874,6 +1419,7 @@ fn page_builder_var(defs_e: &Value, defs_w: &Value, post_id: i64) -> String {
 }
 
 /// Metabox DOM + scripts for /posts/:id/edit when body is gdlr (or new).
+
 pub(crate) fn boot(conn: &Connection, sc: &SiteCtx, post_id: i64, body_json: &str, csrf: &str) -> String {
     let (defs_e, defs_w) = defs(sc);
     PB_DEFS.with(|d| *d.borrow_mut() = defs_e.clone());
@@ -1932,6 +1478,7 @@ pub(crate) fn boot(conn: &Connection, sc: &SiteCtx, post_id: i64, body_json: &st
 
 /// Asset tags — appended once into the post-edit page head.
 /// jQuery already loaded by html_admin; load only PB-specific deps.
+
 pub(crate) fn asset_tags() -> String {
     let g = GDLR_URL;
     format!(
@@ -1989,342 +1536,7 @@ if(document.readyState==='loading'){{document.addEventListener('DOMContentLoaded
 /* ================= nested form parser (jQuery $.ajax data -> map) ========= */
 
 /// Parse `security=x&action=y&value%5Ba%5D=z` into nested Value.
-pub(crate) fn parse_form_nested(raw: &str) -> Map<String, Value> {
-    let mut root = Map::new();
-    for pair in raw.split('&') {
-        let mut it = pair.splitn(2, '=');
-        let k_enc = it.next().unwrap_or("");
-        let v_enc = it.next().unwrap_or("");
-        let k = url_decode(k_enc.as_bytes());
-        let v = url_decode(v_enc.replace('+', " ").as_bytes());
-        // split into segments: base[a][b] — bracket depth capped at 8:
-        // deeper nesting recursed `insert_nested` past stack limits (M21);
-        // legitimate jQuery form keys never go past ~4.
-        let mut segs: Vec<String> = Vec::new();
-        let rest = k.as_str();
-        if let Some(i) = rest.find('[') {
-            segs.push(rest[..i].to_string());
-            let mut tail = &rest[i..];
-            while segs.len() <= 8 {
-                let Some(stripped) = tail.strip_prefix('[') else { break };
-                if let Some(j) = stripped.find(']') {
-                    segs.push(stripped[..j].to_string());
-                    tail = &stripped[j + 1..];
-                } else { break; }
-            }
-        } else {
-            segs.push(rest.to_string());
-        }
-        if segs.is_empty() || segs.len() > 8 {
-            continue; // malformed/over-deep key — skip, don't recurse
-        }
-        insert_nested(&mut root, &segs, Value::String(v));
-    }
-    // jQuery posts arrays as value[tabs][0][active]=… — collapse numeric maps
-    // back into Value::Array so downstream code and JS get real arrays.
-    let mut root_v = Value::Object(root);
-    collapse_numeric(&mut root_v);
-    root_v.as_object().cloned().unwrap_or_default()
-}
 
-/// Collapse `{"0":..,"1":..}` maps (built from `key[0][x]` form fields) into
-/// arrays recursively — PHP/JS expects `[]` for tab lists.
-fn collapse_numeric(v: &mut Value) {
-    match v {
-        Value::Object(o) => {
-            let keys: Vec<String> = o.keys().cloned().collect();
-            let numeric = !keys.is_empty() && keys.iter().all(|k| k.parse::<usize>().is_ok());
-            if numeric {
-                let mut idx: Vec<usize> = keys.iter().map(|k| k.parse().unwrap()).collect();
-                idx.sort_unstable();
-                if idx.iter().enumerate().all(|(i, n)| *n == i) {
-                    let vals: Vec<Value> = idx.iter().map(|i| o.remove(&i.to_string()).unwrap()).collect();
-                    *v = Value::Array(vals);
-                }
-            }
-            if let Value::Object(o) = v {
-                for x in o.values_mut() { collapse_numeric(x); }
-            }
-        }
-        Value::Array(a) => for x in a { collapse_numeric(x); },
-        _ => {}
-    }
-}
-/// `%XX` percent-decode on raw bytes — the old &str slice (`s[i+1..i+3]`)
-/// panicked when a `%` sat mid-UTF-8-sequence (M21). `+` is handled by the
-/// caller (form values) since raw JSON payloads must keep literal pluses.
-fn url_decode(b: &[u8]) -> String {
-    let mut out = Vec::with_capacity(b.len());
-    let mut i = 0;
-    while i < b.len() {
-        if b[i] == b'%' && i + 2 < b.len() {
-            if let Ok(v) = u8::from_str_radix(
-                std::str::from_utf8(&b[i + 1..i + 3]).unwrap_or(""),
-                16,
-            ) {
-                out.push(v); i += 3; continue;
-            }
-        }
-        out.push(b[i]); i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-fn insert_nested(map: &mut Map<String, Value>, segs: &[String], val: Value) {
-    if segs.len() == 1 {
-        map.insert(segs[0].clone(), val);
-        return;
-    }
-    let key = segs[0].clone();
-    let entry = map.entry(key).or_insert_with(|| Value::Object(Map::new()));
-    if !entry.is_object() { *entry = Value::Object(Map::new()); }
-    insert_nested(entry.as_object_mut().unwrap(), &segs[1..], val);
-}
-
-/// PHP gdlr_core_process_post_data — stripslashes + rawurldecode + decode.
-pub(crate) fn process_post_data(v: Value) -> Value {
-    match &v {
-        Value::String(s) => {
-            // jQuery posts raw JSON — no stripslashes (WP's version mangles
-            // legit \\" inside content). Try parse, else keep string.
-            let dec = url_decode(s.as_bytes());
-            serde_json::from_str(&dec).unwrap_or_else(|_| {
-                serde_json::from_str(s).unwrap_or(Value::String(dec))
-            })
-        }
-        Value::Object(o) => o.iter().map(|(k, x)| (k.clone(), process_post_data(x.clone()))).collect(),
-        Value::Array(a) => a.iter().map(|x| process_post_data(x.clone())).collect(),
-        _ => v.clone(),
-    }
-}
-
-/* ================= ajax dispatch ================= */
-
-fn fail(head: &str, msg: &str) -> Response {
-    (axum::Json(json!({"status":"failed","head":head,"message":msg}))).into_response()
-}
-fn ok_resp(extra: Value) -> Response {
-    let mut o = extra.as_object().cloned().unwrap_or_default();
-    o.insert("status".into(), json!("success"));
-    axum::Json(Value::Object(o)).into_response()
-}
-
-/// POST /admin/api/gdlr/ajax — mirrors wp-admin/admin-ajax.php dispatch.
-/// Content-Type is jQuery's default application/x-www-form-urlencoded with
-/// bracket-nested keys — parse into a nested map, then dispatch by `action`.
-pub async fn ajax(State(app): State<App>, headers: HeaderMap, body: String) -> Response {
-    let Ok((sess, sc)) = need_auth(&app, &headers) else {
-        return StatusCode::UNAUTHORIZED.into_response();
-    };
-    let form = parse_form_nested(&body);
-    if check_csrf(&sess, &s(&form, "security")).is_err() {
-        return fail("Invalid Nonce", "Please refresh the page and try again.");
-    }
-    // ajax_dispatch does synchronous rusqlite + element previews that run
-    // the full render pipeline — heavy enough to move off the worker (H14).
-    let sc2 = sc.clone();
-    tokio::task::spawn_blocking(move || {
-        let conn = match crate::db::conn(&sc2.db) {
-            Ok(c) => c,
-            Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-        };
-        ajax_dispatch(&conn, &sc2, &form)
-    })
-    .await
-    .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
-}
-
-/// Real dispatcher taking the parsed form map.
-pub(crate) fn ajax_dispatch(conn: &Connection, sc: &SiteCtx, form: &Map<String, Value>) -> Response {
-    let (defs_e, defs_w) = defs(sc);
-    PB_DEFS.with(|d| *d.borrow_mut() = defs_e.clone());
-    PB_TOUR_BASE.with(|t| *t.borrow_mut() = crate::admin::tour_base(sc).to_string());
-    let icons_val = icons(sc);
-    let action = s(form, "action");
-
-
-/// Options def for element/wrapper types not defined by gdlr-core (e.g.
-/// tour, content-navigation — registered by the traveltour theme which isn't
-/// vendored). Render one textarea per stored key so the user can still see
-/// and edit values instead of "Could not identify an option's type".
-fn fallback_def(values: &Map<String, Value>, typ: &str) -> Value {
-    let mut fields = serde_json::Map::new();
-    for k in values.keys() {
-        fields.insert(k.clone(), json!({
-            "title": k,
-            "type": "textarea",
-            "slug": k,
-        }));
-    }
-    json!({
-        "general": {
-            "title": format!("{} (theme-defined, raw fields)", typ),
-            "options": fields
-        }
-    })
-}
-    match action.as_str() {
-        "gdlr_core_get_pb_options" => {
-            let template = s(form, "template");
-            let values = process_post_data(get(form, "value").cloned().unwrap_or(json!({})));
-            let values = obj(Some(&values));
-            let item_options = match template.as_str() {
-                "element" => {
-                    let typ = s(form, "type");
-                    defs_e.get(&typ).and_then(|e| e.get("options")).cloned()
-                        .unwrap_or_else(|| fallback_def(&values, &typ))
-                }
-                "wrapper" => {
-                    let typ = s(form, "type");
-                    defs_w.get(&typ).and_then(|w| w.get("options")).cloned()
-                        .unwrap_or_else(|| fallback_def(&values, &typ))
-                }
-                "template" => json!({}),
-                _ => return fail("An Error Occurs", "Could not locate an option's template."),
-            };
-            ok_resp(json!({"option_content": options_lightbox(conn, &icons_val, &item_options, &values)}))
-        }
-        "gdlr_core_get_skin_options" => {
-            let mut content = String::from("<div class=\"gdlr-core-page-builder-options gdlr-core-page-builder-skin-options\" >");
-            content += "<div class=\"gdlr-core-page-builder-options-head\"><div class=\"gdlr-core-page-builder-options-head-title\"><i class=\"fa fa-gears\"></i>Skin Options</div>";
-            content += "<span class=\"gdlr-core-page-builder-options-head-close\" id=\"gdlr-core-page-builder-options-head-close\" ></span></div>";
-            content += "<div class=\"gdlr-core-page-builder-options-content\"><div class=\"gdlr-core-page-builder-options-tab-content\" ><div class=\"gdlr-core-page-builder-option-tab-content-item gdlr-core-active\" >";
-            let cur = get_setting(conn, "gdlr-core-skins-value");
-            let mut st = json!({
-                "slug": "skin", "value": cur,
-                "title": "Skin Settings", "type": "custom",
-                "item-type": "skin-settings", "wrapper-class": "gdlr-core-fullsize",
-                "options": {}
-            });
-            st.as_object_mut().unwrap();
-            content += &option_element(conn, &icons_val, &obj(Some(&st)));
-            content += "</div></div></div>";
-            content += "<div class=\"gdlr-core-page-builder-options-end\"><div class=\"gdlr-core-page-builder-options-save\" id=\"gdlr-core-page-builder-options-save\" ><i class=\"fa fa-save\"></i>Save Options</div></div></div>";
-            ok_resp(json!({"option_content": content}))
-        }
-        "gdlr_core_update_skin" => {
-            if let Some(v) = get(form, "value").and_then(|v| v.get("skin")) {
-                let val = process_post_data(v.clone());
-                put_setting(conn, "gdlr-core-skins-value", &val);
-                let mut combobox = String::new();
-                let prev = process_post_data(get(form, "skin").cloned().unwrap_or(Value::Null));
-                let prev = val_str(&prev);
-                if let Value::Object(skins) = get_setting(conn, "gdlr-core-skins") {
-                    for (sl, name) in skins {
-                        combobox += &format!("<option value=\"{}\" {} >{}</option>", esc(&sl), if prev == sl { "selected" } else { "" }, esc(&val_str(&name)));
-                    }
-                }
-                ok_resp(json!({"style": "", "combobox": combobox}))
-            } else {
-                fail("Empty Input Data", "Please try updating the skin again.")
-            }
-        }
-        "gdlr_core_get_pb_element_preview" => {
-            let typ = s(form, "type");
-            if typ.is_empty() { return fail("An Error Occurs", "Could not identify type."); }
-            let value = process_post_data(get(form, "value").cloned().unwrap_or(json!({})));
-            let content = element_preview_html(conn, &typ, &value);
-            ok_resp(json!({"preview_content": content}))
-        }
-        "gdlr_core_get_pb_wrapper_preview" => {
-            let typ = s(form, "type");
-            if typ.is_empty() { return fail("An Error Occurs", "Could not identify type."); }
-            let value = process_post_data(get(form, "value").cloned().unwrap_or(json!({})));
-            let node = json!({"template": "wrapper", "type": typ, "value": value});
-            let content = wrapper_template(conn, &obj(Some(&node)));
-            ok_resp(json!({"preview_content": content}))
-        }
-        "gdlr_core_save_page_builder_data" => {
-            let post_id = s(form, "post_id").parse::<i64>().unwrap_or(0);
-            let mut value = process_post_data(get(form, "value").cloned().unwrap_or(Value::Null));
-            // jQuery posts `value` as a JSON string; process_post_data may
-            // leave it as String if double-encoded — unwrap to the array.
-            for _ in 0..2 {
-                if let Value::String(txt) = &value {
-                    if let Ok(parsed) = serde_json::from_str::<Value>(txt) {
-                        value = parsed;
-                        continue;
-                    }
-                }
-                break;
-            }
-            if post_id > 0 && !is_empty(Some(&value)) {
-                let body_json = value.to_string();
-                match crate::db::save_body_json(&sc.db, post_id, &body_json) {
-                    Ok(()) => ok_resp(json!({})),
-                    Err(_) => fail("An Error Occurs", "Could not save the page."),
-                }
-            } else if !s(form, "template_type").is_empty() {
-                // saving to template settings page — persist into settings
-                put_setting(conn, "gdlr-core-pb-template-page", &value);
-                ok_resp(json!({}))
-            } else {
-                fail("Empty Input Data", "Something went wrong, please try contacting the administrator.")
-            }
-        }
-        "gdlr_core_pb_update_option" => {
-            let slug = s(form, "slug");
-            if slug.is_empty() { return fail("Empty Input Data", "Something went wrong."); }
-            let value = process_post_data(get(form, "value").cloned().unwrap_or(Value::Null));
-            put_setting(conn, &slug, &value);
-            ok_resp(json!({}))
-        }
-        "gdlr_core_get_pb_template" | "gdlr_core_get_pb_custom_template" | "gdlr_core_get_pb_sync_template" => {
-            let slug = s(form, "slug");
-            let key = match action.as_str() {
-                "gdlr_core_get_pb_custom_template" => "gdlr-core-pb-custom-template",
-                "gdlr_core_get_pb_sync_template" => "gdlr-core-pb-sync-template",
-                _ => "gdlr-core-pb-templates",
-            };
-            let list = get_setting(conn, key);
-            let data = list.get(&slug).map(|t| if action == "gdlr_core_get_pb_custom_template" { t.get("value").cloned().unwrap_or(Value::Null) } else { t.clone() }).unwrap_or(Value::Null);
-            let content = pb_items(conn, &defs_e, &data);
-            ok_resp(json!({"content": content}))
-        }
-        "gdlr_core_save_pb_custom_template" | "gdlr_core_save_pb_sync_template" => {
-            let title = s(form, "title");
-            let typ = s(form, "type");
-            let value = process_post_data(get(form, "value").cloned().unwrap_or(Value::Null));
-            if title.is_empty() || typ.is_empty() || is_empty(Some(&value)) {
-                return fail("Empty Input Data", "Could not save the template.");
-            }
-            let key = if action == "gdlr_core_save_pb_sync_template" { "gdlr-core-pb-sync-template" } else { "gdlr-core-pb-custom-template" };
-            let mut list = get_setting(conn, key).as_object().cloned().unwrap_or_default();
-            let new_nav = !list.contains_key(&title);
-            let mut item = json!({"title": title, "type": typ, "value": value});
-            if key == "gdlr-core-pb-sync-template" {
-                // mark first wrapper as synced to this slug
-                if let Value::Array(a) = item.get_mut("value").unwrap() {
-                    if let Some(first) = a.get_mut(0) {
-                        first.as_object_mut().map(|m| m.insert("sync-template".into(), json!(title)));
-                    }
-                }
-            }
-            list.insert(title.clone(), item);
-            put_setting(conn, key, &Value::Object(list));
-            let item_html = format!("<div class=\"gdlr-core-page-builder-head-content-{}-item gdlr-core-pb-list-draggable\" data-template=\"{}\" data-title=\"{}\" data-type=\"{}\" data-template-slug=\"{}\" ><span class=\"gdlr-core-page-builder-head-content-{}-title\" >{}</span><div class=\"gdlr-core-page-builder-head-content-{}-remove\" ><i class=\"fa fa-remove\" ></i></div></div>",
-                if key == "gdlr-core-pb-sync-template" { "sync-template" } else { "custom-template" },
-                if key == "gdlr-core-pb-sync-template" { "sync-template" } else { "custom-template" },
-                esc(&title), esc(&typ), esc(&title),
-                if key == "gdlr-core-pb-sync-template" { "sync-template" } else { "custom-template" }, esc(&title),
-                if key == "gdlr-core-pb-sync-template" { "sync-template" } else { "custom-template" });
-            ok_resp(json!({"new_nav_item": new_nav, "template": item_html}))
-        }
-        "gdlr_core_remove_pb_custom_template" | "gdlr_core_remove_pb_sync_template" => {
-            let slug = s(form, "slug");
-            let key = if action == "gdlr_core_remove_pb_sync_template" { "gdlr-core-pb-sync-template" } else { "gdlr-core-pb-custom-template" };
-            let mut list = get_setting(conn, key).as_object().cloned().unwrap_or_default();
-            list.remove(&slug);
-            put_setting(conn, key, &Value::Object(list));
-            ok_resp(json!({}))
-        }
-        "gdlr_get_gallery_options" => gallery_options_lightbox(conn, &icons_val, form),
-        _ => fail("An Error Occurs", "Please refresh the page to try again."),
-    }
-}
-
-/* ================= html_option_val localization ================= */
-
-/// gdlr_core_html_option::icons_js — icon picker HTML for lightbox.
 fn icons_js_html(icons_val: &Value) -> String {
     let mut ret = String::from("<div class=\"gdlr-core-custom-combobox gdlr-core-html-option-icons-type-combobox\" ><select class=\"gdlr-core-html-option-combobox gdlr-core-html-option-icons-type-select\" >");
     let types: Vec<String> = icons_val.as_object().map(|o| o.keys().cloned().collect()).unwrap_or_default();
@@ -2348,6 +1560,7 @@ fn icons_js_html(icons_val: &Value) -> String {
     ret += "</div>";
     ret
 }
+
 
 fn html_option_var(icons_val: &Value, csrf: &str) -> String {
     json!({
@@ -2390,6 +1603,7 @@ fn html_option_var(icons_val: &Value, csrf: &str) -> String {
 
 /// gdlr_core_html_option::tmce_init — editor wrap HTML for the dynamic tinymce
 /// field, plus a tinyMCEPreInit config matching the post editor's.
+
 fn tmce_init_html() -> String {
     let mut s = String::new();
     s += "<div id=\"wp-gdlr_core_tmce-wrap\" class=\"wp-core-ui wp-editor-wrap html-active\">";
@@ -2408,29 +1622,3 @@ fn tmce_init_html() -> String {
     s
 }
 
-/* ================= gallery lightbox (html-option.js) ================= */
-
-/// gdlr_core_html_option::get_gallery_options — per-image options lightbox.
-fn gallery_options_lightbox(conn: &Connection, icons_val: &Value, form: &Map<String, Value>) -> Response {
-    let opts = process_post_data(get(form, "options").cloned().unwrap_or(json!({})));
-    let vals = process_post_data(get(form, "value").cloned().unwrap_or(json!({})));
-    let vals_m = obj(Some(&vals));
-    if opts.is_null() { return fail("An Error Occurs", "No options defined."); }
-    let mut content = String::from("<div class=\"gdlr-core-gallery-lb-options\" >");
-    content += "<div class=\"gdlr-core-gallery-lb-head\" ><i class=\"fa fa-save\"></i><span class=\"gdlr-core-head\">Gallery Image Options</span><div class=\"gdlr-core-gallery-lb-head-close\" id=\"gdlr-core-gallery-lb-head-close\" ></div></div>";
-    content += "<div class=\"gdlr-core-gallery-lb-options\" >";
-    if let Value::Object(o) = &opts {
-        for (slug, ov) in o {
-            let mut def = ov.clone();
-            if let Value::Object(m) = &mut def {
-                m.insert("slug".into(), json!(slug));
-                if let Some(v) = vals_m.get(slug) { m.insert("value".into(), v.clone()); }
-            }
-            content += &option_element(conn, icons_val, &obj(Some(&def)));
-        }
-    }
-    content += "</div>";
-    content += "<div class=\"gdlr-core-gallery-lb-options-save\" id=\"gdlr-core-gallery-lb-options-save\" ><i class=\"fa fa-save\"></i>Save Options</div>";
-    content += "</div>";
-    ok_resp(json!({"option_content": content}))
-}

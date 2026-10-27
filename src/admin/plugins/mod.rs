@@ -30,6 +30,7 @@ use std::sync::LazyLock;
 
 pub(crate) mod theme_traveltour;
 pub(crate) mod tourmaster;
+pub(crate) mod goodlayers;
 /// Everything a kind editor needs — the four hooks the old `EditorPlugin`
 /// carried, verbatim. `KindDef.editor` is `None` for kinds with no plugin
 /// editor (core post/page use the classic editor).
@@ -292,6 +293,28 @@ pub(crate) trait PluginAdapter: Sync {
     fn write_specs(&self) -> &'static [crate::admin::bridge::pull::WriteSpec] {
         &[]
     }
+    /// Editor boot HTML for posts carrying plugin-owned layout data
+    /// (gdlr `body_json`). Called by the post-edit screen when the body
+    /// is plugin-formatted; `None` → classic editor only. (phase-07)
+    fn editor_boot(&self, _conn: &Connection, _sc: &SiteCtx, _post_id: i64, _body_json: &str, _csrf: &str) -> Option<String> {
+        None
+    }
+    /// `<link>`/`<script>` tags the edit page appends when `editor_boot`
+    /// emitted markup. `sc` lets the adapter fold opt-in state into the
+    /// emitted URLs (bridge ajax endpoints).
+    fn editor_assets(&self, _sc: &SiteCtx) -> Option<String> {
+        None
+    }
+    /// Map the admin path to the path inside the bridge WP (PhpBridge
+    /// only): `ajax` → `/wp-admin/admin-ajax.php`. Verbatim default.
+    fn bridge_path(&self, rest: &str) -> String {
+        format!("/{rest}")
+    }
+    /// `dir/main.php` inside wp-content/plugins the bridge activates
+    /// (PhpBridge only; "" → nothing activated).
+    fn wp_plugin_file(&self) -> &'static str {
+        ""
+    }
     /// Which backend the plugin runs on.
     fn backend(&self) -> Backend;
 }
@@ -338,7 +361,7 @@ static CORE_KINDS: &[KindDef] = &[
 ];
 
 /// Registered adapters — the compile-time plugin list.
-static ADAPTERS: &[&'static dyn PluginAdapter] = &[&tourmaster::ADAPTER, &theme_traveltour::ADAPTER];
+static ADAPTERS: &[&'static dyn PluginAdapter] = &[&tourmaster::ADAPTER, &theme_traveltour::ADAPTER, &goodlayers::ADAPTER];
 
 /// Indexed view over `ADAPTERS` + `CORE_KINDS`, built once.
 struct Registry {

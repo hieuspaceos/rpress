@@ -94,14 +94,18 @@ pub(crate) fn spawn(
     www: &std::path::Path,
     rpress_db: &std::path::Path,
     post_id: Option<i64>,
+    plugin_file: &str,
 ) -> Result<BridgeState> {
     match kind {
-        RuntimeKind::Playground => playground::spawn(site, slug, www, rpress_db, post_id),
+        RuntimeKind::Playground => playground::spawn(site, slug, www, rpress_db, post_id, plugin_file),
         RuntimeKind::PhpCgi => anyhow::bail!("php-cgi runtime not implemented in MVP (install Node + @wp-playground/cli)"),
     }
 }
 
-/// Get-or-spawn the bridge for `slug`; resets `last_used` on hit.
+/// Get-or-spawn the bridge for `slug`; resets `last_used` on hit. If the
+/// cached child's port is dead (killed externally), drop and respawn once —
+/// without this the map served a stale port forever and every proxied
+/// request degraded to the "Bridge unavailable" page until rpress restart.
 pub(crate) fn bridge_for<'a>(
     bridges: &'a mut HashMap<String, BridgeState>,
     site: &str,
@@ -110,10 +114,17 @@ pub(crate) fn bridge_for<'a>(
     www: &std::path::Path,
     rpress_db: &std::path::Path,
     post_id: Option<i64>,
+    plugin_file: &str,
 ) -> Result<&'a mut BridgeState> {
     let key = format!("{site}:{slug}");
+    if let Some(st) = bridges.get_mut(&key) {
+        if !st.rt.healthy() {
+            let mut st = bridges.remove(&key).unwrap();
+            let _ = st.rt.kill();
+        }
+    }
     if !bridges.contains_key(&key) {
-        let st = spawn(site, slug, kind, www, rpress_db, post_id)?;
+        let st = spawn(site, slug, kind, www, rpress_db, post_id, plugin_file)?;
         bridges.insert(key.clone(), st);
     }
     let st = bridges.get_mut(&key).unwrap();

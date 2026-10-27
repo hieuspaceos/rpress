@@ -25,25 +25,18 @@ pub(crate) fn request(
     s.set_write_timeout(Some(Duration::from_secs(30)))?;
 
     let mut req = format!("{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n");
-    let mut has_cl = false;
-    let mut has_te = false;
     for (k, v) in headers {
         let kl = k.to_ascii_lowercase();
-        // Hop-by-hop headers never cross the proxy.
-        if matches!(kl.as_str(), "host" | "connection" | "content-length" | "transfer-encoding" | "cookie") {
-            if kl == "content-length" {
-                has_cl = true;
-            }
-            if kl == "transfer-encoding" {
-                has_te = true;
-            }
+        // Hop-by-hop + framing headers never cross the proxy; we re-emit
+        // Content-Length below (forwarding the client's value would be
+        // correct too — the body is unmodified — but recomputing is the
+        // one code path that can't drift).
+        if matches!(kl.as_str(), "host" | "connection" | "content-length" | "transfer-encoding" | "cookie" | "expect") {
             continue;
         }
         req.push_str(&format!("{k}: {v}\r\n"));
     }
-    if !has_cl && !has_te {
-        req.push_str(&format!("Content-Length: {}\r\n", body.len()));
-    }
+    req.push_str(&format!("Content-Length: {}\r\n", body.len()));
     req.push_str("\r\n");
     s.write_all(req.as_bytes())?;
     if !body.is_empty() {

@@ -58,6 +58,21 @@ impl PluginAdapter for ThemeTraveltour {
     fn backend(&self) -> Backend {
         Backend::Data
     }
+    /* Theme option rows written inside the bridge (skins persist into
+       `traveltour_color`, style settings etc.). Pulled into the
+       `plugin:theme-traveltour:` namespace so rpress state mirrors the
+       WP-side option without a per-key allowlist. */
+    fn write_specs(&self) -> &'static [crate::admin::bridge::pull::WriteSpec] {
+        static SPECS: &[crate::admin::bridge::pull::WriteSpec] = &[
+            crate::admin::bridge::pull::WriteSpec {
+                table: crate::admin::bridge::pull::PullTable::Settings,
+                key_column: "key",
+                key_prefix: "traveltour%",
+                key_map: Some("plugin:theme-traveltour:"),
+            },
+        ];
+        SPECS
+    }
 }
 
 // ---------- runtime readers -------------------------------------------------

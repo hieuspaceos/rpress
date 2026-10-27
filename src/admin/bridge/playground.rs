@@ -11,7 +11,7 @@
 use super::{http, BridgeResponse, BridgeState, PhpRuntime};
 use anyhow::{Context, Result};
 use std::net::TcpListener;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::Instant;
 
@@ -51,29 +51,128 @@ pub(crate) fn spawn(
     www: &Path,
     rpress_db: &Path,
     post_id: Option<i64>,
+    plugin_file: &str,
 ) -> Result<BridgeState> {
     let dir = www.join("bridge").join(slug);
     if dir.exists() {
         std::fs::remove_dir_all(&dir).with_context(|| format!("wipe {}", dir.display()))?;
     }
-    std::fs::create_dir_all(dir.join("wp-content/mu-plugins"))?;
-    std::fs::write(dir.join("wp-content/mu-plugins/rpress-bridge.php"), MU_PLUGIN)?;
-    let wp_db = dir.join("wp.db");
+    // wp-content is mounted PER-SUBDIR, never wholesale: mounting
+    // `wp-content` itself (or `plugins`/`themes`/`database` wholesale)
+    // shadows the sqlite `db.php` drop-in and sqlite-database-integration
+    // — wpdb falls back to mysqli, `siteurl` reads empty, WP loops the
+    // installer forever. `plugins`/`themes` children mount individually;
+    // `database` is reserved for the dedicated db_dir below.
+    let wp_content = www.join("wp-content");
+    std::fs::create_dir_all(wp_content.join("mu-plugins"))?;
+    std::fs::write(wp_content.join("mu-plugins/rpress-bridge.php"), MU_PLUGIN)?;
+    let mut mounts: Vec<(PathBuf, String)> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&wp_content) {
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            if matches!(name.as_str(), "plugins" | "themes") {
+                if let Ok(kids) = std::fs::read_dir(e.path()) {
+                    for k in kids.flatten() {
+                        let kname = k.file_name().to_string_lossy().to_string();
+                        mounts.push((
+                            k.path(),
+                            format!("/wordpress/wp-content/{name}/{kname}"),
+                        ));
+                    }
+                }
+            } else if e.path().is_dir() && name != "database" {
+                mounts.push((e.path(), format!("/wordpress/wp-content/{name}")));
+            }
+        }
+    }
+    // sqlite-database-integration keeps its DB under wp-content/database/;
+    // mount a dedicated dir BEFORE the install or post-install mounts
+    // would shadow the tables WP just created (install loop again).
+    let db_dir = dir.join("db");
+    std::fs::create_dir_all(&db_dir)?;
+    let wp_db = db_dir.clone();
     if let Some(id) = post_id {
-        project_post(rpress_db, &wp_db, id)?;
+        project_post(rpress_db, &wp_content, id)?;
     }
 
     let token = format!("{:x}", rand::random::<u128>());
     std::fs::write(dir.join("bridge-token"), &token)?;
     let port = free_port()?;
 
+    // Tokens land as PHP constants via `--define`: process env does NOT
+    // propagate into PHP-WASM.
+    let mut args: Vec<String> = vec![
+        "--yes".into(),
+        "@wp-playground/cli".into(),
+        "server".into(),
+        "--port".into(),
+        port.to_string(),
+        "--site-url".into(),
+        format!("http://127.0.0.1:{port}"),
+        "--wp".into(),
+        "6.7".into(),
+        "--define".into(),
+        "RPRESS_BRIDGE_TOKEN".into(),
+        token.clone(),
+        "--define".into(),
+        "RPRESS_BRIDGE_PLUGIN".into(),
+        plugin_file.to_string(),
+    ];
+    /* The site's real theme — theme filters (skin slug, tourmaster element
+       registration) only exist while it's active. Settings key is the raw
+       WP `stylesheet` option (kept verbatim by import). */
+    if let Ok(c) = crate::db::conn(rpress_db) {
+        let theme: Option<String> = c
+            .query_row("SELECT value FROM settings WHERE key='stylesheet'", [], |r| r.get(0))
+            .ok()
+            .filter(|s: &String| !s.trim().is_empty());
+        if let Some(theme) = theme {
+            args.push("--define".into());
+            args.push("RPRESS_BRIDGE_THEME".into());
+            args.push(theme);
+        }
+        /* Element-provider parity: `active_plugins` re-activation is
+           needed only for plugins that register page-builder elements
+           (`gdlr_core_page_builder_element::add_element` — tourmaster's
+           tour/room elements). Activating the full origin list brings
+           admin-hijacking plugins (ml-slider wizard, cf7 welcome) that
+           302 every bridge request; activating nothing loses the tour
+           element class → options lightbox 500s. Scan mounted plugin
+           dirs for the registration call. */
+        if let Ok(raw) = c.query_row::<String, _, _>(
+            "SELECT value FROM settings WHERE key='active_plugins'", [], |r| r.get(0),
+        ) {
+            if let Ok(list) = crate::php_serialize::unserialize(raw.as_bytes()) {
+                if let serde_json::Value::Array(items) = list {
+                    let mut active: Vec<String> = items
+                        .iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .filter(|p| p.as_str() != plugin_file)
+                        .filter(|p| {
+                            p.split('/').next().map(|d| {
+                                dir_provides_pb_element(&wp_content.join("plugins").join(d))
+                            }).unwrap_or(false)
+                        })
+                        .collect();
+                    active.sort();
+                    active.dedup();
+                    if !active.is_empty() {
+                        args.push("--define".into());
+                        args.push("RPRESS_BRIDGE_PLUGINS".into());
+                        args.push(serde_json::to_string(&active).unwrap());
+                    }
+                }
+            }
+        }
+    }
+    args.push("--mount-before-install".into());
+    args.push(format!("{}:/wordpress/wp-content/database", db_dir.display()));
+    for (src, dst) in &mounts {
+        args.push("--mount".into());
+        args.push(format!("{}:{dst}", src.display()));
+    }
     let child = Command::new("npx")
-        .args([
-            "--yes", "@wp-playground/cli", "server",
-            "--port", &port.to_string(),
-            "--mount", &format!("{}:/wordpress", dir.display()),
-        ])
-        .env("RPRESS_BRIDGE_TOKEN", &token)
+        .args(&args)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -97,46 +196,54 @@ pub(crate) fn spawn(
     })
 }
 
-/// Project ONE post + its meta from rpress.db into a fresh wp.db shaped
-/// like WP's own tables (sqlite-database-integration reads these). The
-/// bridge gets `get_post`/`get_post_meta` for the post being edited —
-/// nothing else. wp.db is disposable; rpress.db stays the only truth.
-fn project_post(rpress_db: &Path, wp_db: &Path, post_id: i64) -> Result<()> {
+/// Project ONE post + its meta as `wp-content/rpress-seed/post.json` —
+/// the mu-plugin `wp_insert_post`s it on first admin request (WP must
+/// create its own tables first; direct SQLite projection would fight
+/// the installer). wp.db stays disposable; rpress.db is the only truth.
+fn project_post(rpress_db: &Path, wp_content: &Path, post_id: i64) -> Result<()> {
     let src = crate::db::conn(rpress_db).context("open rpress.db for projection")?;
-    let dst = rusqlite::Connection::open(wp_db).context("create wp.db")?;
-    dst.execute_batch(
-        "CREATE TABLE IF NOT EXISTS wp_posts(
-            ID INTEGER PRIMARY KEY, post_title TEXT, post_content TEXT,
-            post_excerpt TEXT, post_status TEXT, post_name TEXT,
-            post_type TEXT, post_parent INTEGER, menu_order INTEGER,
-            post_date TEXT, post_modified TEXT);
-         CREATE TABLE IF NOT EXISTS wp_postmeta(
-            meta_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            post_id INTEGER, meta_key TEXT, meta_value TEXT);
-         CREATE TABLE IF NOT EXISTS wp_options(
-            option_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            option_name TEXT UNIQUE, option_value TEXT);",
+    let post: Option<serde_json::Value> = src
+        .query_row(
+            "SELECT COALESCE(wp_id, id), title, body_html, excerpt, status,
+                    slug, kind, COALESCE(parent_id,0), COALESCE(menu_order,0),
+                    COALESCE(published_at,''), COALESCE(modified_at,'')
+             FROM posts WHERE id = ?1",
+            [post_id],
+            |r| {
+                Ok(serde_json::json!({
+                    "ID": r.get::<_, i64>(0)?,
+                    "post_title": r.get::<_, String>(1)?,
+                    "post_content": r.get::<_, Option<String>>(2)?,
+                    "post_excerpt": r.get::<_, Option<String>>(3)?,
+                    "post_status": r.get::<_, Option<String>>(4)?,
+                    "post_name": r.get::<_, Option<String>>(5)?,
+                    "post_type": r.get::<_, Option<String>>(6)?,
+                    "post_parent": r.get::<_, i64>(7)?,
+                    "menu_order": r.get::<_, i64>(8)?,
+                    "post_date": r.get::<_, String>(9)?,
+                    "post_modified": r.get::<_, String>(10)?,
+                }))
+            },
+        )
+        .ok();
+    let Some(post) = post else { return Ok(()) };
+    let mut st = src.prepare("SELECT meta_key, meta_value FROM post_meta WHERE post_id = ?1")?;
+    let meta: serde_json::Map<String, serde_json::Value> = st
+        .query_map([post_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<(String, String)>>>()?
+        .into_iter()
+        .map(|(k, v)| (k, serde_json::Value::String(v)))
+        .collect();
+    let seed_dir = wp_content.join("rpress-seed");
+    std::fs::create_dir_all(&seed_dir)?;
+    std::fs::write(
+        seed_dir.join("post.json"),
+        serde_json::to_string(&serde_json::json!({
+            "post": post, "meta": meta,
+        }))?,
     )?;
-    drop(dst);
-    src.execute("ATTACH DATABASE ?1 AS wp", [wp_db.to_string_lossy().as_ref()])?;
-    src.execute(
-        "INSERT INTO wp.wp_posts(ID, post_title, post_content, post_excerpt,
-             post_status, post_name, post_type, post_parent, menu_order,
-             post_date, post_modified)
-         SELECT COALESCE(wp_id, id), title, body_html, excerpt, status,
-             slug, kind, COALESCE(parent_id, 0), COALESCE(menu_order, 0),
-             COALESCE(published_at, ''), COALESCE(modified_at, '')
-         FROM posts WHERE id = ?1",
-        [post_id],
-    )?;
-    src.execute(
-        "INSERT INTO wp.wp_postmeta(post_id, meta_key, meta_value)
-         SELECT (SELECT COALESCE(wp_id, id) FROM posts WHERE id = ?1),
-             meta_key, meta_value
-         FROM post_meta WHERE post_id = ?1",
-        [post_id],
-    )?;
-    src.execute("DETACH DATABASE wp", [])?;
     Ok(())
 }
 
@@ -145,7 +252,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn project_post_copies_post_and_meta() {
+    fn project_post_writes_seed_json() {
         let dir = std::env::temp_dir().join(format!("rpress-proj-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -163,13 +270,42 @@ mod tests {
             [],
         ).unwrap();
         drop(c);
-        let wdb = dir.join("wp.db");
-        project_post(&rdb, &wdb, 7).unwrap();
-        let w = rusqlite::Connection::open(&wdb).unwrap();
-        let title: String = w.query_row("SELECT post_title FROM wp_posts WHERE ID=42", [], |r| r.get(0)).unwrap();
-        assert_eq!(title, "Hi");
-        let metas: i64 = w.query_row("SELECT COUNT(*) FROM wp_postmeta WHERE post_id=42", [], |r| r.get(0)).unwrap();
-        assert_eq!(metas, 2);
+        let wc = dir.join("wp-content");
+        project_post(&rdb, &wc, 7).unwrap();
+        let j: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(wc.join("rpress-seed/post.json")).unwrap(),
+        ).unwrap();
+        assert_eq!(j["post"]["post_title"], "Hi");
+        assert_eq!(j["post"]["ID"], 42);
+        assert_eq!(j["meta"]["gdlr-core-layout"], "wide");
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+/// True when `dir` contains PHP that registers a page-builder element
+/// (`gdlr_core_page_builder_element::add_element`). Bounded walk: element
+/// files live ~2-3 levels deep (`tour/include/pb/pb-element-tour.php`).
+fn dir_provides_pb_element(dir: &std::path::Path) -> bool {
+    fn walk(d: &std::path::Path, depth: u8) -> bool {
+        if depth > 4 {
+            return false;
+        }
+        let Ok(entries) = std::fs::read_dir(d) else { return false };
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                if walk(&p, depth + 1) {
+                    return true;
+                }
+            } else if p.extension().map(|x| x == "php").unwrap_or(false) {
+                if let Ok(s) = std::fs::read_to_string(&p) {
+                    if s.contains("add_element(") && s.contains("page_builder_element") {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+    walk(dir, 0)
 }

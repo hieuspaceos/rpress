@@ -22,7 +22,6 @@ mod auth;
 mod dashboard;
 mod gdlr;
 pub(crate) mod bridge;
-pub(crate) mod gdlr_pb;
 pub(crate) mod plugins;
 mod posts;
 mod revisions;
@@ -213,7 +212,7 @@ pub async fn serve(db: PathBuf, templates: PathBuf, out: PathBuf, www: PathBuf, 
         .route("/admin/vendor/htmx.min.js", get(admin::htmx))
         .route("/admin/{section}", get(posts::section))
         .route("/api/v1/gdlr/media", get(gdlr::media_list))
-        .route("/admin/api/gdlr/ajax", post(gdlr_pb::ajax))
+        .route("/admin/api/gdlr/ajax", post(gdlr_ajax))
         .route("/api/generate", post(admin::api_generate))
         .route("/api/generate/status", get(admin::generate_status))
         .route("/api/v1/posts", get(admin::api_posts))
@@ -1432,12 +1431,19 @@ async fn bridge_dispatch(
         .iter()
         .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or_default().to_string()))
         .collect();
-    let path = format!("/{rest}");
-
     let site = sc.slug.clone();
     let www = sc.www.clone();
     let db = sc.db.clone();
-    let specs = adapter.write_specs();
+    /* The bridge's wp.db hosts every mounted plugin AND the site's theme —
+       writes can land in keys owned by other adapters (e.g. skins write
+       `traveltour_color` — the theme's option, not `gdlr-core-%`). Pull with
+       the union of ALL adapters' write_specs, not just the dispatched one:
+       the whitelist is the safety boundary, not the dispatch adapter. */
+    let specs: Vec<crate::admin::bridge::pull::WriteSpec> = plugins::adapters()
+        .iter()
+        .flat_map(|a| a.write_specs().iter().copied())
+        .collect();
+    let path = adapter.bridge_path(rest);
     let bridges = sc.bridges.clone();
     // T25: the post being edited is the last numeric path segment
     // (e.g. `/admin/plugins/gdlr/page-builder/edit/42` → 42). No match
@@ -1447,17 +1453,18 @@ async fn bridge_dispatch(
         .find_map(|seg| seg.parse::<i64>().ok());
     let resp = tokio::task::spawn_blocking(move || {
         let mut map = bridges.lock();
-        let st = bridge::bridge_for(&mut map, &site, slug, bridge::RuntimeKind::Playground, &www, &db, post_id)?;
+        let st = bridge::bridge_for(&mut map, &site, slug, bridge::RuntimeKind::Playground, &www, &db, post_id, adapter.wp_plugin_file())?;
         let token = st.token.clone();
         let mut fwd = hdrs.clone();
         fwd.push(("X-Rpress-Bridge".into(), token));
         let r = st.rt.request(&method, &path, &fwd, &body)?;
         // Pull whitelisted writes in the same task — no drift window.
-        let _ = bridge::pull::pull(&st.wp_db, &db, specs);
+        if let Some(wp_db) = bridge::pull::locate(&st.wp_db) {
+            let _ = bridge::pull::pull(&wp_db, &db, &specs);
+        }
         Ok::<_, anyhow::Error>(r)
     })
     .await;
-
     match resp {
         Ok(Ok(r)) => {
             let mut b = axum::response::Response::builder().status(
@@ -1497,6 +1504,13 @@ async fn save_option_shim() -> Response {
     Redirect::temporary("/admin/plugins/tourmaster/save-option").into_response()
 }
 
+/// `/admin/api/gdlr/ajax` — legacy vendored-JS ajax URL → bridge screen.
+/// 307 keeps POST + body. `gdlr_pb` (the Rust port) was deleted after the
+/// real-site parity checklist passed (phase-07).
+async fn gdlr_ajax() -> Response {
+    Redirect::temporary("/admin/plugins/goodlayers/ajax").into_response()
+}
+
 /// Human label for a taxonomy (shared with tax.rs).
 pub(crate) fn tax_label(tax: &str) -> (String, String) {
     match tax {
@@ -1528,10 +1542,26 @@ pub(crate) fn esc(s: &str) -> String {
 
 async fn wp_asset(State(app): State<App>, headers: HeaderMap, Path(path): Path<String>) -> Response {
     let sc = site_for(&app, &headers);
-    let b = match safe_read_under(&sc.templates.join("admin/wp"), &path) {
-        Some(b) => b,
-        None => return StatusCode::NOT_FOUND.into_response(),
-    };
+    let mut b = safe_read_under(&sc.templates.join("admin/wp"), &path);
+    // `gdlr/<rest>` is the GoodLayers asset namespace: plugin assets live in
+    // the site's own wp-content (vendored, runs inside the bridge too).
+    // Order: goodlayers-core first (framework/js, include/js, images), then
+    // any sibling plugin dir (tourmaster/tourmaster.css et al.).
+    if b.is_none() {
+        if let Some(rest) = path.strip_prefix("gdlr/") {
+            let plugins = sc.www.join("wp-content/plugins");
+            b = safe_read_under(&plugins.join("goodlayers-core"), rest)
+                .or_else(|| safe_read_under(&plugins, rest))
+                // `gdlr/tourmaster.css` → `plugins/tourmaster/tourmaster.css`
+                // (sibling-plugin asset emitted under the gdlr namespace).
+                .or_else(|| {
+                    let p = std::path::Path::new(rest);
+                    let stem = p.file_stem().and_then(|s| s.to_str())?;
+                    safe_read_under(&plugins.join(stem), rest)
+                });
+        }
+    }
+    let Some(b) = b else { return StatusCode::NOT_FOUND.into_response() };
     let ct = match PathBuf::from(&path).extension().and_then(|s| s.to_str()).unwrap_or("") {
         "css" => "text/css; charset=utf-8",
         "js" => "text/javascript; charset=utf-8",

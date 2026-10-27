@@ -632,7 +632,7 @@ fn render_node(
             // Saved via TinyMCE: content may be entity-encoded — WP decodes on
             // output; mirror that so `<h1>` isn't printed as `&lt;h1&gt;`.
             if s.contains("&lt;") || s.contains("&gt;") {
-                *s = crate::admin::gdlr_pb::html_decode_pub(s);
+                *s = crate::html_decode::html_decode(s);
             }
             // gdlr_core_content_filter → do_shortcode + oembed for the small
             // set this site actually uses.

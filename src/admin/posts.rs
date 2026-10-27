@@ -1018,13 +1018,14 @@ pub(crate) fn edit_html(sc: &SiteCtx, s: &Sess, f: &crud::PostForm) -> String {
 
     let editor = if gdlr {
         let conn = crate::db::conn(&sc.db);
-        let boot = conn.ok().as_ref().map(|c| {
-            super::gdlr_pb::boot(
+        let gl = plugins::adapter_for_slug("goodlayers");
+        let boot = conn.ok().as_ref().and_then(|c| {
+            gl.and_then(|a| a.editor_boot(
                 c, sc,
                 f.id.unwrap_or(0),
                 if f.body_json.trim().is_empty() { "[]" } else { &f.body_json },
                 &s.csrf,
-            )
+            ))
         }).unwrap_or_default();
         format!(
             r###"{classic}
@@ -1054,7 +1055,7 @@ window.setUserSetting = window.setUserSetting || function(n, v) {{ try {{ localS
 window.deleteUserSetting = window.deleteUserSetting || function(n) {{ try {{ localStorage.removeItem('wp-' + n); }} catch (e) {{}} }};
 </script>"###,
             boot = boot,
-            assets = super::gdlr_pb::asset_tags(),
+            assets = gl.and_then(|a| a.editor_assets(sc)).unwrap_or_default(),
             // Classic editor first (above Page Builder) — it loads
             // tinymce.min.js itself; the builder script tag below is a
             // harmless second include.

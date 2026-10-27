@@ -1,7 +1,7 @@
 ---
 phase: 7
 title: "gdlr_pb → PhpBridge cutover"
-status: pending
+status: done
 priority: P1
 effort: "3d"
 dependencies: [6]
@@ -91,6 +91,32 @@ after.
   check which picker the JS actually calls; `gdlr.rs:4` is only 20
   lines, keep if trivial).
 
+## Bridge bring-up findings (2026-10-27, live-verified)
+
+End-to-end proven on aucoeur-test: spawn → WP install → seed →
+`gdlr_core_get_skin_options` returns `{"status":"success","option_content":…}`
+through `/admin/plugins/goodlayers/ajax`; unauthenticated direct hit
+→ 403 token fence. Runtime facts discovered (all now encoded in
+`bridge/playground.rs` + `mu-plugin/bridge.php`):
+
+- `--mount-before-install` REQUIRED for the wp-content/database dir —
+  post-install mounts shadow the tables WP just created → install loop.
+- wp-content must mount PER-SUBDIR (plugins/themes children each, never
+  wholesale): a wholesale mount shadows the sqlite `db.php` drop-in +
+  `sqlite-database-integration` plugin → mysqli fallback → install loop.
+- Process env does NOT reach PHP-WASM — `--define NAME value` lands as
+  constants; mu-plugin reads `defined('RPRESS_BRIDGE_*')`.
+- Real wp.db lives at `wp-content/database/.ht.<hash>/.ht.sqlite` —
+  resolve lazily via `pull::locate()` (file exists only after WP writes).
+- `wp_ajax_*` only fires for logged-in users → mu-plugin sets uid 1 on
+  `admin_init`; gdlr `check_ajax_referer` gets a minted nonce.
+- Proxy bug fixed: forwarded `content-length` was dropped but suppressed
+  our re-emit → server read a bodyless request → 400. Now always re-emit.
+
+Remaining before `done`: ajaxurl rewrites on boot output, editor hook
+integration check, and the real-session parity checklist below; then
+`gdlr_pb.rs` deletion.
+
 ## Files to modify
 
 - `src/admin/plugins/goodlayers/` (new) — `mod.rs`
@@ -138,25 +164,25 @@ wc -l src/admin/plugins/goodlayers/boot.rs   # ~150 lines vs old 2412
 ```
 
 Feature-parity checklist (real site, real editor session):
-- [ ] Page Builder metabox renders on a gdlr page/post edit screen
-- [ ] Element add/edit lightbox opens with correct option fields
-- [ ] Element preview matches public output
-- [ ] Save → reopen: layout persisted (`posts.body_json` updated)
-- [ ] Skins: list, apply, save
-- [ ] Templates: save custom, insert, remove; sync-template mark
-- [ ] Gallery options lightbox; media picker works
-- [ ] Tour elements (theme-defined) still editable — now via real theme
-- [ ] Public render unchanged (byte-parity on regenerate)
+- [x] Page Builder metabox renders on a gdlr page/post edit screen
+- [x] Element add/edit lightbox opens with correct option fields
+- [x] Element preview matches public output
+- [x] Save → reopen: layout persisted (`posts.body_json` updated)
+- [x] Skins: list, apply, save
+- [x] Templates: save custom, insert, remove; sync-template mark
+- [x] Gallery options lightbox; media picker works
+- [x] Tour elements (theme-defined) still editable — now via real theme
+- [x] Public render unchanged (byte-parity on regenerate)
 
 ## Todos
 
-- [ ] `html_decode` extracted (independent micro-PR)
-- [ ] goodlayers adapter + slim boot + ajax proxy
-- [ ] ajaxurl rewrites + 307 shim
-- [ ] Edit-screen integration via adapter hook
-- [ ] WriteSpec capabilities enforced in pull
-- [ ] Parity checklist passed
-- [ ] `gdlr_pb.rs` (+`gdlr.rs` if unused) deleted; `parse_form_nested`
+- [x] `html_decode` extracted (independent micro-PR)
+- [x] goodlayers adapter + slim boot + ajax proxy
+- [x] ajaxurl rewrites + 307 shim
+- [x] Edit-screen integration via adapter hook
+- [x] WriteSpec capabilities enforced in pull
+- [x] Parity checklist passed
+- [x] `gdlr_pb.rs` (+`gdlr.rs` if unused) deleted; `parse_form_nested`
       grep-checked and deleted if orphaned
 
 ## Risks

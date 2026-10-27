@@ -142,6 +142,7 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
                     if plugin_opt || matches!(
                         k.as_str(),
                         "page_on_front" | "show_on_front" | "siteurl"
+                            | "stylesheet" | "template" | "active_plugins"
                             | "blogname" | "rss_use_excerpt"
                             | "require_name_email" | "comment_moderation"
                             | "comment_max_links" | "comment_previously_approved"
@@ -698,6 +699,10 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
             "blacklist_keys" => "disallowed_keys",
             "close_comments_for_old_posts" => "close_comments",
             "show_comments_cookies_opt_in" => "comment_cookies",
+            /* Theme identity is needed by the PHP bridge (theme filters like
+               `gdlr_core_skin_option_slug` only register when the real theme
+               is active). Keep WP's option names — no rename: readers use
+               `stylesheet`/`template` verbatim. */
             other => other,
         };
         stmt_set.execute(params![k, v])?;

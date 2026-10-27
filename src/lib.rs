@@ -1,6 +1,7 @@
 pub mod auth;
 #[macro_use]
 pub mod db;
+pub mod html_decode;
 pub mod forms_markup;
 pub mod generate;
 pub mod import;
