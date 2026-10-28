@@ -1,7 +1,7 @@
 ---
 phase: 5
 title: "Visual smoke harness + aucoeur regression gate"
-status: pending
+status: done
 priority: P1
 effort: "1d"
 dependencies: [1, 2, 3, 4, 6]

@@ -179,6 +179,25 @@ cp sites/_template.env sites/mysite.env   # or let `site init` write it
 and rewrites plain-text URL columns (`menu_items.url`,
 `redirects.new_url`).
 
+### Visual smoke checklist
+
+`scripts/visual_smoke.sh` is the structural render gate for the
+site-agnostic chrome work (plan `261028-site-agnostic-chrome`). Run it
+after touching `templates/theme/`, menu/site_data plumbing, or plugin
+migrate code:
+
+```bash
+./scripts/visual_smoke.sh              # all sites
+./scripts/visual_smoke.sh blueskies    # one site
+```
+
+Gate contract: per site it renders known slugs and asserts no `{{ }}`
+leakage, no foreign-theme chrome (`traveltour` on tevily sites, aucoeur
+strings elsewhere), menu presence, and — for aucoeur-test only — byte
+parity of nav `<li>` sequence + footer text against
+`tests/fixtures/aucoeur-*-baseline.txt` (recapture via the fixture
+comments after intentional chrome changes).
+
 ### Plugin settings & migration (operator notes)
 
 - Plugin-registered adapters (e.g. `tourmaster`, `theme-traveltour`)

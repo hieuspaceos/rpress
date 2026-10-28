@@ -1,0 +1,50 @@
+COLLECTIONS DE VOYAGE -> http://localhost:8400/collections-de-voyage-au-vietnam/
+Voyage au Vietnam -> http://localhost:8400/region/voyage-au-vietnam/
+Voyage au Vietnam du Nord -> http://localhost:8400/region/voyage-au-vietnam-du-nord/
+Voyage au Vietnam du Sud -> http://localhost:8400/region/voyage-au-vietnam-du-sud/
+Voyage au Centre du Vietnam -> http://localhost:8400/region/voyage-au-centre-du-vietnam/
+Excursions 1-2-3-4 ... jours -> http://localhost:8400/duree/excursion-1-2-3-4-jours-au-vietnam/
+Programme de 10 – 12 jours -> http://localhost:8400/duree/circuit-vietnam-10-jours-12-jours/
+Programme de 2 semaines -> http://localhost:8400/duree/circuit-vietnam-15-jours/
+Programme de 3 semaines -> http://localhost:8400/duree/circuit-vietnam-3-semaines/
+Voyage en couple -> http://localhost:8400/profil/voyage-en-couple/
+Voyage en famille -> http://localhost:8400/profil/voyage-en-famille/
+Voyage entre amis -> http://localhost:8400/profil/voyage-entre-amis/
+Rejoindre un groupe -> http://localhost:8400/profil/rejoindre-un-groupe/
+Tous styles -> http://localhost:8400/style/tous-styles/
+Vietnam en liberté -> http://localhost:8400/style/vietnam-en-liberte/
+Gastronomie -> http://localhost:8400/style/gastronomie/
+Culture ethnique -> http://localhost:8400/style/rencontre-ethnique/
+Trek &amp; randonnée -> http://localhost:8400/style/trek-randonnee/
+Extension plage -> http://localhost:8400/style/circuit-extension-plage/
+Bike-tour -> http://localhost:8400/style/bike-tour/
+Voyage moto -> http://localhost:8400/style/voyage-moto/
+Croisière -> http://localhost:8400/style/croisiere/
+Charme &amp; chic -> http://localhost:8400/style/charme-chic/
+Voyage sur mesure au Vietnam -> http://localhost:8400/voyage-sur-mesure-au-vietnam/
+INFOS & IDÉES -> http://localhost:8400/inspirations-de-voyage-au-vietnam/
+GUIDE DE VOYAGE -> http://localhost:8400/guide-de-voyage-vietnam/conseils-pratiques-vietnam/
+Visa pour le Vietnam -> http://localhost:8400/visa-pour-le-vietnam/
+Visa pour le Cambodge -> http://localhost:8400/visa-pour-le-cambodge-cea/
+Avant de partir en Indochine -> http://localhost:8400/voyage-en-indochine-vietnam-cambodge-laos/
+Meilleure période de voyage -> http://localhost:8400/meilleure-periode-pour-aller-au-vietnam/
+Services de santé au Vietnam -> http://localhost:8400/services-de-sante-au-vietnam/
+Vaccins pour le Vietnam -> http://localhost:8400/vaccins-pour-le-vietnam-obligatoires/
+Pourboire au Vietnam -> http://localhost:8400/pourboire-au-vietnam/
+Autres conseils pratiques -> http://localhost:8400/guide-de-voyage-vietnam/conseils-pratiques-vietnam/
+BLOG DU VIETNAM -> http://localhost:8400/blog-de-voyage-au-vietnam/
+Culture ethnique -> http://localhost:8400/decouvrir-les-ethnies-minoritaires-du-vietnam/
+Cuisine vietnamienne -> http://localhost:8400/explorer-la-cuisine-vietnamienne/
+Parcs nationaux -> http://localhost:8400/8-parcs-nationaux-du-vietnam-a-ne-pas-manquer/
+Plages paradisiaques -> http://localhost:8400/top-7-des-plus-belles-plages-du-vietnam/
+Métiers d’artisanat -> http://localhost:8400/decouvrir-les-9-metiers-dartisanat-du-vietnam/
+Hôtels de charme & luxe -> http://localhost:8400/decouvrez-10-hotels-de-luxe-au-vietnam/
+Croisières au Vietnam -> http://localhost:8400/croisiere-au-vietnam/
+Plongée au Vietnam -> http://localhost:8400/plongee-au-vietnam/
+Voyage en famille -> http://localhost:8400/profil/voyage-en-famille/
+VIETNAM en liberté -> http://localhost:8400/style/vietnam-en-liberte/
+Voyage pas cher/confortable -> http://localhost:8400/voyage-vietnam-pas-cher-voyage-confortable/
+Guide francophone -> http://localhost:8400/guide-francophone-au-vietnam-lame-du-voyage/
+Chauffeur guide francophone -> http://localhost:8400/chauffeur-guide-francophone-au-vietnam/
+Activités les plus appréciées -> http://localhost:8400/activites-au-vietnam-les-plus-appreciees/
+Rencontre avec un personnage -> http://localhost:8400/rencontre-avec-un-personnage-au-vietnam/
