@@ -101,6 +101,7 @@ CREATE TABLE IF NOT EXISTS menu_items(
   title_attr TEXT NOT NULL DEFAULT '',
   target TEXT NOT NULL DEFAULT '',
   classes TEXT NOT NULL DEFAULT '',
+  mega TEXT NOT NULL DEFAULT '',
   xfn TEXT NOT NULL DEFAULT '',
   description TEXT NOT NULL DEFAULT ''
 );
@@ -253,7 +254,8 @@ CREATE TABLE IF NOT EXISTS widgets(
   type TEXT NOT NULL,
   title TEXT NOT NULL DEFAULT '',
   settings_json TEXT NOT NULL DEFAULT '{}',
-  ord INTEGER NOT NULL DEFAULT 0
+  ord INTEGER NOT NULL DEFAULT 0,
+  lang TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_widgets_sidebar ON widgets(sidebar_id, ord);
 CREATE INDEX IF NOT EXISTS idx_post_meta_key ON post_meta(meta_key);
@@ -290,8 +292,10 @@ const MIGRATIONS: &[(&str, &str, &str)] = &[
     ("menu_items", "title_attr", "TEXT NOT NULL DEFAULT ''"),
     ("menu_items", "target", "TEXT NOT NULL DEFAULT ''"),
     ("menu_items", "classes", "TEXT NOT NULL DEFAULT ''"),
+    ("menu_items", "mega", "TEXT NOT NULL DEFAULT ''"),
     ("menu_items", "xfn", "TEXT NOT NULL DEFAULT ''"),
     ("menu_items", "description", "TEXT NOT NULL DEFAULT ''"),
+    ("widgets", "lang", "TEXT NOT NULL DEFAULT ''"),
     ("menus", "auto_add", "INTEGER NOT NULL DEFAULT 0"),
     ("sessions", "expires_at", "INTEGER NOT NULL DEFAULT 0"),
     ("sessions", "csrf", "TEXT NOT NULL DEFAULT ''"),

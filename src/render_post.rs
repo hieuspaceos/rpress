@@ -780,7 +780,7 @@ fn hreflang_links(alternates: &[(String, String)]) -> String {
 
 /// post_content → article HTML: entity-preserve, wpautop, wptexturize(FR),
 /// caption/button/embed/icon shortcodes, then ez-toc anchors + container.
-fn filter_content(raw: &str, site: &str, post_id: i64, conn: &Connection) -> String {
+pub(crate) fn filter_content(raw: &str, site: &str, post_id: i64, conn: &Connection) -> String {
     let mut s = rewrite_origin(raw, site, conn);
     s = expand_body_shortcodes(&s, site);
     s = wpautop(&s);

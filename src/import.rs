@@ -7,7 +7,7 @@ use crate::sqldump::rows as dump_rows;
 use anyhow::{Context, Result};
 use rusqlite::params;
 use serde_json::{json, Map, Value};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
@@ -24,6 +24,7 @@ const WANTED: &[&str] = &[
     "wp_options",
     "wp_rank_math_redirections",
     "wp_glsr_ratings",
+    "wp_snippets",
     "wp_glsr_assigned_posts",
 ];
 
@@ -79,6 +80,13 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
     let mut redirs: Vec<(String, String)> = Vec::new();
     let mut ratings: HashMap<i64, i64> = HashMap::new(); // rating_id -> review post_id
     let mut assigned: Vec<(i64, i64)> = Vec::new(); // rating_id -> assigned post_id
+    // Code Snippets rows (id, code) — enabled wp_footer/wp_head snippets
+    // carry literal HTML the theme never stored (floating-button rail).
+    let mut snippets: Vec<(i64, String)> = Vec::new();
+    // term_id -> parent term_id from wp_term_taxonomy.parent (terms.parent_id
+    // stays NULL — the taxonomy_map is the category hierarchy of record;
+    // widget include-mode needs the real WP edges).
+    let mut term_parents: HashMap<i64, i64> = HashMap::new();
 
     let mut rep = Report::default();
 
@@ -93,6 +101,7 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
             Some("comments") => "wp_comments",
             Some("commentmeta") => "wp_commentmeta",
             Some("options") => "wp_options",
+            Some("snippets") => "wp_snippets",
             Some("users") => "wp_users",
             _ => table,
         };
@@ -118,7 +127,20 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
                 let term_id = v[1].as_i64().unwrap_or(0);
                 let tax = v[2].to_string_lossy().unwrap_or_default();
                 let desc = v[3].to_string_lossy().unwrap_or_default();
+                if let Some(parent) = v[4].as_i64().filter(|p| *p > 0) {
+                    term_parents.insert(term_id, parent);
+                }
                 ttax.insert(tt_id, (term_id, tax, desc));
+            }
+            "wp_snippets" => {
+                // (id, name, description, code, tags, scope, priority,
+                // active, …) — active rows only; PHP blocks are filtered
+                // to their literal HTML at settings write time.
+                if let (Some(id), Some(code)) = (v[0].as_i64(), v[3].to_string_lossy()) {
+                    if v[7].as_str() == Some("1") || v[7].as_i64() == Some(1) {
+                        snippets.push((id, code));
+                    }
+                }
             }
             "wp_term_relationships" => {
                 if let (Some(o), Some(t)) = (v[0].as_i64(), v[1].as_i64()) {
@@ -202,9 +224,14 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
                             | "gdlr-core-page-builder-view-mode" | "polylang"
                             | "blogdescription" | "traveltour_general"
                             | "ssb_buttons" | "ssb_settings" | "site_icon" | "auhfc_settings_sitewide"
+                            | "sidebars_widgets"
                     ) || k.starts_with("theme_mods_")
                         || k.starts_with("chaty_")
-                        || k.starts_with("cht_") {
+                        || k.starts_with("cht_")
+                        /* Widget instances: `sidebars_widgets` maps each WP
+                           sidebar to its ordered widget ids; `widget_{id_base}`
+                           holds the instance payloads those ids index into. */
+                        || k.starts_with("widget_") {
                         options.insert(k, mv);
                     }
                 }
@@ -361,6 +388,12 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
             "post" => Some("post"),
             "page" => Some("page"),
             "site-review" => Some("site-review"),
+            // MetaSlider: slider CPT + its slide children (linked via the
+            // `ml-slider` taxonomy, term slug = slider post id). No routes
+            // — generate only selects post/page/tour; [metaslider] reads
+            // these rows from the DB at expand time.
+            "ml-slider" => Some("ml-slider"),
+            "ml-slide" => Some("ml-slide"),
             _ => None,
         }
     };
@@ -720,12 +753,48 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
         } else {
             p.title.clone()
         };
+        /* Menu labels may embed HTML (traveltour mega-menu image items:
+           `<img src="{origin}/wp-content/uploads/…">text`) — rewrite the
+           site's own host to `{{ site_url }}` like widget bodies so menu
+           images serve from the local asset space instead of hotlinking
+           the origin. `url`/type fields stay verbatim — resolve_menu_url
+           handles link rewrites separately. */
+        let label = rewrite_own(
+            &label,
+            &options.get("siteurl").cloned().unwrap_or_default(),
+        );
         let url = if type_ == "custom" {
             meta1(p, "_menu_item_url").unwrap_or_default()
         } else {
             String::new()
         };
         let object_id: Option<i64> = meta1(p, "_menu_item_object_id").and_then(|s| s.parse().ok());
+        // `_menu_item_classes` is a serialized array of extra <li> classes
+        // (e.g. traveltour-mega-menu) — WP joins them onto the synthetic
+        // menu-item-* set; store verbatim for the renderer to merge.
+        let classes: Vec<String> = p
+            .meta
+            .get("_menu_item_classes")
+            .map(|vals| {
+                vals.iter()
+                    .filter_map(|v| unserialize(v.as_bytes()).ok())
+                    .filter_map(|v| match v {
+                        Value::Array(items) => Some(
+                            items
+                                .iter()
+                                .filter_map(|x| x.as_str().map(str::to_string))
+                                .collect::<Vec<_>>()
+                                .join(" "),
+                        ),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        // `gdlr_core_nav_menu_custom` (serialized assoc) carries the
+        // traveltour mega-menu config (enable-mega-menu, section sizes) —
+        // stored raw; the renderer parses the fields it needs.
+        let mega = meta1(p, "gdlr_core_nav_menu_custom").unwrap_or_default();
         stmt_mi.execute(params![
             p.id,
             mid,
@@ -738,6 +807,8 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
             url,
             object_id,
             item_type,
+            classes.join(" "),
+            mega,
         ])?;
     }
 
@@ -753,6 +824,78 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
     let langs = languages.iter().cloned().collect::<Vec<_>>().join(",");
     stmt_set.execute(params!["languages", langs])?;
     stmt_set.execute(params!["primary_lang", primary.clone()])?;
+
+    /* WP widget instances → `widgets` rows. `sidebars_widgets` gives each WP
+       sidebar's ordered instance ids; `widget_{id_base}` holds the instance
+       payload (title/text/filter/…). Rows are built before `import_expect`
+       so the verify key mirrors what actually landed. Site data wins over
+       the theme/plugin seed rows: imported ids collide with seed ids on
+       dumps that authored them (INSERT OR REPLACE below). */
+    let site_langs: Vec<String> = languages.iter().cloned().collect();
+    let widget_rows = build_widget_rows(
+        &tx, &options, &site_langs, &primary, &term_parents, &mut rep)?;
+
+    {
+        let mut stmt_w = tx.prepare(
+            "INSERT OR REPLACE INTO widgets(id, sidebar_id, type, title, settings_json, ord, lang) \
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        )?;
+        let mut stmt_sb = tx.prepare(
+            "INSERT OR IGNORE INTO sidebars(id, name, lang) VALUES(?1, ?2, ?3)",
+        )?;
+        for w in &widget_rows {
+            stmt_sb.execute(params![w.sidebar, w.sidebar, "all"])?;
+            stmt_w.execute(params![
+                w.id, w.sidebar, w.typ, w.title, w.settings, w.ord, w.lang
+            ])?;
+        }
+    }
+
+    /* Imported widget data is complete — stamp the seed-schema version so
+       `widgets::ensure()` short-circuits its upgrade instead of grafting
+       the theme's static seed rows onto real site widgets. Only when the
+       dump declared its widget layout at all: without `sidebars_widgets`
+       there is nothing to protect from seeding. */
+    if options.contains_key("sidebars_widgets") {
+        stmt_set.execute(params!["widgets_schema_v", crate::widgets::SEED_VERSION])?;
+    }
+
+    /* Pin the dump's origin for render-time rewriting (`rewrite_origin`,
+       menu alias lists): import-only pipelines otherwise leave
+       own-domain links pointing at the source host. OR IGNORE keeps a
+       value configure already pinned. */
+    if let Some(o) = options.get("siteurl").filter(|o| !o.is_empty()) {
+        let mut stmt_oi = tx.prepare(
+            "INSERT OR IGNORE INTO settings(key, value) VALUES(?1, ?2)",
+        )?;
+        stmt_oi.execute(params!["legacy_origin", o])?;
+        stmt_oi.execute(params!["asset_origin", o])?;
+    }
+
+    /* Enabled Code Snippets carry literal HTML blocks the theme never
+       stored (the aucoeur floating-button rail + its lang strip).
+       Bucket by the WP hook the snippet registers so chrome emits them
+       at the same page position. */
+    {
+        let (mut foot, mut head) = (String::new(), String::new());
+        for (_id, code) in &snippets {
+            let html = snippet_html(code, options.get("siteurl").map(String::as_str).unwrap_or(""));
+            if html.is_empty() {
+                continue;
+            }
+            if code.contains("wp_head") {
+                head.push_str(&html);
+            } else {
+                foot.push_str(&html);
+            }
+        }
+        if !foot.is_empty() {
+            stmt_set.execute(params!["snippets_footer_html", foot])?;
+        }
+        if !head.is_empty() {
+            stmt_set.execute(params!["snippets_head_html", head])?;
+        }
+    }
 
     {
         let mut expect: std::collections::BTreeMap<String, i64> = Default::default();
@@ -790,6 +933,7 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
         expect.insert("comments_total".into(),
             comments.iter().filter(|c| wp_to_cms.contains_key(&c.1)).count() as i64);
         expect.insert("redirects".into(), redirs.len() as i64);
+        expect.insert("widgets".into(), widget_rows.len() as i64);
         expect.insert("translation_members".into(),
             trans_groups.iter()
                 .map(|(_, m)| m.iter().filter(|(_, id)| wp_to_cms.contains_key(id)).count() as i64)
@@ -1062,6 +1206,1325 @@ fn import_media(p: &Post, stmt: &mut rusqlite::Statement, rep: &mut Report) -> R
         w,
         h,
         sizes.to_string(),
+        p.title,
     ])?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// WP widgets import — sidebars_widgets + widget_* options → widgets table
+// ---------------------------------------------------------------------------
+
+/// One widgets-table row produced from a WP widget instance. `lang` is
+/// the emitted copy's language for lang-scoped regions (footers, the
+/// synthesized sidebar-post/archive), the instance's own `pll_lang` (or
+/// '' when untagged) for Fixed regions — '' renders on every language,
+/// a pll tag only on its own.
+struct WidgetRow {
+    id: String,
+    sidebar: String,
+    typ: String,
+    title: String,
+    settings: String,
+    ord: i64,
+    lang: String,
+}
+
+/// Sidebar routing per WP sidebar id. `Lang` regions expand per site
+/// language (`-{lang}` suffix — the renderer resolves `sidebar-post` /
+/// `footer-N` per page language); `Fixed` keeps a literal region id.
+#[derive(Clone, Copy)]
+enum SidebarTarget {
+    Lang(&'static str),
+    Fixed(&'static str),
+}
+
+/// WP sidebar id → rpress sidebar routing. `Lang` regions expand per site
+/// language (`-{lang}` suffix — the renderer resolves `footer-N` per page
+/// language); `Fixed` keeps a literal region id. The blog-family sidebars
+/// (`blog`, `blog-left`, `blog-right`, `gdlr-core-sidebar-preset`) import
+/// verbatim under their own WP ids: the theme option (`traveltour_general`)
+/// then picks which of them feed the `sidebar-post-*` / `sidebar-archive-*`
+/// render regions — see `synthesize_theme_regions`. Everything not listed
+/// is a dump-internal region (`wp_inactive_widgets`, `itsec_cron`,
+/// mega-menu internals, `array_version`, …) and imports nothing.
+fn sidebar_target(wp_sidebar: &str) -> Option<SidebarTarget> {
+    match wp_sidebar {
+        "footer-1" => Some(SidebarTarget::Lang("footer-1")),
+        "footer-2" => Some(SidebarTarget::Lang("footer-2")),
+        "footer-3" => Some(SidebarTarget::Lang("footer-3")),
+        "footer-4" => Some(SidebarTarget::Lang("footer-4")),
+        "blog" => Some(SidebarTarget::Fixed("blog")),
+        "blog-left" => Some(SidebarTarget::Fixed("blog-left")),
+        "blog-right" => Some(SidebarTarget::Fixed("blog-right")),
+        "gdlr-core-sidebar-preset" => {
+            Some(SidebarTarget::Fixed("gdlr-core-sidebar-preset"))
+        }
+        "single-tour" => Some(SidebarTarget::Fixed("sidebar-tour")),
+        "tour-list" => Some(SidebarTarget::Fixed("tour-list")),
+        "payment" => Some(SidebarTarget::Fixed("payment")),
+        _ => None,
+    }
+}
+
+/// Build every widgets-table row the dump's options describe. Instances in
+/// Polylang-scoped regions (footers) land on their own `pll_lang` column —
+/// an untagged instance clones to every site language (WP renders it
+/// everywhere; clones take a `-{lang}` id suffix since `widgets.id` is the
+/// primary key). `Fixed` regions (blog sidebars, single-tour, tour-list,
+/// payment) import one verbatim row per instance under the WP sidebar id;
+/// blog-family rows are then redistributed onto the theme-selected
+/// `sidebar-{post,archive}-{lang}` render regions by
+/// `synthesize_theme_regions`.
+fn build_widget_rows(
+    tx: &rusqlite::Transaction,
+    options: &HashMap<String, String>,
+    site_langs: &[String],
+    primary: &str,
+    term_parents: &HashMap<i64, i64>,
+    rep: &mut Report,
+) -> Result<Vec<WidgetRow>> {
+    let mut out: Vec<WidgetRow> = Vec::new();
+    let Some(raw) = options.get("sidebars_widgets") else {
+        return Ok(out);
+    };
+    let sw = match unserialize(raw.as_bytes()) {
+        Ok(Value::Object(m)) => m,
+        Ok(_) => {
+            rep.log("sidebars_widgets: not an assoc — no widgets imported".to_string());
+            return Ok(out);
+        }
+        Err(e) => {
+            rep.unser_errors += 1;
+            rep.log(format!("sidebars_widgets unserialize: {e}"));
+            return Ok(out);
+        }
+    };
+    let origin = options.get("siteurl").cloned().unwrap_or_default();
+
+    // `widget_{type}` options parse once per type — an id base can appear
+    // in several sidebars (blog-left AND blog-right both list search-4…).
+    let mut wopt: HashMap<String, Option<Value>> = HashMap::new();
+    /* Per-target running ord: for Lang regions the cloned loop emits one
+       sidebar's instances consecutively per lang, so the counter equals
+       the WP array index for each accepted instance. Synthesized theme
+       regions get their own counter below. */
+    let mut ords: HashMap<String, i64> = HashMap::new();
+    let mut skipped: Vec<String> = Vec::new();
+
+    /* Blog-family instances are staged (verbatim WP sidebar → instance
+       payloads) so the theme-selected regions can re-emit them per lang
+       after the loop — their render sidebar is theme config, not the
+       dump's own sidebar list. */
+    let blog_ids = ["blog", "blog-left", "blog-right", "gdlr-core-sidebar-preset"];
+    let mut staged: HashMap<
+        String,
+        Vec<(String, String, Map<String, Value>, String)>,
+    > = HashMap::new();
+
+    /* `widgets.id` is the table PK — every emit site draws from one set
+       (`free_id` falls back `inst` → `inst-{lang}` → `inst-{lang}-{n}`),
+       so the same wp id on two accepted sidebars never silently replaces
+       an earlier row. Lang copies emit primary-first so the home lang
+       keeps the bare wp id. */
+    let mut used_ids: HashSet<String> = HashSet::new();
+    let mut ordered: Vec<String> = site_langs.to_vec();
+    ordered.sort_by_key(|l| *l != primary);
+
+    for (wp_sidebar, list) in &sw {
+        let Some(target) = sidebar_target(wp_sidebar) else {
+            continue;
+        };
+        let Value::Array(ids) = list else {
+            continue;
+        };
+        for idv in ids {
+            let Some(inst_id) = idv.as_str() else {
+                continue;
+            };
+            let Some((base, num)) = inst_id.rsplit_once('-') else {
+                continue;
+            };
+            if num.is_empty() || !num.bytes().all(|b| b.is_ascii_digit()) {
+                continue; // not a `{type}-{n}` instance id
+            }
+            let opt_key = format!("widget_{base}");
+            if !wopt.contains_key(&opt_key) {
+                let parsed = options.get(&opt_key).map(|raw| {
+                    match unserialize(raw.as_bytes()) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            rep.unser_errors += 1;
+                            rep.log(format!("{opt_key} unserialize: {e}"));
+                            Value::Null
+                        }
+                    }
+                });
+                wopt.insert(opt_key.clone(), parsed);
+            }
+            let parsed = wopt.get(&opt_key).unwrap();
+            let Some(Value::Object(instances)) = parsed.as_ref() else {
+                skipped.push(inst_id.to_string());
+                continue;
+            };
+            let Some(inst) = instances.get(num).and_then(|v| v.as_object()) else {
+                skipped.push(inst_id.to_string());
+                continue;
+            };
+            let inst_pll = inst
+                .get("pll_lang")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            // Blog-family instance: stash for the theme-region synthesis;
+            // its render sidebar comes from traveltour_general, not the
+            // dump's own list.
+            if blog_ids.contains(&wp_sidebar.as_str()) {
+                staged
+                    .entry(wp_sidebar.clone())
+                    .or_default()
+                    .push((inst_id.to_string(), base.to_string(), inst.clone(), inst_pll.to_string()));
+                continue;
+            }
+
+            /* Langs this instance renders on: pll_lang pins it to one
+               language; untagged instances render everywhere (primary
+               first so home lang keeps the plain wp id). Fixed regions
+               emit a single verbatim row resolved against the instance's
+               own lang (or primary). `free_id` allocates the row's PK —
+               the same wp id can land in two accepted sidebars. */
+            let target_langs: Vec<&str> = match target {
+                SidebarTarget::Fixed(_) => {
+                    vec![if inst_pll.is_empty() { primary } else { inst_pll }]
+                }
+                SidebarTarget::Lang(_) if inst_pll.is_empty() => ordered
+                    .iter()
+                    .map(String::as_str)
+                    .collect(),
+                SidebarTarget::Lang(_) => vec![inst_pll],
+            };
+            for lang in target_langs {
+                let sidebar = match target {
+                    SidebarTarget::Lang(b) => format!("{b}-{lang}"),
+                    SidebarTarget::Fixed(id) => id.to_string(),
+                };
+                let row_id = free_id(&mut used_ids, inst_id, lang);
+                let Some((typ, settings)) = widget_settings(
+                    tx, base, inst_id, inst, lang, primary, &origin, term_parents,
+                ) else {
+                    continue;
+                };
+                // Fixed rows carry the instance's own pll tag ('' untagged)
+                // so mixed-lang WP sidebars render per page language; Lang
+                // copies carry their emitted lang.
+                let row_lang = match target {
+                    SidebarTarget::Fixed(_) => inst_pll.to_string(),
+                    SidebarTarget::Lang(_) => lang.to_string(),
+                };
+                let ord = ords.entry(sidebar.clone()).or_insert(0);
+                out.push(WidgetRow {
+                    id: row_id,
+                    sidebar,
+                    typ,
+                    title: widget_title_text(inst),
+                    settings,
+                    ord: *ord,
+                    lang: row_lang,
+                });
+                *ord += 1;
+            }
+        }
+    }
+
+    /* Traveltour assigns blog-family WP sidebars to the post / archive
+       sidebar positions in `traveltour_general`. Redistribute the staged
+       instances onto `sidebar-{post,archive}-{lang}` accordingly —
+       verbatim `blog*` rows are only kept for sidebars no position
+       selected. */
+    synthesize_theme_regions(
+        tx,
+        &mut out,
+        &staged,
+        &mut used_ids,
+        &ordered,
+        options,
+        primary,
+        &origin,
+        term_parents,
+        rep,
+    )?;
+    if !skipped.is_empty() {
+        rep.log(format!(
+            "widgets: {} instance(s) without a saved payload skipped ({})",
+            skipped.len(),
+            skipped.join(", ")
+        ));
+    }
+    rep.log(format!("widgets imported: {}", out.len()));
+    Ok(out)
+}
+
+/// Traveltour assigns WP blog-family sidebars to the post / archive
+/// positions in `traveltour_general`: `{pos}-sidebar` picks the
+/// position(s) (right|left|both|none), `{pos}-sidebar-{left,right}` name
+/// the WP sidebar feeding each slot (`pos` = "blog" for the post sidebar,
+/// "archive-blog" for the archive sidebar). The chosen instances are
+/// copied onto `sidebar-{region}-{lang}` per site language — pll_lang
+/// tagged instances join only their own lang, untagged ones every lang.
+/// `widgets.id` is the PK: the first copy keeps the wp id, later copies
+/// take `-{lang}` (then `-{lang}-{n}`) suffixes — the same rule the pll
+/// clones use. Sources feeding a position keep no verbatim `blog*` rows
+/// (every selected instance moved); dumps whose theme config lacks the
+/// keys entirely keep the verbatim rows and synthesize nothing.
+fn synthesize_theme_regions(
+    tx: &rusqlite::Transaction,
+    out: &mut Vec<WidgetRow>,
+    staged: &HashMap<String, Vec<(String, String, Map<String, Value>, String)>>,
+    used_ids: &mut HashSet<String>,
+    langs: &[String],
+    options: &HashMap<String, String>,
+    primary: &str,
+    origin: &str,
+    term_parents: &HashMap<i64, i64>,
+    rep: &mut Report,
+) -> Result<()> {
+    let mut used: HashSet<String> = HashSet::new();
+    for (region, pos) in [("sidebar-post", "blog"), ("sidebar-archive", "archive-blog")] {
+        let Some(sources) = theme_sidebar_sources(options, pos, rep) else {
+            continue;
+        };
+        used.extend(sources.iter().cloned());
+        let mut ords: HashMap<String, i64> = HashMap::new();
+        for lang in langs.iter().map(String::as_str) {
+            for src in &sources {
+                let Some(list) = staged.get(src) else {
+                    continue;
+                };
+                for (inst_id, base, inst, inst_pll) in list {
+                    if !inst_pll.is_empty() && inst_pll != lang {
+                        continue;
+                    }
+                    let Some((typ, settings)) = widget_settings(
+                        tx, base, inst_id, inst, lang, primary, origin, term_parents,
+                    ) else {
+                        continue;
+                    };
+                    let id = free_id(used_ids, inst_id, lang);
+                    let sidebar = format!("{region}-{lang}");
+                    let ord = ords.entry(sidebar.clone()).or_insert(0);
+                    out.push(WidgetRow {
+                        id,
+                        sidebar,
+                        typ,
+                        title: widget_title_text(inst),
+                        settings,
+                        ord: *ord,
+                        lang: lang.to_string(),
+                    });
+                    *ord += 1;
+                }
+            }
+        }
+    }
+    /* Blog sidebars no position selected keep their rows verbatim under
+       the WP sidebar id (untranslated — lang resolves against the
+       instance's own pll_lang, else the site's primary). */
+    for (src, list) in staged {
+        if used.contains(src) {
+            continue;
+        }
+        let mut ord = 0i64;
+        for (inst_id, base, inst, inst_pll) in list {
+            let lang = if inst_pll.is_empty() {
+                primary
+            } else {
+                inst_pll.as_str()
+            };
+            let Some((typ, settings)) = widget_settings(
+                tx, base, inst_id, inst, lang, primary, origin, term_parents,
+            ) else {
+                continue;
+            };
+            let id = free_id(used_ids, inst_id, lang);
+            out.push(WidgetRow {
+                id,
+                sidebar: src.clone(),
+                typ,
+                title: widget_title_text(inst),
+                settings,
+                ord,
+                lang: inst_pll.clone(),
+            });
+            ord += 1;
+        }
+    }
+    Ok(())
+}
+
+/// traveltour_general → the WP sidebar ids one position selects. `None`
+/// when the option is absent, unparseable, or never mentions this
+/// position — the verbatim blog rows are then kept as imported.
+/// A missing/empty position flag defaults to the theme's "right".
+fn theme_sidebar_sources(
+    options: &HashMap<String, String>,
+    pos: &str,
+    rep: &mut Report,
+) -> Option<Vec<String>> {
+    let raw = options.get("traveltour_general")?;
+    let flat: HashMap<String, String> = match unserialize(raw.as_bytes()) {
+        Ok(Value::Object(m)) => m
+            .into_iter()
+            .filter_map(|(k, v)| v.as_str().map(|s| (k, s.to_string())))
+            .collect(),
+        _ => return None,
+    };
+    let left_k = format!("{pos}-sidebar-left");
+    let right_k = format!("{pos}-sidebar-right");
+    if !flat.contains_key(&left_k) && !flat.contains_key(&right_k) {
+        return None;
+    }
+    let flag = flat
+        .get(&format!("{pos}-sidebar"))
+        .map(String::as_str)
+        .unwrap_or("");
+    let flag = if flag.is_empty() { "right" } else { flag };
+    let mut srcs = Vec::new();
+    if flag == "left" || flag == "both" {
+        srcs.extend(flat.get(&left_k).cloned());
+    }
+    if flag == "right" || flag == "both" {
+        srcs.extend(flat.get(&right_k).cloned());
+    }
+    if flag == "both" {
+        rep.log(format!("widgets: {pos} position=both — left+right sidebars merged"));
+    }
+    Some(srcs.into_iter().filter(|s| !s.is_empty()).collect())
+}
+
+/// Allocate a widgets-table PK for a wp instance id on `lang`: bare id
+/// when free, else `id-lang`, then `id-lang-{n}`. `used` tracks every row
+/// emitted in this build — a wp id listed on two accepted sidebars (or
+/// one instance copied onto post+archive regions) must never silently
+/// REPLACE the earlier row.
+fn free_id(used: &mut HashSet<String>, inst: &str, lang: &str) -> String {
+    if !used.contains(inst) {
+        used.insert(inst.to_string());
+        return inst.to_string();
+    }
+    let mut n = 1i64;
+    loop {
+        let cand = if n == 1 {
+            format!("{inst}-{lang}")
+        } else {
+            format!("{inst}-{lang}-{n}")
+        };
+        if !used.contains(&cand) {
+            used.insert(cand.clone());
+            return cand;
+        }
+        n += 1;
+    }
+}
+
+/// Widget title: every WP widget uses `title` except wpcategorieswidget
+/// which keys it `wcw_title`. Stored raw — renderers apply their own
+/// title transform (frozen rows embed `widget_title_esc` output instead).
+fn widget_title_text(inst: &Map<String, Value>) -> String {
+    inst.get("title")
+        .or_else(|| inst.get("wcw_title"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+/// Instance → (rpress widget type, settings_json). `None` = drop the row
+/// (a plugin widget with no importable payload renders nothing useful —
+/// same rule WP applies to unconfigured instances).
+fn widget_settings(
+    tx: &rusqlite::Transaction,
+    base: &str,
+    inst_id: &str,
+    inst: &Map<String, Value>,
+    lang: &str,
+    primary: &str,
+    origin: &str,
+    term_parents: &HashMap<i64, i64>,
+) -> Option<(String, String)> {
+    let gs = |k: &str| inst.get(k).and_then(|v| v.as_str()).unwrap_or("");
+    let title = widget_title_text(inst);
+    let body = {
+        let t = gs("text");
+        if t.is_empty() { gs("content") } else { t }
+    };
+    // Shared content pipeline: own-origin → {{ site_url }}, the gdlr
+    // shortcode subset, then the generic expander for the rest.
+    let render_body = |s: &str| -> String {
+        let b = rewrite_own(s, origin);
+        let b = expand_widget_shortcodes(&b);
+        crate::render::shortcode::expand_shortcodes(&b, "{{ site_url }}", Some(&**tx))
+    };
+
+    match base {
+        // Frozen-HTML types: the fragment is a minijinja template —
+        // own-origin URLs become {{ site_url }} so deploys re-anchor.
+        "text" => {
+            if body.is_empty() {
+                return None;
+            }
+            /* WP widget_text: the wpautop filter runs only when the
+               instance's `filter` flag is set; do_shortcode always runs
+               (after autop — `[gdlr_core_title]` lines wrap like any text
+               line, matching the filter=1 captures). */
+            let mut b = rewrite_own(body, origin);
+            if truthy(inst.get("filter")) {
+                b = widget_autop(&b);
+            }
+            b = expand_widget_shortcodes(&b);
+            b = crate::render::shortcode::expand_shortcodes(&b, "{{ site_url }}", Some(&**tx));
+            Some((
+                "text".into(),
+                json!({ "html": format!(
+                    "<div id=\"{inst_id}\" class=\"widget widget_text traveltour-widget\">{tb}<div class=\"textwidget\">{b}</div></div>",
+                    tb = traveltour_title_block(&title),
+                )})
+                .to_string(),
+            ))
+        }
+        "custom_html" => {
+            if body.is_empty() {
+                return None;
+            }
+            Some((
+                "custom_html".into(),
+                json!({ "html": format!(
+                    "<div id=\"{inst_id}\" class=\"widget_text widget widget_custom_html traveltour-widget\">{tb}<div class=\"textwidget custom-html-widget\">{b}</div></div>",
+                    tb = traveltour_title_block(&title),
+                    b = render_body(body),
+                )})
+                .to_string(),
+            ))
+        }
+        "block" => {
+            if body.is_empty() {
+                return None;
+            }
+            let b = strip_block_comments(body);
+            Some((
+                "block".into(),
+                json!({ "html": format!(
+                    "<div id=\"{inst_id}\" class=\"widget widget_block traveltour-widget\">{tb}<div class=\"textwidget\">{b}</div></div>",
+                    tb = traveltour_title_block(&title),
+                    b = render_body(&b),
+                )})
+                .to_string(),
+            ))
+        }
+        "search" => {
+            /* get_search_form() markup; Polylang prefixes the form action
+               for non-primary languages (the seed captures show `/es/`
+               on the ES sidebar, bare on FR). */
+            let (label, ph, submit) = match lang {
+                "fr" => ("Rechercher\u{a0}:", "Rechercher…", "Rechercher"),
+                "es" => ("Buscar:", "Buscar…", "Buscar"),
+                _ => ("Search:", "Search …", "Search"),
+            };
+            let action = if lang == primary {
+                "{{ site_url }}/".to_string()
+            } else {
+                format!("{{{{ site_url }}}}/{lang}/")
+            };
+            Some((
+                "search".into(),
+                json!({ "html": format!(
+                    "<div id=\"{inst_id}\" class=\"widget widget_search traveltour-widget\">{tb}<form role=\"search\" method=\"get\" class=\"search-form\" action=\"{action}\">\n\t\t\t\t<label>\n\t\t\t\t\t<span class=\"screen-reader-text\">{label}</span>\n\t\t\t\t\t<input type=\"search\" class=\"search-field\" placeholder=\"{ph}\" value=\"\" name=\"s\" />\n\t\t\t\t</label>\n\t\t\t\t<input type=\"submit\" class=\"search-submit\" value=\"{submit}\" />\n\t\t\t</form></div>",
+                    tb = traveltour_title_block(&title),
+                )})
+                .to_string(),
+            ))
+        }
+        "media_image" => {
+            let inner = media_image_html(tx, inst_id, inst, &title, origin)?;
+            Some(("media_image".into(), json!({ "html": inner }).to_string()))
+        }
+        "wpcategorieswidget" => {
+            let mut s = Map::new();
+            s.insert(
+                "taxonomy".into(),
+                json!(match gs("wcw_taxonomy_type") {
+                    "" => "category",
+                    t => t,
+                }),
+            );
+            s.insert("title".into(), json!(title));
+            s.insert("show_counts".into(), json!(gs("wcw_hide_count") != "1"));
+            /* include-mode freezes the selected term ids — resolve slugs
+               against the just-imported terms table and rebuild the WP
+               hierarchy (term_taxonomy.parent) restricted to the
+               selection: `order` holds only selected roots (a selected
+               child of a selected parent nests under it, WP
+               hierarchical-list behaviour), `children` the real edges. */
+            if gs("wcw_action_on_cat") == "include" {
+                if let Some(Value::Array(sel)) = inst.get("wcw_selected_categories") {
+                    let pairs: Vec<(i64, String)> = sel
+                        .iter()
+                        .filter_map(|v| {
+                            v.as_i64()
+                                .or_else(|| v.as_str().and_then(|x| x.parse().ok()))
+                        })
+                        .filter_map(|tid| {
+                            tx.query_row(
+                                "SELECT slug FROM terms WHERE id=?1",
+                                [tid],
+                                |r| Ok((tid, r.get::<_, String>(0)?)),
+                            )
+                            .ok()
+                        })
+                        .collect();
+                    let sel_ids: HashSet<i64> = pairs.iter().map(|(id, _)| *id).collect();
+                    if !sel_ids.is_empty() {
+                        // child slug list per parent slug — children keep
+                        // the widget's selected-order, only when both ends
+                        // of the edge are selected.
+                        let mut children: Map<String, Value> = Map::new();
+                        for (tid, slug) in &pairs {
+                            let kids: Vec<Value> = pairs
+                                .iter()
+                                .filter(|(cid, _)| {
+                                    term_parents.get(cid) == Some(tid)
+                                })
+                                .map(|(_, s)| json!(s))
+                                .collect();
+                            children.insert(slug.clone(), Value::Array(kids));
+                        }
+                        // Selected child under a selected parent is not a
+                        // root — it renders inside <ul class="children">.
+                        let child_slugs: HashSet<&str> = pairs
+                            .iter()
+                            .filter(|(cid, _)| {
+                                term_parents
+                                    .get(cid)
+                                    .is_some_and(|p| sel_ids.contains(p))
+                            })
+                            .map(|(_, s)| s.as_str())
+                            .collect();
+                        let roots: Vec<&str> = pairs
+                            .iter()
+                            .map(|(_, s)| s.as_str())
+                            .filter(|s| !child_slugs.contains(s))
+                            .collect();
+                        s.insert("order".into(), json!(roots));
+                        s.insert("children".into(), Value::Object(children));
+                    }
+                }
+            }
+            Some(("categories".into(), Value::Object(s).to_string()))
+        }
+        "tourmaster-tour-widget" => {
+            /* Tourmaster "Recent Tours" — the tour_list live renderer
+               reproduces its markup (outer custom_html wrapper + recent
+               cards; num-fetch → count). */
+            let mut s = Map::new();
+            s.insert("mode".into(), json!("recent"));
+            s.insert("count".into(), json!(gs("num-fetch")));
+            s.insert("title".into(), json!(title));
+            Some(("tour_list".into(), Value::Object(s).to_string()))
+        }
+        "tourmaster-widget-tour-category" => {
+            /* Frozen type like its seed row: the WP capture was an empty
+               div (the category list renders into the tour template, not
+               the widget). */
+            Some((
+                "tour_category".into(),
+                json!({ "html": format!(
+                    "<div id=\"{inst_id}\" class=\"widget widget_tourmaster-widget-tour-category traveltour-widget\">{tb}</div>",
+                    tb = traveltour_title_block(&title),
+                )})
+                .to_string(),
+            ))
+        }
+        /* Core types with no live renderer/frozen seed shape: keep the
+           scalar settings for admin visibility; they render empty until a
+           renderer claims the type. */
+        "tag_cloud" | "recent-posts" | "nav_menu" | "categories"
+        | "recent-comments" | "archives" | "pages" | "meta" | "rss" => {
+            Some((base.to_string(), widget_scalars(inst)))
+        }
+        _ => {
+            /* Unknown plugin widget: keep whatever markup it authored
+               (text/content) in the generic traveltour wrapper, else
+               drop — nothing faithful to store. */
+            if body.is_empty() {
+                return None;
+            }
+            Some((
+                base.to_string(),
+                json!({ "html": format!(
+                    "<div id=\"{inst_id}\" class=\"widget widget_{base} traveltour-widget\">{tb}<div class=\"textwidget\">{b}</div></div>",
+                    tb = traveltour_title_block(&title),
+                    b = render_body(body),
+                )})
+                .to_string(),
+            ))
+        }
+    }
+}
+
+/// Code Snippets PHP → the literal HTML it echoes. Blocks appear between
+/// `?>` … `<?php` (the standard function-body pattern); the last block
+/// may close on `<?php\n}` — cut at the PHP marker either way.
+/// Own-origin URLs become `{{ site_url }}` so deploys re-anchor.
+fn snippet_html(code: &str, origin: &str) -> String {
+    let mut out = String::new();
+    for seg in code.split("?>").skip(1) {
+        let html = match seg.find("<?php") {
+            Some(i) => &seg[..i],
+            None => seg,
+        };
+        let html = html.trim();
+        if html.contains('<') {
+            out.push_str(html);
+            out.push('\n');
+        }
+    }
+    rewrite_own(&out, origin)
+}
+
+/// Non-empty scalar fields of a widget instance minus WP internals —
+/// the stored-settings shape for renderer-less core types.
+fn widget_scalars(inst: &Map<String, Value>) -> String {
+    let mut out = Map::new();
+    for (k, v) in inst {
+        if k.starts_with('_') {
+            continue;
+        }
+        if matches!(v, Value::String(_) | Value::Number(_) | Value::Bool(_)) {
+            out.insert(k.clone(), v.clone());
+        }
+    }
+    Value::Object(out).to_string()
+}
+
+/// PHP empty() on a serialized flag: absent/false/""/"0"/0 → false.
+fn truthy(v: Option<&Value>) -> bool {
+    match v {
+        Some(Value::Bool(b)) => *b,
+        Some(Value::String(s)) => !(s.is_empty() || s == "0"),
+        Some(Value::Number(n)) => n.as_i64() != Some(0),
+        _ => false,
+    }
+}
+
+/// The traveltour `before_widget` title markup — emitted only when the
+/// instance title is non-empty, with the capture's texturize+escape
+/// (` - ` → ` &#8211; `, `'` → `&#039;`, `&<>` escaped).
+fn traveltour_title_block(title: &str) -> String {
+    if title.is_empty() {
+        return String::new();
+    }
+    format!(
+        "<h3 class=\"traveltour-widget-title\"><span class=\"traveltour-widget-head-text\">{}</span></h3><span class=\"clear\"></span>",
+        widget_title_esc(title)
+    )
+}
+
+/// WP `widget_title` filter chain reduced to what the captures show:
+/// esc_html + the two texturize transforms the wpcategorieswidget
+/// renderer already mirrors for term names.
+fn widget_title_esc(raw: &str) -> String {
+    crate::render_archive::esc(raw)
+        .replace(" - ", " &#8211; ")
+        .replace('\'', "&#039;")
+}
+
+/// The `filter=1` paragraph pass: blank lines become paragraph breaks —
+/// double newline → `</p><p>`, single newlines kept (WP leaves them; the
+/// authored `<br>`s carry the visual breaks).
+fn widget_autop(s: &str) -> String {
+    let t = s.replace("\r\n", "\n").replace('\r', "\n");
+    let chunks: Vec<&str> = t
+        .split("\n\n")
+        .map(str::trim)
+        .filter(|c| !c.is_empty())
+        .collect();
+    format!("<p>{}</p>", chunks.join("</p><p>"))
+}
+
+/// Re-anchor the site's own absolute URLs on `{{ site_url }}` so stored
+/// fragments stay deploy-neutral (seed fragments use the same token).
+fn rewrite_own(s: &str, origin: &str) -> String {
+    if origin.is_empty() {
+        return s.to_string();
+    }
+    let o = origin.trim_end_matches('/');
+    s.replace(&format!("{o}/"), "{{ site_url }}/")
+        .replace(o, "{{ site_url }}")
+}
+
+/// `<!-- wp:… -->` comments are block-editor internals — strip them from
+/// imported block-widget content.
+fn strip_block_comments(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(i) = rest.find("<!--") {
+        let Some(end) = rest[i..].find("-->").map(|e| i + e + 3) else {
+            out.push_str(&rest[..i]);
+            return out;
+        };
+        out.push_str(&rest[..i]);
+        rest = &rest[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// media_image instance → the wp_get_attachment_image markup the seed
+/// captures froze: sized `src` from the widget's own `url` field,
+/// `srcset`/`sizes` rebuilt from media.sizes_json when the attachment
+/// survived import.
+fn media_image_html(
+    tx: &rusqlite::Transaction,
+    inst_id: &str,
+    inst: &Map<String, Value>,
+    title: &str,
+    origin: &str,
+) -> Option<String> {
+    let gs = |k: &str| inst.get(k).and_then(|v| v.as_str()).unwrap_or("");
+    let gi = |k: &str| {
+        inst.get(k)
+            .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|x| x.parse().ok())))
+    };
+    let size = {
+        let s = gs("size");
+        if s.is_empty() { "medium" } else { s }
+    };
+    let att_id = gi("attachment_id").unwrap_or(-1);
+
+    // Attachment row for srcset/alt fallback; the widget still renders
+    // without it (the instance `url` alone feeds <img src>).
+    let media: Option<(String, String, String)> = tx
+        .query_row(
+            "SELECT path, alt, sizes_json FROM media WHERE wp_id=?1",
+            [att_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .ok();
+
+    let url = {
+        let u = gs("url");
+        if !u.is_empty() {
+            rewrite_own(u, origin)
+        } else {
+            media
+                .as_ref()
+                .map(|(path, _, _)| format!("{{{{ site_url }}}}/wp-content/uploads/{path}"))
+                .unwrap_or_default()
+        }
+    };
+    if url.is_empty() {
+        return None;
+    }
+    let alt = {
+        let a = gs("alt");
+        if !a.is_empty() {
+            a.to_string()
+        } else {
+            media.as_ref().map(|(_, a, _)| a.clone()).unwrap_or_default()
+        }
+    };
+
+    // srcset: every registered intermediate size + the full image,
+    // ordered by width (WP wp_calculate_image_srcset).
+    let mut srcset = String::new();
+    let mut disp = (gi("width").unwrap_or(0), gi("height").unwrap_or(0));
+    if let Some((path, _, sizes_raw)) = &media {
+        if let Ok(Value::Object(sizes)) = serde_json::from_str::<Value>(sizes_raw) {
+            let dir = path.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
+            let mut cand: Vec<(i64, String)> = sizes
+                .values()
+                .filter_map(|meta| {
+                    Some((
+                        meta.get("width").and_then(|v| v.as_i64())?,
+                        format!(
+                            "{{{{ site_url }}}}/wp-content/uploads/{dir}/{}",
+                            meta.get("file").and_then(|v| v.as_str())?
+                        ),
+                    ))
+                })
+                .collect();
+            cand.push((
+                disp.0,
+                format!("{{{{ site_url }}}}/wp-content/uploads/{path}"),
+            ));
+            cand.sort_by_key(|(w, _)| *w);
+            cand.dedup_by(|a, b| a.0 == b.0);
+            srcset = cand
+                .iter()
+                .map(|(w, u)| format!("{u} {w}w"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            // The instance width/height are the FULL image dims; the
+            // displayed variant's dims live in sizes_json.
+            if let Some(meta) = sizes.get(size) {
+                disp = (
+                    meta.get("width").and_then(|v| v.as_i64()).unwrap_or(disp.0),
+                    meta.get("height").and_then(|v| v.as_i64()).unwrap_or(disp.1),
+                );
+            }
+        }
+    }
+
+    let e = crate::render_archive::esc_attr_pub;
+    let mut img = String::from("<img");
+    if disp.0 > 0 {
+        img.push_str(&format!(" width=\"{}\"", disp.0));
+    }
+    if disp.1 > 0 {
+        img.push_str(&format!(" height=\"{}\"", disp.1));
+    }
+    img.push_str(&format!(
+        " src=\"{}\" class=\"image wp-image-{att_id}  attachment-{size} size-{size}\" alt=\"{}\" style=\"max-width: 100%; height: auto;\" decoding=\"async\" loading=\"lazy\"",
+        e(&url),
+        e(&alt),
+    ));
+    if !srcset.is_empty() {
+        let w = if disp.0 > 0 { disp.0 } else { 300 };
+        img.push_str(&format!(
+            " srcset=\"{srcset}\" sizes=\"auto, (max-width: {w}px) 100vw, {w}px\""
+        ));
+    }
+    img.push_str(" />");
+
+    // Optional link wrapper (wp media_image link_type: custom|file|post).
+    let link = match gs("link_type") {
+        "custom" => gs("link_url").to_string(),
+        "file" => media
+            .as_ref()
+            .map(|(p, _, _)| format!("{{{{ site_url }}}}/wp-content/uploads/{p}"))
+            .unwrap_or_default(),
+        _ => String::new(),
+    };
+    let mut inner = img;
+    if !link.is_empty() {
+        let tgt = if truthy(inst.get("link_target_blank")) {
+            " target=\"_blank\""
+        } else {
+            ""
+        };
+        let cls = {
+            let c = gs("link_classes");
+            if c.is_empty() {
+                String::new()
+            } else {
+                format!(" class=\"{}\"", e(c))
+            }
+        };
+        inner = format!(
+            "<a href=\"{}\"{cls}{tgt}>{inner}</a>",
+            e(&rewrite_own(&link, origin))
+        );
+    }
+
+    Some(format!(
+        "<div id=\"{inst_id}\" class=\"widget widget_media_image traveltour-widget\">{tb}{inner}</div>",
+        tb = traveltour_title_block(title),
+    ))
+}
+
+// ---------------------------------------------------------------------------
+// gdlr shortcode subset for widget payloads — `[gdlr_core_space]`,
+// `[gdlr_core_title]`, `[gdlr_widget_list]`, `[gdlr_widget_box]`,
+// `[gdlr_core_social_network]`. Markup ports the plugin's PHP emitters
+// (esc_style's `"key: value ;"` spacing included — the seed captures carry
+// it verbatim). Everything else falls through to expand_shortcodes.
+// ---------------------------------------------------------------------------
+
+/// gdlr_core_esc_style: `"key: value ;"` per pair (empty/"0" values
+/// skipped — PHP `empty()`), wrapped as ` style="…"  ` with the capture's
+/// double space before `>`.
+fn gdlr_style(pairs: &[(&str, &str)]) -> String {
+    let mut css = String::new();
+    for (k, v) in pairs {
+        if v.is_empty() || *v == "0" {
+            continue;
+        }
+        css.push_str(&format!("{k}: {v} ;"));
+    }
+    if css.is_empty() {
+        String::new()
+    } else {
+        format!(" style=\"{css}\"  ")
+    }
+}
+
+/// Shortcode attribute parser: `key="v" key2='v' k3=bare` — also tolerates
+/// the `attr= "v"` spacing the dumps carry.
+fn widget_sc_attrs(raw: &str) -> HashMap<String, String> {
+    let mut m = HashMap::new();
+    let b = raw.as_bytes();
+    let n = b.len();
+    let mut i = 0;
+    while i < n {
+        while i < n && b[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        let kstart = i;
+        while i < n && !b[i].is_ascii_whitespace() && b[i] != b'=' {
+            i += 1;
+        }
+        if kstart == i {
+            i += 1;
+            continue;
+        }
+        let key = &raw[kstart..i];
+        while i < n && b[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i < n && b[i] == b'=' {
+            i += 1;
+            while i < n && b[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            if i < n && (b[i] == b'"' || b[i] == b'\'') {
+                let q = b[i];
+                i += 1;
+                let vstart = i;
+                while i < n && b[i] != q {
+                    i += 1;
+                }
+                m.insert(key.to_string(), raw[vstart..i].to_string());
+                i += 1; // closing quote
+            } else {
+                let vstart = i;
+                while i < n && !b[i].is_ascii_whitespace() && b[i] != b']' {
+                    i += 1;
+                }
+                m.insert(key.to_string(), raw[vstart..i].to_string());
+            }
+        }
+    }
+    m
+}
+
+/// Expand the gdlr/widget shortcodes found in widget payloads. Unknown
+/// tags stay verbatim for the later `expand_shortcodes` pass. Enclosing
+/// shortcodes (widget_list/widget_box) recurse into their content like
+/// PHP's `do_shortcode($content)`.
+fn expand_widget_shortcodes(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 128);
+    let mut rest = s;
+    let mut list_count: u64 = 0; // $gdlr_widget_list_count, per content run
+    while let Some(i) = rest.find('[') {
+        out.push_str(&rest[..i]);
+        let Some(end) = rest[i..].find(']').map(|e| i + e) else {
+            out.push_str(&rest[i..]);
+            return out;
+        };
+        let head = &rest[i + 1..end];
+        let tag = head.split_whitespace().next().unwrap_or("");
+        let attrs = widget_sc_attrs(&head[tag.len()..]);
+        let g = |k: &str| attrs.get(k).map(String::as_str).unwrap_or("");
+        let after = &rest[end + 1..];
+        match tag {
+            "gdlr_core_space" => {
+                let h = g("height");
+                out.push_str(&format!(
+                    "<span class=\"gdlr-core-space-shortcode\"{}></span>",
+                    gdlr_style(&[("margin-top", if h.is_empty() { "30px" } else { h })])
+                ));
+            }
+            "gdlr_core_title" => {
+                out.push_str(&gdlr_title_html(&attrs));
+            }
+            "gdlr_widget_list" => {
+                let id = format!("gdlr-core-widget-list-{list_count}");
+                list_count += 1;
+                out.push_str(&format!(
+                    "<div class=\"gdlr-core-widget-list-shortcode\" id=\"{id}\"{}>",
+                    gdlr_style(&[
+                        ("color", g("color")),
+                        ("background-color", g("background-color")),
+                        ("border-color", g("frame-border-color")),
+                        ("border-width", g("frame-border-width")),
+                    ])
+                ));
+                if !g("title").is_empty() {
+                    out.push_str(&format!(
+                        "<h3 class=\"gdlr-core-widget-list-shortcode-title\"{}>{}</h3>",
+                        gdlr_style(&[("color", g("title-color"))]),
+                        g("title")
+                    ));
+                }
+                if let Some(close) = after.find("[/gdlr_widget_list]") {
+                    out.push_str(&expand_widget_shortcodes(&after[..close]));
+                    out.push_str("</div>");
+                    rest = &after[close + "[/gdlr_widget_list]".len()..];
+                    continue;
+                }
+                out.push_str("</div>");
+            }
+            "gdlr_widget_box" => {
+                out.push_str(&gdlr_widget_box_open(&attrs));
+                if let Some(close) = after.find("[/gdlr_widget_box]") {
+                    out.push_str(&expand_widget_shortcodes(&after[..close]));
+                    out.push_str("</div>");
+                    rest = &after[close + "[/gdlr_widget_box]".len()..];
+                    continue;
+                }
+                out.push_str("</div>");
+            }
+            "gdlr_core_social_network" => {
+                out.push_str(&gdlr_social_html(&attrs));
+            }
+            _ => {
+                out.push_str(&rest[i..end + 1]);
+            }
+        }
+        rest = after;
+    }
+    out.push_str(rest);
+    out
+}
+
+/// gdlr_core_pb_element_title::get_content, common-attrs port: the
+/// title-wrap div + h3 + divider the footer captures carry. Caption and
+/// side borders are omitted (unused in widget payloads).
+fn gdlr_title_html(attrs: &HashMap<String, String>) -> String {
+    let g = |k: &str| attrs.get(k).map(String::as_str).unwrap_or("");
+    // `attr` != WP default → emit; == default → PHP empties the style attr.
+    let non_default = |k: &str, default: &str| {
+        let v = g(k);
+        if v.is_empty() || v == default {
+            ""
+        } else {
+            v
+        }
+    };
+    let esc = crate::render_archive::esc_attr_pub;
+    let align = {
+        let a = g("text-align");
+        if a.is_empty() { "left" } else { a }
+    };
+    let caption_pos = {
+        let c = g("caption-position");
+        if c.is_empty() { "top" } else { c }
+    };
+    let mut class = format!(" gdlr-core-{align}-align gdlr-core-title-item-caption-{caption_pos}");
+    if !g("class").is_empty() {
+        class.push(' ');
+        class.push_str(g("class"));
+    }
+    let mut out = format!(
+        "<div class=\"gdlr-core-title-item gdlr-core-item-pdb clearfix {}\"{}>",
+        esc(&class),
+        gdlr_style(&[
+            ("padding-bottom", g("padding-bottom")),
+            ("margin-left", g("item-left-margin")),
+        ])
+    );
+    if !g("caption").is_empty() && caption_pos == "top" {
+        out.push_str(&format!(
+            "<span class=\"gdlr-core-title-item-caption gdlr-core-info-font gdlr-core-skin-caption\"{}>{}</span>",
+            gdlr_style(&[
+                ("font-size", non_default("caption-font-size", "16px")),
+                ("font-weight", non_default("caption-font-weight", "400")),
+                ("color", g("caption-color")),
+            ]),
+            g("caption")
+        ));
+    }
+    if !g("title").is_empty() {
+        let tag = {
+            let t = g("heading-tag");
+            if t.is_empty() { "h3" } else { t }
+        };
+        out.push_str("<div class=\"gdlr-core-title-item-title-wrap \"  >");
+        out.push_str(&format!(
+            "<{tag} class=\"gdlr-core-title-item-title gdlr-core-skin-title \"{}>",
+            gdlr_style(&[
+                ("font-size", non_default("title-font-size", "41px")),
+                ("font-weight", non_default("title-font-weight", "800")),
+                ("font-style", non_default("title-font-style", "normal")),
+                ("letter-spacing", non_default("title-font-letter-spacing", "1px")),
+                ("line-height", g("title-line-height")),
+                (
+                    "text-transform",
+                    if g("title-font-uppercase") == "enable" { "" } else { "none" },
+                ),
+                ("color", g("title-color")),
+            ])
+        ));
+        out.push_str(g("title"));
+        out.push_str(
+            "<span class=\"gdlr-core-title-item-title-divider gdlr-core-skin-divider\" ></span>",
+        );
+        out.push_str(&format!("</{tag}></div>"));
+    }
+    out.push_str("</div>");
+    out
+}
+
+/// gdlr_widget_box opening markup (esc_style rules — background >7 chars
+/// → `background-image: url(…)`, else `background-color`). Content and the
+/// `</div>` close are handled by the caller's enclosing-tag branch.
+fn gdlr_widget_box_open(attrs: &HashMap<String, String>) -> String {
+    let g = |k: &str| attrs.get(k).map(String::as_str).unwrap_or("");
+    let mut css = String::new();
+    for (k, v) in [
+        ("font-size", g("font-size")),
+        ("color", g("color")),
+        ("padding", g("padding")),
+    ] {
+        if !v.is_empty() {
+            css.push_str(&format!("{k}: {v} ;"));
+        }
+    }
+    if !g("border-radius").is_empty() {
+        css.push_str(&format!(
+            "border-radius: {0};-moz-border-radius: {0};-webkit-border-radius: {0};",
+            g("border-radius")
+        ));
+    }
+    // box-shadow needs a color AND a size in esc_style's branch.
+    if !g("shadow-color").is_empty() && !g("shadow-size").is_empty() {
+        let op = {
+            let o = g("shadow-opacity");
+            if o.is_empty() { "0" } else { o }
+        };
+        let bgs = format!(
+            "{} {} {} ",
+            if g("shadow-x").is_empty() { "0" } else { g("shadow-x") },
+            if g("shadow-y").is_empty() { "0" } else { g("shadow-y") },
+            g("shadow-size")
+        );
+        css.push_str(&format!(
+            "box-shadow: {bgs} rgba({0},{op}); -moz-box-shadow: {bgs} rgba({0},{op}); -webkit-box-shadow: {bgs} rgba({0},{op});",
+            g("shadow-color")
+        ));
+    }
+    let bg = g("background");
+    if !bg.is_empty() {
+        if bg.chars().count() > 7 {
+            css.push_str(&format!("background-image: url({bg}) ;"));
+        } else {
+            css.push_str(&format!("background-color: {bg} ;"));
+        }
+    }
+    if !g("border-color").is_empty() {
+        let w = {
+            let w = g("border-width");
+            if w.is_empty() { "3px" } else { w }
+        };
+        css.push_str(&format!("border: {w} solid {} ;", g("border-color")));
+    }
+    let style = if css.is_empty() {
+        String::new()
+    } else {
+        format!(" style=\"{css}\"  ")
+    };
+    let extra = if g("text-align").is_empty() {
+        String::new()
+    } else {
+        format!(" gdlr-core-{}-align", g("text-align"))
+    };
+    let mut out = format!("<div class=\"gdlr-core-widget-box-shortcode {extra}\"{style}>");
+    if !g("title").is_empty() {
+        out.push_str(&format!(
+            "<h3 class=\"gdlr-core-widget-box-shortcode-title\"{}>{}</h3>",
+            gdlr_style(&[("color", g("title-color"))]),
+            g("title")
+        ));
+    }
+    if !g("left-icon").is_empty() {
+        out.push_str(&format!(
+            "<i class=\"gdlr-core-widget-box-shortcode-icon {}\"{}></i>",
+            crate::render_archive::esc_attr_pub(g("left-icon")),
+            gdlr_style(&[("color", g("left-icon-color"))])
+        ));
+    }
+    out.push_str("<div class=\"gdlr-core-widget-box-shortcode-content\" >");
+    out
+}
+
+/// gdlr_core_social_network shortcode output: shortcode mode → `<span>`
+/// wrapper with `display:block`, fixed-order icon list, `_blank` targets.
+fn gdlr_social_html(attrs: &HashMap<String, String>) -> String {
+    let g = |k: &str| attrs.get(k).map(String::as_str).unwrap_or("");
+    const SOCIALS: &[(&str, &str)] = &[
+        ("delicious", "fa fa-delicious"),
+        ("email", "fa fa-envelope"),
+        ("deviantart", "fa fa-deviantart"),
+        ("digg", "fa fa-digg"),
+        ("facebook", "fa fa-facebook"),
+        ("flickr", "fa fa-flickr"),
+        ("lastfm", "fa fa-lastfm"),
+        ("linkedin", "fa fa-linkedin"),
+        ("pinterest", "fa fa-pinterest"),
+        ("rss", "fa fa-rss"),
+        ("skype", "fa fa-skype"),
+        ("stumbleupon", "fa fa-stumbleupon"),
+        ("tumblr", "fa fa-tumblr"),
+        ("twitter", "fa fa-twitter"),
+        ("vimeo", "fa fa-vimeo"),
+        ("youtube", "fa fa-youtube"),
+        ("dribbble", "fa fa-dribbble"),
+        ("behance", "fa fa-behance"),
+        ("instagram", "fa fa-instagram"),
+        ("snapchat", "fa fa-snapchat"),
+    ];
+    let align = {
+        let a = g("text-align");
+        if a.is_empty() { "left" } else { a }
+    };
+    let direction = {
+        let d = g("direction");
+        if d.is_empty() { "horizontal" } else { d }
+    };
+    let e = crate::render_archive::esc_attr_pub;
+    let mut out = format!(
+        "<span class=\"gdlr-core-social-network-item gdlr-core-item-pdb  gdlr-core-{align}-align gdlr-direction-{direction}\"{}>",
+        gdlr_style(&[
+            ("padding-bottom", g("padding-bottom")),
+            ("display", "block"),
+        ])
+    );
+    let margin_dir = if direction == "horizontal" {
+        "margin-right"
+    } else {
+        "margin-bottom"
+    };
+    let icon_space = {
+        let s = g("icon-space");
+        if s.is_empty() || s == "20px" { "" } else { s }
+    };
+    for (key, icon) in SOCIALS {
+        let mut link = g(key).to_string();
+        if link.is_empty() {
+            continue;
+        }
+        if *key == "email" {
+            link = format!("mailto:{link}");
+        }
+        let tgt = {
+            let t = g("link-target");
+            if t.is_empty() { "_blank" } else { t }
+        };
+        out.push_str(&format!(
+            "<a href=\"{}\" target=\"{tgt}\" class=\"gdlr-core-social-network-icon\" title=\"{key}\"{}><i class=\"{icon}\" ></i></a>",
+            e(&link),
+            gdlr_style(&[
+                ("font-size", g("icon-size")),
+                ("color", g("icon-color")),
+                ("border-color", g("icon-border-color")),
+                ("border-width", g("icon-border-size")),
+                (margin_dir, icon_space),
+                ("width", g("icon-width")),
+                ("height", g("icon-width")),
+                ("line-height", g("icon-width")),
+                ("background-color", g("background-color")),
+                ("border-radius", g("icon-border-radius")),
+            ])
+        ));
+    }
+    out.push_str("</span>");
+    out
 }

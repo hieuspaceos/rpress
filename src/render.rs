@@ -133,7 +133,7 @@ pub fn render_slug(
                 kind_base: tour_base.to_string(),
             };
             let h = crate::render_archive::page(&conn, templates, &ctx, &term)?;
-            return Ok((h, "publish".to_string(), canonical));
+            return Ok((crate::render_post::rewrite_origin(&h, site_url, &conn), "publish".to_string(), canonical));
         }
         // Category archives can be nested or single-segment; resolve the
         // leaf slug once post and old-slug lookups have missed.
@@ -152,18 +152,35 @@ pub fn render_slug(
                     kind_base: tour_base.to_string(),
                 };
                 let h = crate::render_archive::page(&conn, templates, &ctx, &term)?;
-                return Ok((h, "publish".to_string(), canonical));
+                return Ok((crate::render_post::rewrite_origin(&h, site_url, &conn), "publish".to_string(), canonical));
             }
         }
-        // canonical slug of a post whose stored slug is degenerate
-        // ('x' on tour 6416): the import-time permalink lives in the
-        // redirect row written from that post's own _wp_old_slug set.
+        // WP old-slug redirects: `/voyage/{old}/` etc must resolve to the
+        // post's CURRENT slug. The `redirects` rows hold the full WP
+        // history (post_meta's (post_id,meta_key) unique index collapses
+        // multi-value _wp_old_slug to one row, so meta can't be the
+        // source). Post lookup stays scoped to the request lang when
+        // possible — a non-primary lang keeps the first published target.
         if !leaf.is_empty() {
             if let Ok(Some(pid)) = conn
                 .query_row(
-                    "SELECT pm.post_id FROM post_meta pm \
-                     JOIN redirects r ON r.old_slug=pm.meta_value AND r.source='old-slug' \
-                     WHERE pm.meta_key='_wp_old_slug' AND r.new_url=?1 LIMIT 1",
+                    sql!("render__select_by_old_slug"),
+                    [leaf.to_string()],
+                    |r| r.get::<_, i64>(0),
+                )
+                .optional()
+            {
+                let (h, s) = render_slug_by_id_public(&conn, templates, pid, site_url, tour_base)?;
+                let canonical = post_canonical_path(&conn, pid, tour_base)
+                    .unwrap_or_else(|| format!("/{leaf}/"));
+                return Ok((h, s, canonical));
+            }
+            // canonical slug of a post whose stored slug is degenerate
+            // ('x' on tour 6416): the import-time permalink lives in the
+            // redirect row written from that post's own _wp_old_slug set.
+            if let Ok(Some(pid)) = conn
+                .query_row(
+                    sql!("render__select_old_slug_post"),
                     [format!("/{leaf}/")],
                     |r| r.get::<_, i64>(0),
                 )
@@ -515,6 +532,55 @@ fn render_row(
             return crate::render_post::page(&conn, templates, &ctx);
         }
         _ => {}
+    }
+
+    // Non-adapter kinds rendered by this generic path = builder pages.
+    // WP `traveltour_page_options`: `show-content` prepends the_content
+    // (post_content through the core filter) above the page-builder body;
+    // `sidebar` right/left wraps both in the theme's content-container +
+    // sidebar-wrap scaffolding that `traveltour_content_with_sidebar`
+    // emits. Pages without these options keep the bare builder body.
+    let mut body = body;
+    if kind == "page" {
+        let page_opts_raw: String = conn
+            .query_row(
+                "SELECT COALESCE(meta_value,'') FROM post_meta WHERE post_id=?1 AND meta_key='gdlr-core-page-option'",
+                [id],
+                |r| r.get(0),
+            )
+            .unwrap_or_default();
+        let page_opts = crate::php_serialize::unserialize(page_opts_raw.as_bytes()).ok();
+        let opt = |k: &str| {
+            page_opts
+                .as_ref()
+                .and_then(|v| v.get(k))
+                .and_then(|x| x.as_str().map(str::to_string))
+                .unwrap_or_default()
+        };
+        if opt("show-content") == "enable" && !body_html.trim().is_empty() {
+            let article = crate::render_post::filter_content(&body_html, site_url, id, &conn);
+            body = format!("{article}{body}");
+        }
+        let sidebar_pos = opt("sidebar");
+        if sidebar_pos == "right" {
+            // Page sidebars use the same blog-family regions as the post
+            // template (traveltour `{pos}-sidebar-{left,right}` option or
+            // the page's own `sidebar-{left,right}` override); WP sidebar
+            // names map to imported region ids verbatim except the
+            // theme-mapped blog family, which lives on sidebar-post-*.
+            let sidebar_id = |k: &str| match opt(k).as_str() {
+                "" | "blog" | "blog-left" | "blog-right" => format!("sidebar-post-{lang}"),
+                s => s.to_string(),
+            };
+            if sidebar_pos == "right" {
+                let sid = sidebar_id("sidebar-right");
+                let sidebar_html = crate::widgets::render_sidebar(&conn, &sid, site_url, &lang, slug, "")?;
+                let area = format!(
+                    "<div class=\"gdlr-core-page-builder-body clearfix\"><div class=\"traveltour-content-container traveltour-container\"><div class=\" traveltour-sidebar-wrap clearfix traveltour-line-height-0 traveltour-sidebar-style-right\" ><div class=\" traveltour-sidebar-center traveltour-column-45 traveltour-line-height\" ><div class=\"traveltour-content-area traveltour-item-pdlr\" >{body}</div></div>{sidebar_html}</div>"
+                );
+                body = area;
+            }
+        }
     }
 
     let lang_cfg = crate::lang::config(conn);

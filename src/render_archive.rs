@@ -242,7 +242,7 @@ fn term_description(conn: &Connection, term: &Term) -> String {
             |r| r.get::<_, String>(0),
         ) {
             if !body.trim().is_empty() {
-                return wpautop(&crate::render::expand_shortcodes(&body, ""));
+                return wpautop(&crate::render::expand_shortcodes(&body, "", Some(conn)));
             }
         }
     }

@@ -383,10 +383,12 @@ async fn public_root(State(app): State<App>, headers: HeaderMap) -> Response {
 async fn public_page(State(app): State<App>, headers: HeaderMap, ConnectInfo(peer): ConnectInfo<SocketAddr>, Path(path): Path<String>) -> Response {
     let sc = site_for(&app, &headers);
     let clean = path.trim_matches('/');
-    // Path charset allowlist: slugs/dirs are lowercase ASCII + the
-    // separators WP permits; anything else can only be a probe.
+    // Path charset allowlist: WP asset filenames legitimately carry
+    // uppercase (ElegantIcons.woff/.svg, Font Awesome dirs, …), so the
+    // gate can't be lowercase-only. Slug lookup lowercases anyway —
+    // uppercase only matters for static-file resolution.
     if clean.contains("..") || clean.starts_with('/') || clean.contains('\\')
-        || clean.bytes().any(|b| !matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'/' | b'_' | b'%' | b'.' | b'~' | b'-'))
+        || clean.bytes().any(|b| !matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'/' | b'_' | b'%' | b'.' | b'~' | b'-'))
     {
         return not_found(sc);
     }

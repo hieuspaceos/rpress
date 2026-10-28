@@ -554,7 +554,30 @@ pub(crate) fn chrome_vars(
     m.insert("shortlink".into(), json!(shortlink));
     m.insert("flags".into(), json!(flags));
     m.insert("navx".into(), Value::Object(nav_map(conn, id, kind, slug, is_front, lang)?));
-    let page_title_html = if kind == "page" && !is_front {
+
+    /* `gdlr-core-page-option` enable-header-area=disable → WP renders no
+       header/topbar/mobile-header at all and marks the outer wrapper
+       `traveltour-header-disable` (origin-verified on pages like
+       idees-rencontres-ethniques). */
+    let header_disable = {
+        let raw = meta("gdlr-core-page-option");
+        crate::php_serialize::unserialize(raw.as_bytes())
+            .ok()
+            .and_then(|v| v.get("enable-header-area").and_then(|x| x.as_str().map(str::to_string)))
+            .as_deref()
+            == Some("disable")
+    };
+    m.insert("header_disable".into(), json!(header_disable));
+
+    let page_title_disable = {
+        let raw = meta("gdlr-core-page-option");
+        crate::php_serialize::unserialize(raw.as_bytes())
+            .ok()
+            .and_then(|v| v.get("enable-page-title").and_then(|x| x.as_str().map(str::to_string)))
+            .as_deref()
+            == Some("disable")
+    };
+    let page_title_html = if kind == "page" && !is_front && !page_title_disable {
         /* Page-title background image: the page's `gdlr-core-page-option`
            `title-background` media id (per-page option, imported into
            post_meta) — media path via media.wp_id lookup. */
@@ -591,6 +614,11 @@ pub(crate) fn chrome_vars(
     let custom_css: String = conn
         .query_row("SELECT value FROM settings WHERE key='custom_css'", [], |r| r.get(0))
         .unwrap_or_default();
+    /* WP Categories Widget plugin emits `wcw-inlinecss-inline-css` before
+       WP Additional CSS (`wp-custom-css`). Ordering matters: this plugin
+       default color is blue, and the site's custom CSS overrides it to
+       Traveltour/Aucoeur colors. */
+    let wcw = include_str!("../admin/plugins/theme_traveltour/seed/wcw-inlinecss.html");
     let custom_css_tag = if custom_css.trim().is_empty() {
         String::new()
     } else {
@@ -599,7 +627,7 @@ pub(crate) fn chrome_vars(
             custom_css.replace("</style", "<\\/style")
         )
     };
-    m.insert("head_css_extra".into(), json!(custom_css_tag));
+    m.insert("head_css_extra".into(), json!(format!("{wcw}{custom_css_tag}")));
     m.insert("head_css_eztoc".into(), json!(""));
     m.insert("head_css_wpdiscuz".into(), json!(""));
     m.insert("foot_scripts_eztoc".into(), json!(""));

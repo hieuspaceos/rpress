@@ -637,7 +637,7 @@ fn render_node(
             // gdlr_core_content_filter → do_shortcode + oembed for the small
             // set this site actually uses.
             if s.contains('[') {
-                *s = expand_shortcodes(s, site_url);
+                *s = expand_shortcodes(s, site_url, conn);
             }
             // gdlr_core_content_filter also unwraps <p> that encloses a
             // single block-level heading (TinyMCE artifact).
@@ -741,7 +741,7 @@ fn render_node(
             for tab in tabs.iter_mut() {
                 if let Some(Value::String(s)) = tab.get_mut("content") {
                     if s.contains('[') {
-                        *s = expand_shortcodes(s, site_url);
+                        *s = expand_shortcodes(s, site_url, conn);
                     }
                 }
             }

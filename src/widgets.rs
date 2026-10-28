@@ -265,7 +265,7 @@ const SEED_WIDGETS: &[Seed] = &[];
 /// one-time upgrade path re-runs (never re-seeds deleted rows — the
 /// upgrade only converts the two frozen widgets it owns and inserts the
 /// new -es sidebars/widgets with OR IGNORE).
-const SEED_VERSION: &str = "3";
+pub(crate) const SEED_VERSION: &str = "3";
 
 /// Ensure the sidebars/widgets schema exists and the seed rows are present.
 /// Idempotent: creates the tables only when missing (full migration batch on
@@ -292,6 +292,12 @@ pub(crate) fn ensure(conn: &Connection) -> Result<()> {
             probe(conn)?
         }
     };
+    /* Schema drift: older DBs lack `widgets.lang` (mixed-lang regions
+       filter on it). migrate_conn is idempotent — cheap PRAGMA probe,
+       ALTER only when the column is missing. */
+    if conn.prepare("SELECT lang FROM widgets LIMIT 0").is_err() {
+        crate::schema::migrate_conn(conn)?;
+    }
     if n_sidebars == 0 && n_widgets == 0 {
         let tx = conn.unchecked_transaction()?;
         for s in all_sidebars() {
@@ -322,10 +328,20 @@ fn seed_widgets(conn: &Connection) -> Result<()> {
         .flat_map(|a| a.seeds().iter());
     for w in SEED_WIDGETS.iter().chain(adapter_seeds) {
         let ord = ords.entry(w.sidebar).or_insert(0);
+        /* Widget lang follows its sidebar id suffix: seeds on -fr/-es
+           regions render only on that language (same scope the import
+           stamps on pll-tagged rows); 'all'/regionless ids stay ''. */
+        let wlang = if w.sidebar.ends_with("-fr") {
+            "fr"
+        } else if w.sidebar.ends_with("-es") {
+            "es"
+        } else {
+            ""
+        };
         conn.execute(
-            "INSERT OR IGNORE INTO widgets(id, sidebar_id, type, title, settings_json, ord)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
-            rusqlite::params![w.id, w.sidebar, w.typ, w.title, w.settings, *ord],
+            "INSERT OR IGNORE INTO widgets(id, sidebar_id, type, title, settings_json, ord, lang)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![w.id, w.sidebar, w.typ, w.title, w.settings, *ord, wlang],
         )?;
         *ord += 1;
     }
@@ -403,12 +419,16 @@ const LEGACY_CAT9: &str = include_str!("admin/plugins/theme_traveltour/seed/wpca
 const LEGACY_CH13: &str = include_str!("admin/plugins/theme_traveltour/seed/custom_html_13_legacy.json");
 
 /// Rows of a sidebar in display order: (id, type, title, settings_json).
-fn rows(conn: &Connection, sidebar_id: &str) -> Result<Vec<(String, String, String, String)>> {
+/// `lang` filters the Polylang scope — a tagged row renders only on its
+/// own language, '' everywhere (mixed-language WP sidebars like
+/// single-tour share one region id across languages).
+fn rows(conn: &Connection, sidebar_id: &str, lang: &str) -> Result<Vec<(String, String, String, String)>> {
     let mut st = conn.prepare(
-        "SELECT id, type, title, settings_json FROM widgets WHERE sidebar_id=?1 ORDER BY ord",
+        "SELECT id, type, title, settings_json FROM widgets \
+         WHERE sidebar_id=?1 AND (lang=?2 OR lang='') ORDER BY ord",
     )?;
     let out = st
-        .query_map([sidebar_id], |r| {
+        .query_map([sidebar_id, lang], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
@@ -425,13 +445,17 @@ fn fallback_sidebar_id(conn: &Connection, sid: &str, lang: &str) -> Result<Optio
         return Ok(None);
     }
     let cfg = crate::lang::config(conn);
-    let candidates = [
-        sid.strip_suffix(&format!("-{lang}")).map(|base| format!("{base}-{}", cfg.primary)),
-        sid.strip_suffix(&format!("-{lang}")).map(|base| format!("{base}-fr")),
-    ];
-    for candidate in candidates.into_iter().flatten() {
-        if !rows(conn, &candidate)?.is_empty() {
-            return Ok(Some(candidate));
+    /* Only the PRIMARY-lang candidate may substitute a missing
+       `…-{lang}` sidebar. The hardcoded `-fr` legacy fallback leaked
+       French seed widgets onto non-fr/es primary sites (en, vi, …)
+       whose own region is empty — WP semantics: an empty sidebar
+       renders nothing, not another lang's widgets. */
+    let candidate = sid
+        .strip_suffix(&format!("-{lang}"))
+        .map(|base| format!("{base}-{}", cfg.primary));
+    if let Some(c) = candidate {
+        if c != sid && !rows(conn, &c, lang)?.is_empty() {
+            return Ok(Some(c));
         }
     }
     Ok(None)
@@ -461,7 +485,7 @@ pub(crate) fn render_fragment(html: &str, site_url: &str, lang: &str) -> Result<
 /// hierarchy) or the owning adapter's renderer via `plugin_widget_render`.
 /// `current_slug` marks the current-cat on rendered term lists (live WP
 /// behaviour).
-pub(crate) fn render_sidebar(
+pub fn render_sidebar(
     conn: &Connection,
     sidebar_id: &str,
     site_url: &str,
@@ -471,11 +495,11 @@ pub(crate) fn render_sidebar(
 ) -> Result<String> {
     ensure(conn)?;
     let mut sid = resolve_id(sidebar_id, lang);
-    let mut widget_rows = rows(conn, &sid)?;
+    let mut widget_rows = rows(conn, &sid, lang)?;
     if widget_rows.is_empty() {
         if let Some(fallback) = fallback_sidebar_id(conn, &sid, lang)? {
             sid = fallback;
-            widget_rows = rows(conn, &sid)?;
+            widget_rows = rows(conn, &sid, lang)?;
         }
     }
     let sidebar = all_sidebars();
@@ -903,7 +927,7 @@ pub(crate) fn sidebar_widgets(
     let prefix = if es { "/es" } else { "" };
     let mut out = Vec::new();
     let mut stmt = conn.prepare(crate::sql!("archive__select_terms_tax"))?;
-    for (wid, typ, title, settings) in rows(conn, &sid)? {
+    for (wid, typ, title, settings) in rows(conn, &sid, lang)? {
         // Same policy as render_sidebar: corrupt settings_json propagates
         // (with the widget id) instead of silently emptying the block.
         let s: Value = serde_json::from_str(&settings)

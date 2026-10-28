@@ -30,10 +30,23 @@ pub(crate) const SIDEBARS: &[Sidebar] = &[
     Sidebar { id: "sidebar-post-es", name: "Blog sidebar (ES)", lang: "es",
         before: POST_AREA_BEFORE,
         after: POST_AREA_AFTER },
+    /* EN region: mono-language traveltour sites (imagetravel) register
+       their blog sidebar under the same `sidebar-post-{lang}` scheme the
+       importer writes — without a const row the posts render unwrapped
+       (missing traveltour-sidebar-area shell). */
+    Sidebar { id: "sidebar-post-en", name: "Blog sidebar (EN)", lang: "en",
+        before: POST_AREA_BEFORE,
+        after: POST_AREA_AFTER },
     Sidebar { id: "sidebar-archive-fr", name: "Tour archive sidebar (FR)", lang: "fr",
         before: r#""#,
         after: r#""# },
     Sidebar { id: "sidebar-archive-es", name: "Tour archive sidebar (ES)", lang: "es",
+        before: r#""#,
+        after: r#""# },
+    /* EN archive region for mono-language sites — the importer
+       synthesizes `sidebar-archive-en` rows from the theme-selected
+       source sidebar. */
+    Sidebar { id: "sidebar-archive-en", name: "Tour archive sidebar (EN)", lang: "en",
         before: r#""#,
         after: r#""# },
     Sidebar { id: "footer-1-fr", name: "Footer column 1 (FR)", lang: "fr",

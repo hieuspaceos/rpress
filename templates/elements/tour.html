@@ -94,7 +94,7 @@
 {%- endif -%}
 {%- endmacro -%}
 {%- macro title_h(t, widget) -%}
-<h3 class="tourmaster-tour-title gdlr-core-skin-title" {{ style('font-size', opts['tour-title-font-size'], 'font-weight', opts['tour-title-font-weight'], 'letter-spacing', opts['tour-title-letter-spacing'], 'text-transform', opts['tour-title-text-transform'], 'margin-bottom', opts['tour-title-bottom-margin']) }} ><a href="{{ t.url }}" >{% if not widget %}{{ title_icon(t) }}<span>{{ t.title|e }}</span>{% else %}{{ t.title|e }}{% endif %}</a></h3>
+<h3 class="tourmaster-tour-title gdlr-core-skin-title" {{ style('font-size', opts['tour-title-font-size'], 'font-weight', opts['tour-title-font-weight'], 'letter-spacing', opts['tour-title-letter-spacing'], 'text-transform', opts['tour-title-text-transform'], 'margin-bottom', opts['tour-title-bottom-margin']) }} ><a href="{{ t.url }}" >{% if not widget %}{% if grid_style == 'style-2' %}{{ title_icon(t) }}{% endif %}<span>{{ t.title|e }}</span>{% else %}{{ t.title|e }}{% endif %}</a></h3>
 {%- endmacro -%}
 {# — thumbnail shared by grid/list/modern; frame opts add the outer-frame treatment — #}
 {%- macro thumb(t) -%}

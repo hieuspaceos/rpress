@@ -51,9 +51,11 @@ fn sc_attrs(s: &str) -> Map<String, Value> {
 
 /// Expand the shortcodes this site's text-boxes actually contain:
 /// `[gdlr_core_button]`, `[embed]url[/embed]` (YouTube/Vimeo → iframe),
-/// `[caption]…[/caption]` (WP figure markup), `[gdlr_core_icon]`.
+/// `[caption]…[/caption]` (WP figure markup), `[gdlr_core_icon]`,
+/// `[metaslider id=N]` (MetaSlider flex output; needs `conn` to reach the
+/// imported `ml-slider`/`ml-slide` rows — left verbatim without it).
 /// Unknown tags are left verbatim (WP shows them as text too).
-pub(crate) fn expand_shortcodes(s: &str, site_url: &str) -> String {
+pub(crate) fn expand_shortcodes(s: &str, site_url: &str, conn: Option<&Connection>) -> String {
     let mut out: Vec<u8> = Vec::with_capacity(s.len() + 256);
     let bytes = s.as_bytes();
     let mut i = 0;
@@ -178,6 +180,20 @@ pub(crate) fn expand_shortcodes(s: &str, site_url: &str) -> String {
                         i += end + 1;
                         continue;
                     }
+                    "metaslider" => {
+                        let a = sc_attrs(head);
+                        let id = a.get("id").and_then(|v| {
+                            v.as_str().and_then(|s| s.trim_matches('"').parse::<i64>().ok())
+                                .or_else(|| v.as_i64())
+                        });
+                        if let (Some(id), Some(c)) = (id, conn) {
+                            if let Some(html) = metaslider_html(c, id, site_url) {
+                                out.extend_from_slice(html.as_bytes());
+                                i += end + 1;
+                                continue;
+                            }
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -186,6 +202,234 @@ pub(crate) fn expand_shortcodes(s: &str, site_url: &str) -> String {
         i += 1;
     }
     String::from_utf8_lossy(&out).into_owned()
+}
+
+/// `[metaslider id=N]` → the plugin's FlexSlider front markup. Slides are
+/// `ml-slide` posts (status publish) tied to the `ml-slider` post through
+/// the `ml-slider` taxonomy (term slug = slider id), ordered by menu_order
+/// — exactly WP_Query's ordering for the slider's slide query. `None` when
+/// the slider isn't imported or has no live slides (shortcode left
+/// verbatim, same as WP's "slideshow not found" no-op).
+fn metaslider_html(conn: &Connection, id: i64, site_url: &str) -> Option<String> {
+    let (title, settings_raw, theme) = conn
+        .query_row(
+            "SELECT p.title, \
+             (SELECT meta_value FROM post_meta WHERE post_id=p.id AND meta_key='ml-slider_settings' LIMIT 1), \
+             (SELECT meta_value FROM post_meta WHERE post_id=p.id AND meta_key='metaslider_slideshow_theme' LIMIT 1) \
+             FROM posts p WHERE p.id=?1 AND p.kind='ml-slider'",
+            [id],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                ))
+            },
+        )
+        .ok()?;
+    let settings = settings_raw
+        .as_deref()
+        .and_then(|raw| crate::php_serialize::unserialize(raw.as_bytes()).ok());
+    let sget = |k: &str| -> String {
+        settings
+            .as_ref()
+            .and_then(|v| v.get(k))
+            .and_then(|v| v.as_str().map(|s| s.to_string()).or_else(|| v.as_i64().map(|n| n.to_string())))
+            .unwrap_or_default()
+    };
+    // Slide query: WP_Query(post_type=ml-slide, tax=ml-slider:{id},
+    // orderby=menu_order). _thumbnail_id is the slide's image attachment.
+    let mut stmt = conn
+        .prepare(
+            "SELECT p.id, COALESCE(p.published_at,''), \
+             (SELECT meta_value FROM post_meta WHERE post_id=p.id AND meta_key='_thumbnail_id' LIMIT 1) \
+             FROM posts p JOIN post_terms pt ON pt.post_id=p.id \
+             WHERE p.kind='ml-slide' AND p.status='publish' \
+             AND pt.taxonomy='ml-slider' AND pt.slug=?1 \
+             ORDER BY p.menu_order",
+        )
+        .ok()?;
+    let rows = stmt
+        .query_map([id.to_string()], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<String>>(2)?,
+            ))
+        })
+        .ok()?;
+    let slides: Vec<(i64, String, Option<i64>)> = rows
+        .flatten()
+        .map(|(sid, date, t)| (sid, date, t.and_then(|s| s.parse::<i64>().ok())))
+        .collect();
+    if slides.is_empty() {
+        return None;
+    }
+    let sw = sget("width");
+    let sh = sget("height");
+    let theme_cls = theme
+        .filter(|t| !t.is_empty() && t != "none")
+        .map(|t| format!("ms-theme-{}", t))
+        .unwrap_or_else(|| "ms-theme-default".to_string());
+    let carousel = sget("carouselMode") == "true";
+    // Sliders saved under the newer MetaSlider settings schema (the
+    // mobileNavigation_*/ariaLive keys exist) emit nav-hidden twice when
+    // navigation is off; the legacy 39-key schema emits it once.
+    let new_schema = settings
+        .as_ref()
+        .and_then(|v| v.get("mobileNavigation_desktop"))
+        .is_some();
+    let nav_hidden = if sget("navigation") == "false" { " nav-hidden" } else { "" };
+    let carousel_cls = if carousel { " has-carousel-mode" } else { "" };
+    let nav_hidden2 = if new_schema && !nav_hidden.is_empty() { " nav-hidden" } else { "" };
+    let css_class = sget("cssClass");
+    let extra_cls = if css_class.is_empty() { String::new() } else { format!(" {}", esc_attr(&css_class)) };
+    let site = site_url.trim_end_matches('/');
+
+    // smartCrop truthy → MetaSlider's own meta-slider-resized-WxH crop img;
+    // "disabled" → WP wp_get_attachment_image markup (srcset/sizes/etc) at
+    // full size. Both observed on the origin (27875 smart, 31605 disabled).
+    let smart_crop = {
+        let v = sget("smartCrop");
+        v == "true" || v == "1"
+    };
+    // WP wp_get_attachment_image context flags: the first 3 content images
+    // skip lazy loading (omit_lazy_loading_threshold(3)) and the very first
+    // gets fetchpriority="high"; images after that get loading="lazy".
+    // Per-slider approximation — the slider is the page's first content on
+    // every observed usage.
+    let fetch_attr = |n: usize| -> &str {
+        if n == 0 { " fetchpriority=\"high\"" } else if n >= 3 { " loading=\"lazy\"" } else { "" }
+    };
+    let mut lis: Vec<String> = Vec::new();
+    for (slide_id, date, thumb) in &slides {
+        let media = thumb.and_then(|t| {
+            conn.query_row(
+                "SELECT path, COALESCE(alt,''), COALESCE(title,''), COALESCE(sizes_json,''), COALESCE(caption,''), COALESCE(w,0), COALESCE(h,0) FROM media WHERE id=?1",
+                [t],
+                |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, String>(3)?,
+                        r.get::<_, String>(4)?,
+                        r.get::<_, i64>(5)?,
+                        r.get::<_, i64>(6)?,
+                    ))
+                },
+            )
+            .ok()
+        });
+        let Some((path, alt, mtitle, sizes_json, caption, mw, mh)) = media else {
+            continue; // slide image not imported — WP emits nothing either
+        };
+        if path.is_empty() {
+            continue;
+        }
+        let dir = path.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
+        if smart_crop {
+            // meta-slider-resized-WxH is the plugin's on-the-fly crop
+            // registered from the slider's width/height.
+            let size_key = format!("meta-slider-resized-{sw}x{sh}");
+            let file = serde_json::from_str::<serde_json::Value>(&sizes_json)
+                .ok()
+                .and_then(|v| {
+                    v.get(&size_key)
+                        .and_then(|sz| sz.get("file"))
+                        .and_then(|f| f.as_str())
+                        .map(|f| f.to_string())
+                });
+            let src = match &file {
+                Some(f) => format!("{dir}/{f}"),
+                None => path.clone(),
+            };
+            let filename = src.rsplit('/').next().unwrap_or("");
+            let cap = if caption.is_empty() {
+                String::new()
+            } else {
+                format!("<div class=\"caption-wrap\"><div class=\"caption\">{caption}</div></div>")
+            };
+            lis.push(format!(
+                "<li style=\"display: none; width: 100%;\" class=\"slide-{slide_id} ms-image \" aria-roledescription=\"slide\" data-date=\"{}\" data-filename=\"{}\" data-slide-type=\"image\"><img src=\"{}/wp-content/uploads/{}\" height=\"{}\" width=\"{}\" alt=\"{}\" class=\"slider-{id} slide-{slide_id} msDefaultImage\" title=\"{}\" />{cap}</li>",
+                esc_attr(date),
+                esc_attr(filename),
+                site,
+                esc_attr(&src),
+                esc_attr(&sh),
+                esc_attr(&sw),
+                esc_attr(&alt),
+                esc_attr(&mtitle),
+            ));
+        } else {
+            // WP wp_get_attachment_image: full-size src, ratio-matched srcset
+            // (WP_TOLERANCE, not the strict 1% media_img_attrs uses for
+            // figures — the observed srcset keeps medium 300x84 on 694x194).
+            let filename = path.rsplit('/').next().unwrap_or("");
+            let mut entries: Vec<(String, i64)> = Vec::new();
+            if mw > 0 {
+                entries.push((format!("{site}/wp-content/uploads/{path}"), mw));
+            }
+            if let Ok(serde_json::Value::Object(map)) = serde_json::from_str(&sizes_json) {
+                for sz in map.values() {
+                    let f = sz.get("file").and_then(|v| v.as_str()).unwrap_or("");
+                    let (sw2, sh2) = (
+                        sz.get("width").and_then(|v| v.as_i64()).unwrap_or(0),
+                        sz.get("height").and_then(|v| v.as_i64()).unwrap_or(0),
+                    );
+                    if f.is_empty() || sw2 <= 0 || sh2 <= 0 || f.contains("..") || f.contains('/') || mw <= 0 || mh <= 0 {
+                        continue;
+                    }
+                    if ((sw2 as f64 * mh as f64 - mw as f64 * sh2 as f64).abs() / (mw as f64 * sh2 as f64)) > 0.002 {
+                        continue;
+                    }
+                    entries.push((format!("{site}/wp-content/uploads/{dir}/{f}"), sw2));
+                }
+            }
+            entries.sort_by(|a, b| b.1.cmp(&a.1)); // WP srcset desc
+            let fetch = fetch_attr(lis.len());
+            let extra = if entries.is_empty() {
+                String::new()
+            } else {
+                let srcset = entries
+                    .iter()
+                    .map(|(u, w)| format!("{} {}w", esc_attr(u), w))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                // WP 6.7 auto-sizes: "auto, " prefix only on lazy images.
+                let auto = if fetch.contains("lazy") { "auto, " } else { "" };
+                format!(" srcset=\"{srcset}\" sizes=\"{auto}(max-width: {mw}px) 100vw, {mw}px\"")
+            };
+            let cap = if caption.is_empty() {
+                String::new()
+            } else {
+                format!("<div class=\"caption-wrap\"><div class=\"caption\">{caption}</div></div>")
+            };
+            lis.push(format!(
+                "<li style=\"display: none; width: 100%;\" class=\"slide-{slide_id} ms-image \" aria-roledescription=\"slide\" data-date=\"{}\" data-filename=\"{}\" data-slide-type=\"image\"><img width=\"{}\" height=\"{}\" src=\"{}/wp-content/uploads/{}\" class=\"slider-{id} slide-{slide_id} msDefaultImage\" alt=\"{}\" rel=\"\" title=\"{}\" decoding=\"async\"{}{} />{cap}</li>",
+                esc_attr(date),
+                esc_attr(filename),
+                mw,
+                mh,
+                site,
+                esc_attr(&path),
+                esc_attr(&alt),
+                esc_attr(&mtitle),
+                fetch,
+                extra,
+            ));
+        }
+    }
+    if lis.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "<div id=\"metaslider-id-{id}\" style=\"width: 100%; margin: 0 auto;\" class=\"ml-slider-3-113-1 metaslider metaslider-flex metaslider-{id} ml-slider{carousel_cls} {theme_cls}{nav_hidden}{nav_hidden2}{extra_cls}\" role=\"region\" aria-label=\"{}\" data-height=\"{}\" data-width=\"{}\">\n    <div id=\"metaslider_container_{id}\">\n        <div id=\"metaslider_{id}\">\n            <ul class='slides'>\n                {}\n            </ul>\n        </div>\n        \n    </div>\n</div>",
+        esc_attr(&title),
+        esc_attr(&sh),
+        esc_attr(&sw),
+        lis.join("\n                "),
+    ))
 }
 
 /// `[embed]` — YouTube/Vimeo/Spotify URL → iframe, matching wp_oembed output
@@ -225,7 +469,7 @@ pub(crate) fn blog_posts(
     conn: &Connection,
     opts: &Map<String, Value>,
     lang: &str,
-    media: &HashMap<i64, (String, String)>,
+    _media: &HashMap<i64, (String, String)>,
     site_url: &str,
     tour_base: &str,
 ) -> Result<String> {
@@ -332,13 +576,19 @@ pub(crate) fn blog_posts(
     for (id, slug, title, excerpt, feat_id, _published) in rows {
         let url = page_url(conn, site_url.trim_end_matches('/'), lang, "post", &slug, tour_base);
         let img = feat_id
-            .and_then(|fid| media.get(&fid).map(|(p, alt)| (fid, p.clone(), alt.clone())))
-            .map(|(fid, p, alt)| {
+            .and_then(|fid| media_info(conn, fid).map(|d| (fid, d)))
+            .map(|(fid, d)| {
+                let p = d.get("path").and_then(|x| x.as_str()).unwrap_or("");
+                let alt = d.get("alt").and_then(|x| x.as_str()).unwrap_or("");
+                let w = d.get("w").and_then(|x| x.as_i64()).unwrap_or(0);
+                let h = d.get("h").and_then(|x| x.as_i64()).unwrap_or(0);
                 format!(
-                    "<img src=\"{}/wp-content/uploads/{}\" alt=\"{}\"{} />",
+                    "<img src=\"{}/wp-content/uploads/{}\" alt=\"{}\"{} title=\"{}\"{} />",
                     site_url.trim_end_matches('/'),
-                    esc_attr(&p),
-                    esc_attr(&alt),
+                    esc_attr(p),
+                    esc_attr(alt),
+                    if w > 0 { format!(" width=\"{w}\" height=\"{h}\"") } else { String::new() },
+                    esc_attr(&wp_title(alt)),
                     media_img_attrs(conn, fid, site_url),
                 )
             })

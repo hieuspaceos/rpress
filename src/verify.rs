@@ -204,6 +204,15 @@ pub fn run(db: &Path) -> Result<()> {
                     check(&c, &mut failed, label, sql, n);
                 }
             }
+            /* Widgets compare with `>=` like redirects: admins can add
+               widget rows post-import without breaking parity. */
+            let want_w: i64 = expect.get("widgets").and_then(|v| v.as_i64()).unwrap_or(0);
+            let widgets: i64 = c.query_row("SELECT COUNT(*) FROM widgets", [], |r| r.get(0)).unwrap_or(0);
+            let widgets_ok = widgets >= want_w;
+            println!("{:<44} got={:<8} expect={:<8} {}", format!("widgets >= {want_w}"), widgets, want_w, if widgets_ok { "OK" } else { "MISMATCH" });
+            if !widgets_ok {
+                failed += 1;
+            }
             let want: i64 = expect.get("redirects").and_then(|v| v.as_i64()).unwrap_or(0);
             let redir: i64 = c.query_row(sql!("verify__select_count_from_1"), [], |r| r.get(0)).unwrap_or(0);
             let redir_ok = redir >= want;
