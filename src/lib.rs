@@ -3,6 +3,7 @@ pub mod auth;
 pub mod db;
 pub mod html_decode;
 pub mod forms_markup;
+pub mod harvest;
 pub mod generate;
 pub mod import;
 pub mod intake;

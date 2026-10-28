@@ -198,6 +198,38 @@ parity of nav `<li>` sequence + footer text against
 `tests/fixtures/aucoeur-*-baseline.txt` (recapture via the fixture
 comments after intentional chrome changes).
 
+### Declarative plugin adapters — `plugins/specs/*.toml`
+
+New WP plugin stacks on-board without Rust: drop a TOML spec into
+`plugins/specs/` (embedded at build time by `build.rs`, parsed at
+startup — a bad spec fails loudly, never silently skips):
+
+```toml
+slug = "babe"
+claim_types = ["to_book"]       # wp post_type → kind (must match a kinds[].kind)
+option_prefixes = ["babe_"]     # settings keys the stack owns
+
+[[kinds]]
+kind = "to_book"
+section = "bookings"            # /admin/bookings
+noun = "Tour"
+url_base = "booking"            # public path segment (empty = root)
+# origin_base = "to_book"       # only when the WP path differs from url_base
+taxonomies = ["categories", "ba_location", "ba_type", "ba_features"]
+harvest = true                  # render = origin HTML fetched once at import
+```
+
+- `harvest = true` kinds fetch origin-rendered HTML **once at import**
+  (needs `siteurl` live then — port-once), store it in
+  `harvested_pages`, and generate emits it verbatim; re-generates work
+  with a dead origin. CF7 `<form action>`s are rewritten to
+  `/form/enquiry` (seeded form row, `additional='harvest-seed'`).
+- `harvest = false`/absent → the generic bare-body render path.
+  Rust adapters keep priority: a spec colliding with a Rust kind/section
+  fails startup on the same duplicate asserts.
+- Full editor/save semantics still need a Rust `PluginAdapter`
+  (`tourmaster` stays Rust); specs cover claim + list + render-by-origin.
+
 ### Plugin settings & migration (operator notes)
 
 - Plugin-registered adapters (e.g. `tourmaster`, `theme-traveltour`)

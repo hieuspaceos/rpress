@@ -488,9 +488,19 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
     // interpret (Elementor today; the table is the hook for more) — generate
     // harvests their rendered HTML from the origin instead of re-rendering.
     tx.execute_batch(
-        "CREATE TABLE IF NOT EXISTS harvest_posts(post_id INTEGER PRIMARY KEY)",
+        "CREATE TABLE IF NOT EXISTS harvest_posts(post_id INTEGER PRIMARY KEY);
+         CREATE TABLE IF NOT EXISTS harvested_pages(
+             post_id INTEGER PRIMARY KEY,
+             html TEXT NOT NULL,
+             fetched_at TEXT NOT NULL
+         )",
     )?;
     let mut stmt_h = tx.prepare("INSERT OR IGNORE INTO harvest_posts(post_id) VALUES(?1)")?;
+
+    // Spec `harvest = true` kinds: (post_id, lang, slug, origin_base)
+    // collected during the posts pass, fetched AFTER tx.commit() —
+    // never hold the write tx across HTTP.
+    let mut harvest_targets: Vec<(i64, String, String, String)> = Vec::new();
 
     let mut wp_to_cms: HashMap<i64, i64> = HashMap::new();
 
@@ -553,6 +563,14 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
                     // field); body_json above stays the GDLR layout.
                     p.content,
                 ])?;
+                if p.status == "publish" {
+                    if let Some((_, base)) = crate::admin::plugins::spec::spec_harvest_bases()
+                        .iter()
+                        .find(|(k, _)| *k == kind)
+                    {
+                        harvest_targets.push((p.id, lang.clone(), p.slug.clone(), base.to_string()));
+                    }
+                }
                 wp_to_cms.insert(p.id, p.id);
                 if p.meta.contains_key("_elementor_data") {
                     stmt_h.execute(params![p.id])?;
@@ -1098,6 +1116,81 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
     for a in crate::admin::plugins::adapters() {
         if let Some(h) = a.import_hooks() {
             (h.after_import)(&conn)?;
+        }
+    }
+
+    // Spec harvest kinds: origin-rendered HTML fetched ONCE here —
+    // port-once semantics mean the WP origin only has to be live during
+    // import. Rows land in `harvested_pages`; generate emits them
+    // verbatim (dead-origin regenerates keep working). Fetches run
+    // post-commit so the write tx never spans HTTP.
+    if let Some(origin) = options.get("siteurl").filter(|o| !o.is_empty()) {
+        if !harvest_targets.is_empty() {
+            let lang_cfg = crate::lang::config(&conn);
+            let mut fetched: Vec<(i64, String)> = Vec::new();
+            let mut failed = 0u64;
+            for (id, lang, slug, base) in &harvest_targets {
+                let lp = crate::lang::rel_prefix(&lang_cfg, lang);
+                // Root-served kind (origin_base ""): origin path is
+                // "{lp}/{slug}/" — no empty base segment.
+                let path = match (lp.is_empty(), base.is_empty()) {
+                    (true, true) => format!("{slug}/"),
+                    (true, false) => format!("{base}/{slug}/"),
+                    (false, true) => format!("{lp}/{slug}/"),
+                    (false, false) => format!("{lp}/{base}/{slug}/"),
+                };
+                match crate::harvest::page(origin, &path, "{{ site_url }}") {
+                    Ok(html) => fetched.push((*id, html)),
+                    Err(e) => {
+                        failed += 1;
+                        rep.log(format!("[harvest] {path} failed: {e:#} — bare-body fallback"));
+                    }
+                }
+            }
+            // Harvested pages carry CF7 forms re-pointed at
+            // `/form/enquiry` (harvest.rs) — seed that endpoint's form
+            // row so intake validation + submission storage work. Rows
+            // marked additional='harvest-seed' are ours: re-seeded on
+            // every import (markup fixes propagate); rows without the
+            // marker (admin-edited, imported CF7) are never touched.
+            if !fetched.is_empty() {
+                let primary = crate::lang::setting(&conn, "primary_lang");
+                conn.execute(
+                    "DELETE FROM forms WHERE slug='enquiry' AND additional='harvest-seed'",
+                    [],
+                )?;
+                conn.execute(
+                    "INSERT OR IGNORE INTO forms(slug, title, lang, kind, markup, \
+                     mail_to, mail_from, mail_subject, mail_body, messages, additional, \
+                     created_at, updated_at) \
+                     VALUES('enquiry', 'Tour enquiry', ?1, 'form', \
+                     '[text* your-name][email* your-email][text* your-phone]\
+                      [text your-subject][textarea your-message][submit \"Send\"]', \
+                     '', '', '', '', '{}', 'harvest-seed', datetime('now'), datetime('now'))",
+                    params![if primary.is_empty() { "fr".to_string() } else { primary }],
+                )?;
+            }
+            if !fetched.is_empty() {
+                // Fresh connection: `conn` stays immutable (callers hold
+                // &conn for after_import hooks just above).
+                let mut conn2 = crate::db::conn(db_path)?;
+                let tx2 = conn2.transaction()?;
+                {
+                    let mut ins = tx2.prepare(
+                        "INSERT OR REPLACE INTO harvested_pages(post_id, html, fetched_at) \
+                         VALUES(?1, ?2, datetime('now'))",
+                    )?;
+                    for (id, html) in &fetched {
+                        ins.execute(params![id, html])?;
+                    }
+                }
+                tx2.commit()?;
+            }
+            rep.log(format!(
+                "harvested_pages: {} stored, {} failed",
+                fetched.len(),
+                failed
+            ));
         }
     }
 

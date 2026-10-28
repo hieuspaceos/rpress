@@ -8,7 +8,6 @@ use anyhow::{Context, Result};
 use rusqlite::Connection;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 pub fn atomic_write(path: &Path, contents: impl AsRef<[u8]>) -> Result<()> {
@@ -58,9 +57,18 @@ pub fn run(db: &Path, templates: &Path, out: &Path, site_url: &str, tour_base: &
 
     let lang_cfg = crate::lang::config(&conn);
 
-    // Page-builder posts (Elementor & co): harvest the origin's rendered
+    // Spec harvest kinds (fetch-at-import): stored HTML wins over both
+    // the elementor fetch-at-generate set below and any adapter render —
+    // `harvested_pages` rows only exist for spec-owned kinds.
+    // Elementor & co (fetch-at-generate): harvest the origin's rendered
     // HTML instead of re-rendering — fidelity by construction. Table is
     // written by import; absent on dbs imported before this feature.
+    let mut harvested_html: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
+    if let Ok(mut s) = conn.prepare("SELECT post_id, html FROM harvested_pages") {
+        if let Ok(rows) = s.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))) {
+            harvested_html = rows.flatten().collect();
+        }
+    }
     let mut harvest: std::collections::HashSet<i64> = std::collections::HashSet::new();
     let legacy_origin: String = conn
         .query_row("SELECT value FROM settings WHERE key='legacy_origin'", [], |r| r.get(0))
@@ -98,16 +106,40 @@ pub fn run(db: &Path, templates: &Path, out: &Path, site_url: &str, tour_base: &
         }
         let rel = rel_path_with_cfg(&lang_cfg, *id, front, lang, &wslug, kind_base);
         let dest = out.join(&rel);
-        let rendered = if harvest.contains(id) && !legacy_origin.is_empty() {
-            let path = rel.to_string_lossy().replace("index.html", "");
-            match harvest_page(&legacy_origin, &path, site_url) {
+        let stored = harvested_html.remove(id);
+        let rendered = if let Some(html) = stored {
+            harvested += 1;
+            // Stored markup carries `{{ site_url }}` placeholders —
+            // resolve against this render's origin (deploy/render_slug).
+            Some(Ok((crate::render_post::rewrite_origin(&html, site_url, &conn), "harvested".to_string(), String::new())))
+        } else if harvest.contains(id) && !legacy_origin.is_empty() {
+            // Fetch-at-generate (elementor). For a post that is ALSO a
+            // spec-harvest kind, the origin URL uses the kind's
+            // origin_base, not the local rel path (they diverge when
+            // origin_base ≠ url_base). Spec kinds with no stored row
+            // and no harvest_posts membership fall to bare-body —
+            // port-once semantics, no per-generate fetch.
+            let harvest_path = plugins::spec::spec_harvest_bases()
+                .iter()
+                .find(|(k, _)| *k == kind.as_str())
+                .map(|(_, base)| {
+                    let lp = crate::lang::rel_prefix(&lang_cfg, lang);
+                    match (lp.is_empty(), base.is_empty()) {
+                        (true, true) => format!("{wslug}/"),
+                        (true, false) => format!("{base}/{wslug}/"),
+                        (false, true) => format!("{lp}/{wslug}/"),
+                        (false, false) => format!("{lp}/{base}/{wslug}/"),
+                    }
+                })
+                .unwrap_or_else(|| rel.to_string_lossy().replace("index.html", ""));
+            match crate::harvest::page(&legacy_origin, &harvest_path, site_url) {
                 Ok(h) => {
                     harvested += 1;
                     Some(Ok((h, "harvested".to_string(), String::new())))
                 }
                 Err(e) => {
                     harvest_failed += 1;
-                    eprintln!("[harvest] {path} failed: {e:#} — rendering normally");
+                    eprintln!("[harvest] {harvest_path} failed: {e:#} — rendering normally");
                     None
                 }
             }
@@ -160,7 +192,7 @@ pub fn run(db: &Path, templates: &Path, out: &Path, site_url: &str, tour_base: &
                 // site has builder posts and a known origin.
                 if !legacy_origin.is_empty() {
                     let path = rel.to_string_lossy().replace("index.html", "");
-                    match harvest_page(&legacy_origin, &path, site_url) {
+                    match crate::harvest::page(&legacy_origin, &path, site_url) {
                         Ok(h) => {
                             atomic_write(&out.join(&rel), h)?;
                             harvested += 1;
@@ -692,35 +724,8 @@ pub(crate) fn write_404(out: &Path, templates: &Path, conn: &Connection, site_ur
     Ok(())
 }
 
-/// Fetch the origin's rendered page for a builder post and rewrite origin
-/// URLs to the local site_url. Serves the builder's own output — fidelity
-/// by construction; links still resolve locally (assets 307-fallback).
-fn harvest_page(origin: &str, path: &str, site_url: &str) -> Result<String> {
-    let base = origin.trim_end_matches('/');
-    // Scheme-less stored origins need a scheme to fetch; default https.
-    let base = if base.contains("://") {
-        base.to_string()
-    } else {
-        format!("https://{base}")
-    };
-    let base = base.as_str();
-    let url = format!("{base}/{}", path.trim_start_matches('/'));
-    let o = Command::new("curl")
-        .args(["-sfL", "--max-time", "30", "-A", "rpress-harvest/1.0", &url])
-        .output()
-        .with_context(|| format!("curl {url}"))?;
-    if !o.status.success() {
-        anyhow::bail!("{url} → http {}", o.status);
-    }
-    let mut html = String::from_utf8_lossy(&o.stdout).into_owned();
-    if html.len() < 500 {
-        anyhow::bail!("{url} too short ({}b) — refusing", html.len());
-    }
-    let local = site_url.trim_end_matches('/');
-    html = html.replace(base, local);
-    html = html.replace(&base.replace('/', "\\/"), &local.replace('/', "\\/"));
-    Ok(html)
-}
+// Fetch implementation moved to `crate::harvest::page` (shared with
+// import's fetch-at-import pass); signature identical.
 
 /// Run `pagefind --site <out>` when the binary is installed (6.5).
 /// Pagefind builds a merged index; each page's `lang` attribute routes it

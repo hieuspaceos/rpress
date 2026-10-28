@@ -1,0 +1,14 @@
+slug = "babe"
+claim_types = ["to_book"]
+option_prefixes = ["babe_"]
+
+[[kinds]]
+kind = "to_book"
+section = "bookings"
+noun = "Tour"
+list_title = "Bookings"
+add_label = "Add New Tour"
+url_base = "booking"
+taxonomies = ["categories", "ba_location", "ba_type", "ba_features"]
+menu_icon = "dashicons-tickets-alt"
+harvest = true

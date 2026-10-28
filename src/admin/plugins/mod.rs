@@ -28,6 +28,7 @@ use std::path::Path;
 use std::pin::Pin;
 use std::sync::LazyLock;
 
+pub(crate) mod spec;
 pub(crate) mod theme_tevily;
 pub(crate) mod theme_traveltour;
 pub(crate) mod tourmaster;
@@ -70,6 +71,10 @@ pub(crate) struct KindDef {
     /// the url-base threading in phase 03.
     #[allow(dead_code)]
     pub(crate) url_base_key: Option<&'static str>,
+    /// Fixed public URL base (e.g. "booking" for BABE `to_book`) — wins
+    /// over `url_base_key` so kinds whose permalink base is part of the
+    /// plugin contract don't share the legacy `tour_base` value.
+    pub(crate) url_base: Option<&'static str>,
     /// Taxonomies owned by this kind — `tax_menu` routes their screens
     /// under this kind's section instead of a catch-all.
     pub(crate) taxonomies: &'static [&'static str],
@@ -94,7 +99,9 @@ pub(crate) type KindBases = std::collections::HashMap<&'static str, String>;
 pub(crate) fn resolve_bases(legacy_tour_base: &str) -> KindBases {
     let mut m = KindBases::new();
     for def in kind_defs() {
-        if let Some(_key) = def.url_base_key {
+        if let Some(b) = def.url_base {
+            m.insert(def.kind, b.to_string());
+        } else if let Some(_key) = def.url_base_key {
             m.insert(def.kind, legacy_tour_base.to_string());
         }
     }
@@ -355,7 +362,7 @@ static CORE_KINDS: &[KindDef] = &[
     KindDef {
         kind: "post", section: "posts", noun: "Post", list_title: "Posts",
         add_label: "Add Post", head: HEAD_POST, row_cols: post_row_cols,
-        url_base_key: None,
+        url_base_key: None, url_base: None,
         taxonomies: &["category", "post_tag"],
         menu_icon: "dashicons-admin-post",
         editor: None,
@@ -363,7 +370,7 @@ static CORE_KINDS: &[KindDef] = &[
     KindDef {
         kind: "page", section: "pages", noun: "Page", list_title: "Pages",
         add_label: "Add Page", head: HEAD_PAGE, row_cols: page_row_cols,
-        url_base_key: None, taxonomies: &[], menu_icon: "dashicons-admin-page",
+        url_base_key: None, url_base: None, taxonomies: &[], menu_icon: "dashicons-admin-page",
         editor: None,
     },
 ];
@@ -396,7 +403,10 @@ static REGISTRY: LazyLock<Registry> = LazyLock::new(|| {
         assert!(r.by_kind.insert(def.kind, def).is_none(), "duplicate kind {}", def.kind);
         assert!(r.by_section.insert(def.section, def).is_none(), "duplicate section {}", def.section);
     }
-    for adapter in ADAPTERS {
+    // adapters() merges Rust ADAPTERS ∪ spec adapters — spec kinds go
+    // through the identical duplicate-kind/section asserts, so a spec
+    // colliding with a Rust adapter (or another spec) panics at startup.
+    for adapter in adapters() {
         assert!(r.by_slug.insert(adapter.slug(), *adapter).is_none(), "duplicate slug {}", adapter.slug());
         for def in adapter.kinds() {
             assert_ne!(def.section, "plugins", "kind {} claims reserved section 'plugins'", def.kind);
@@ -429,11 +439,15 @@ pub(crate) fn adapter_for_kind(kind: &str) -> Option<&'static dyn PluginAdapter>
     REGISTRY.kind_adapter.get(kind).copied()
 }
 
-/// Every registered adapter, in declared order — drives feed merges
-/// (`site_data_feeds`) and any "all plugins" pass that must not depend
-/// on the adapter owning a `posts.kind`.
+/// Every registered adapter — Rust `ADAPTERS` plus TOML `SpecAdapter`s
+/// (`plugins/specs/*.toml`, embedded by build.rs) — drives feed merges
+/// (`site_data_feeds`), claim dispatch, and any "all plugins" pass.
+/// `'static` slice built once; order = Rust adapters then specs.
 pub(crate) fn adapters() -> &'static [&'static dyn PluginAdapter] {
-    ADAPTERS
+    static ALL: LazyLock<Vec<&'static dyn PluginAdapter>> = LazyLock::new(|| {
+        ADAPTERS.iter().copied().chain(spec::spec_adapters().iter().copied()).collect()
+    });
+    &ALL
 }
 
 /// What a theme adapter contributes to template resolution + chrome.
@@ -473,7 +487,7 @@ pub(crate) fn theme_for_stylesheet(stylesheet: &str) -> Option<&'static ThemeDef
 pub(crate) fn kind_defs() -> Vec<&'static KindDef> {
     CORE_KINDS
         .iter()
-        .chain(ADAPTERS.iter().flat_map(|a| a.kinds()))
+        .chain(adapters().iter().flat_map(|a| a.kinds()))
         .collect()
 }
 
@@ -484,7 +498,7 @@ pub(crate) fn kind_defs() -> Vec<&'static KindDef> {
 /// loss on rollback), already-migrated keys are skipped, and a key that
 /// was *partially* namespaced by an earlier run is untouched.
 pub(crate) fn migrate_all(db: &Path) {
-    for adapter in ADAPTERS {
+    for adapter in adapters() {
         if let Err(e) = adapter.migrate(db) {
             eprintln!("plugin migrate {}: {e:#}", adapter.slug());
         }
@@ -537,7 +551,7 @@ pub(crate) fn tax_section(tax: &str) -> &'static str {
     // make a duplicate claim nondeterministic across restarts.
     for def in CORE_KINDS
         .iter()
-        .chain(ADAPTERS.iter().flat_map(|a| a.kinds()))
+        .chain(adapters().iter().flat_map(|a| a.kinds()))
     {
         if def.taxonomies.contains(&tax) {
             return def.section;
