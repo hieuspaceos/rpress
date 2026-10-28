@@ -128,9 +128,18 @@ pub(crate) fn site_data(
     // menus keyed by name, id and wp_term_id; items parented into trees
     let mut menus: Map<String, Value> = Map::new();
     {
+        // WP stores a blank nav_label when the item reuses the target's
+        // title — resolve it here: post_type → posts.title, taxonomy →
+        // terms.name, otherwise stay blank (never a bogus "menu item").
         let mut istmt = conn.prepare(
             "SELECT m.id, m.wp_term_id, m.name, m.lang, m.location, i.id, i.parent_id, i.ord, \
-             i.label, COALESCE(i.url,''), i.object_id, i.item_type, COALESCE(i.classes,''), \
+             COALESCE(NULLIF(i.label,''), \
+               CASE i.item_type \
+                 WHEN 'post_type' THEN (SELECT title FROM posts WHERE id=i.object_id AND lang=m.lang LIMIT 1) \
+                 WHEN 'post_type' THEN (SELECT title FROM posts WHERE id=i.object_id LIMIT 1) \
+                 WHEN 'taxonomy' THEN (SELECT name FROM terms WHERE id=i.object_id LIMIT 1) \
+               END, i.label), \
+             COALESCE(i.url,''), i.object_id, i.item_type, COALESCE(i.classes,''), \
              COALESCE(i.title_attr,'') FROM menus m \
              JOIN menu_items i ON i.menu_id=m.id ORDER BY i.ord",
         )?;
@@ -625,9 +634,13 @@ fn chrome_ctx(conn: &Connection, site_url: &str, lang: &str) -> Value {
     let theme: Value = get("plugin:theme-traveltour:general")
         .parse::<serde_json::Value>()
         .unwrap_or(Value::Null);
-    // Per-site theme-generated css path (traveltour-style-custom.css);
-    // "" when the site's uploads lack the file → template omits the link.
+    // Per-site generated css paths; "" when the site's uploads lack the
+    // file → template omits the link. Tourmaster's two files share the
+    // carry mechanism (same migrate pass writes all keys).
     let theme_css = get("plugin:theme:css_upload_path");
+    let tourmaster_css = get("plugin:tourmaster:css_upload_path");
+    let tourmaster_css_global = get("plugin:tourmaster:css_global_upload_path");
+    let tourmaster_css_room = get("plugin:tourmaster:css_room_upload_path");
     let tget = |k: &str| -> String {
         theme.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string()
     };
@@ -768,6 +781,9 @@ fn chrome_ctx(conn: &Connection, site_url: &str, lang: &str) -> Value {
         "contact_slugs": serde_json::from_str::<serde_json::Value>(&get("contact_slugs")).unwrap_or(Value::Null),
         "enable_top_bar": tget("enable-top-bar") != "disable",
         "theme_css": theme_css,
+        "tourmaster_css": tourmaster_css,
+        "tourmaster_css_global": tourmaster_css_global,
+        "tourmaster_css_room": tourmaster_css_room,
         "body_suffix": "wp-theme-traveltour wp-child-theme-traveltour-child gdlr-core-body tourmaster-body metaslider-plugin traveltour-body traveltour-body-front traveltour-full  traveltour-with-sticky-navigation gdlr-core-link-to-lightbox",
         "favicons": favicons_html(conn, site_url),
         "sticky_html": sticky_html(&sticky, lang),

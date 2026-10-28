@@ -217,18 +217,33 @@ pub(crate) fn tag_base(conn: &Connection) -> String {
 /// record the link path (`plugin:theme:css_upload_path`) the base
 /// template reads through `site.chrome.theme_css`. Absent file → key
 /// removed, never an aucoeur fallback.
+/// Site-generated `*-style-custom.css` files the base templates link:
+/// (settings key the ctx reads, uploads filename). Tourmaster's two
+/// files live here too — same carry semantics as the theme's own css.
+const CUSTOM_CSS: &[(&str, &str)] = &[
+    ("plugin:theme:css_upload_path", "traveltour-style-custom.css"),
+    ("plugin:tourmaster:css_upload_path", "tourmaster-style-custom.css"),
+    ("plugin:tourmaster:css_global_upload_path", "tourmaster-global-style-custom.css"),
+    ("plugin:tourmaster:css_room_upload_path", "tourmaster-room-style-custom.css"),
+];
+
 fn carry_custom_css(c: &Connection, db: &Path) -> Result<()> {
-    const KEY: &str = "plugin:theme:css_upload_path";
-    const NAME: &str = "traveltour-style-custom.css";
     let www = db
         .parent()
         .map(|p| p.join("www"))
         .unwrap_or_default();
-    let file = www.join("wp-content/uploads").join(NAME);
-    if !file.is_file() {
-        c.execute("DELETE FROM settings WHERE key=?1", [KEY])?;
-        return Ok(());
+    for (key, name) in CUSTOM_CSS {
+        let file = www.join("wp-content/uploads").join(name);
+        if !file.is_file() {
+            c.execute("DELETE FROM settings WHERE key=?1", [key])?;
+            continue;
+        }
+        carry_one_css(c, &file, key, name)?;
     }
+    Ok(())
+}
+
+fn carry_one_css(c: &Connection, file: &Path, key: &str, name: &str) -> Result<()> {
     // Own-origin hosts to strip: live site_url + imported site_url +
     // url_aliases. `strip_origin` re-anchors on the live site_url;
     // relative `url(...)` refs pass through untouched.
@@ -248,7 +263,7 @@ fn carry_custom_css(c: &Connection, db: &Path) -> Result<()> {
     if !asset.is_empty() {
         aliases.push(asset);
     }
-    let css = std::fs::read_to_string(&file)?;
+    let css = std::fs::read_to_string(file)?;
     // Theme css references only the site's own assets: any host whose
     // `url()` path starts `/wp-content/` is this site's origin
     // (covers test-subdomain mismatches like aucoeurvietnam.com vs
@@ -306,12 +321,12 @@ fn carry_custom_css(c: &Connection, db: &Path) -> Result<()> {
     }
     let scoped = file.with_file_name(format!(
         "{}.scoped.css",
-        NAME.strip_suffix(".css").unwrap_or(NAME)
+        name.strip_suffix(".css").unwrap_or(name)
     ));
     std::fs::write(&scoped, crate::css_scope::scope_css(&out))?;
     c.execute(
         "INSERT OR REPLACE INTO settings(key, value) VALUES(?1, ?2)",
-        rusqlite::params![KEY, format!("wp-content/uploads/{NAME}")],
+        rusqlite::params![key, format!("wp-content/uploads/{name}")],
     )?;
     Ok(())
 }

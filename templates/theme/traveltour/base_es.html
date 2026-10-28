@@ -59,14 +59,14 @@ jQuery("#map").mouseleave(function() {
 <link rel='stylesheet' id='gdlr-core-page-builder-css' href='{{ site_url }}/wp-content/plugins/goodlayers-core/include/css/page-builder.css?ver=7.1.3' media='all' />
 <link rel='stylesheet' id='gdlr-travel-css' href='{{ site_url }}/wp-content/plugins/tourmaster/plugins/gdlr-travel/style.css?ver=7.1.3' media='all' />
 <link rel='stylesheet' id='tourmaster-style-css' href='{{ site_url }}/wp-content/plugins/tourmaster/tourmaster.css?ver=4.1.4' media='all' />
-<link rel='stylesheet' id='tourmaster-global-custom-style-css' href='{{ site_url }}/wp-content/uploads/tourmaster-global-style-custom.css?1742355268&#038;ver=7.1.3' media='all' />
+{% if site.chrome.tourmaster_css_global %}<link rel='stylesheet' id='tourmaster-global-custom-style-css' href='{{ site_url }}/{{ site.chrome.tourmaster_css_global }}?1742355268&#038;ver=7.1.3' media='all' />{% endif %}
 <link rel='stylesheet' id='traveltour-style-core-css' href='{{ site_url }}/wp-content/themes/traveltour/css/style-core.css?ver=7.1.3' media='all' />
 {% if site.chrome.theme_css %}<link rel='stylesheet' id='traveltour-custom-style-css' href='{{ site_url }}/{{ site.chrome.theme_css }}?1792660118&#038;ver=7.1.3' media='all' />{% endif %}
 <link rel='stylesheet' id='traveltour-child-theme-style-css' href='{{ site_url }}/wp-content/themes/traveltour-child/style.css?ver=7.1.3' media='all' />
 
 {{ site.chrome.chaty_css|safe }}
 {{ head_css_extra|safe }}
-<link rel='stylesheet' id='tourmaster-custom-style-css' href='{{ site_url }}/wp-content/uploads/tourmaster-style-custom.css?1774338224&#038;ver=7.1.3' media='all' />
+{% if site.chrome.tourmaster_css %}<link rel='stylesheet' id='tourmaster-custom-style-css' href='{{ site_url }}/{{ site.chrome.tourmaster_css }}?1774338224&#038;ver=7.1.3' media='all' />{% endif %}
 
 
 <link rel='stylesheet' id='site-reviews-css' href='{{ site_url }}/wp-content/plugins/site-reviews/assets/styles/default.css?ver=7.2.13' media='all' />
