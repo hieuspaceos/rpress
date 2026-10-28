@@ -211,12 +211,24 @@ pub(crate) fn iso8601(dt: &str) -> String {
 /// `site_body_suffix` setting (seeded per site/theme), falling back to
 /// traveltour's value only when unset.
 pub(crate) fn body_class(conn: &Connection, _lang: &str, kind: &str, id: i64, is_front: bool) -> String {
+    // Resolution order: explicit `site_body_suffix` seed → the matched
+    // theme adapter's `body_suffix` → traveltour (legacy default).
     let suffix = conn
         .query_row("SELECT value FROM settings WHERE key='site_body_suffix'", [], |r| {
             r.get::<_, String>(0)
         })
         .ok()
         .filter(|s| !s.is_empty())
+        .or_else(|| {
+            let stylesheet: String = conn
+                .query_row("SELECT value FROM settings WHERE key='stylesheet'", [], |r| {
+                    r.get::<_, String>(0)
+                })
+                .unwrap_or_default();
+            crate::admin::plugins::theme_for_stylesheet(&stylesheet)
+                .filter(|d| !d.body_suffix.is_empty())
+                .map(|d| d.body_suffix.to_string())
+        })
         .unwrap_or_else(|| {
             "wp-theme-traveltour wp-child-theme-traveltour-child gdlr-core-body tourmaster-body metaslider-plugin traveltour-body traveltour-body-front traveltour-full  traveltour-with-sticky-navigation gdlr-core-link-to-lightbox".into()
         });

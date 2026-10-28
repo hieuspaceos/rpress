@@ -1,7 +1,7 @@
 ---
 phase: 6
 title: "Tevily base templates authored from harvest/origin markup"
-status: pending
+status: done
 priority: P1
 effort: "1.5d"
 dependencies: [3]

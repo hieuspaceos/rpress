@@ -427,11 +427,10 @@ fn concurrent_misses_tmp_names_unique() {
 }
 
 #[test]
-fn tevily_site_falls_back_to_traveltour_bases() {
-    // A site whose stylesheet is tevily_child has no templates of its own
-    // (the tevily adapter's template dir is empty until phase 06); the
-    // render must still resolve bases via the fallback traveltour dir —
-    // the interim state phase 03 requires.
+fn tevily_site_renders_through_tevily_base() {
+    // Phase 06: a tevily_child site must render through the tevily theme
+    // dir's own base (not the traveltour fallback). The post ctx is the
+    // shared-cache fixture — what changes is which base wraps it.
     let dir = temp_dir("tevilyfb");
     let db = fixture(&dir);
     let c = Connection::open(&db).unwrap();
@@ -444,6 +443,15 @@ fn tevily_site_falls_back_to_traveltour_bases() {
     let out = dir.join("out");
     rpress::generate::regen_post(&db, &templates(), &out, 1, "voyage").unwrap();
     let html = fs::read_to_string(out.join("my-post/index.html")).unwrap();
-    assert!(html.contains("<html"), "tevily site page failed to render through fallback bases");
+    assert!(
+        html.contains("tevily-body") || html.contains("tevily-page")
+            || html.contains("gva-nav-menu"),
+        "tevily site did not render through the tevily base: {}",
+        &html[..html.len().min(800)]
+    );
+    assert!(
+        !html.contains("traveltour-body") && !html.contains("wp-theme-traveltour"),
+        "tevily site leaked traveltour chrome"
+    );
     let _ = fs::remove_dir_all(&dir);
 }

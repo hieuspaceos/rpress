@@ -214,6 +214,7 @@ pub(crate) fn site_data(
         if let Some(v) = chosen.and_then(|mid| menus.get(&mid.to_string()).cloned()) {
             if let Some(items) = v.as_array() {
                 menus.insert("menu_main_html".into(), json!(menu_li(items)));
+                menus.insert("menu_main_tevily_html".into(), json!(menu_li_tevily(items)));
             }
             menus.insert("menu_main".into(), v);
         }
@@ -577,6 +578,35 @@ fn menu_li(items: &[Value]) -> String {
         if !kids.is_empty() {
             out.push_str("<ul class=\"sub-menu\">");
             out.push_str(&menu_li(&kids));
+            out.push_str("</ul>");
+        }
+        out.push_str("</li>");
+    }
+    out
+}
+
+/// Tevily-shaped <li> markup (`templates/theme/tevily/base_*.html`):
+/// submenu ul is `.submenu-inner`, parent links carry a `<span
+/// class="caret">`, titles are wrapped in `.menu-title`. Same item
+/// pipeline as `menu_li` — classes/urls come from `menu_items` rows.
+fn menu_li_tevily(items: &[Value]) -> String {
+    let mut out = String::new();
+    for it in items {
+        let classes = it.get("classes").and_then(|v| v.as_str()).unwrap_or("menu-item");
+        let url = it.get("url").and_then(|v| v.as_str()).unwrap_or("");
+        let title = it.get("title").and_then(|v| v.as_str()).unwrap_or("");
+        let nohref = it.get("nohref").and_then(|v| v.as_bool()).unwrap_or(false);
+        let kids = it.get("children").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+        let caret = if kids.is_empty() { "" } else { "<span class=\"caret\"></span>" };
+        out.push_str(&format!("<li class=\"{classes}\">"));
+        if nohref {
+            out.push_str(&format!("<a><span class=\"menu-title\">{title}</span>{caret}</a>"));
+        } else {
+            out.push_str(&format!("<a href=\"{url}\"><span class=\"menu-title\">{title}</span>{caret}</a>"));
+        }
+        if !kids.is_empty() {
+            out.push_str("<ul class=\"submenu-inner \">");
+            out.push_str(&menu_li_tevily(&kids));
             out.push_str("</ul>");
         }
         out.push_str("</li>");

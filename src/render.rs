@@ -901,10 +901,17 @@ pub(crate) fn theme_template_dir(conn: &Connection, templates: &Path) -> Option<
     // templates — an empty dir (tevily stub until phase 06) falls back
     // to the default theme's bases (traveltour), matching the interim
     // behavior the phase-03 plan calls for.
+    // Any base_* in the theme dir counts — theme dirs are per-theme and
+    // may ship only the langs their sites use (tevily: base_en.html).
     let has_bases = |d: &Path| {
-        ["base_fr.html", "base_es.html", "base.html"]
-            .iter()
-            .any(|n| d.join(n).is_file())
+        std::fs::read_dir(d)
+            .map(|rd| {
+                rd.flatten().any(|e| {
+                    e.file_name().to_string_lossy().starts_with("base_")
+                        && e.path().is_file()
+                })
+            })
+            .unwrap_or(false)
     };
     let themed = templates.join("theme").join(def.template_dir);
     if has_bases(&themed) {

@@ -24,10 +24,13 @@ static THEME: ThemeDef = ThemeDef {
             || s.starts_with("tevily_child_")
     },
     template_dir: "tevily",
-    body_suffix: "",
+    body_suffix: "wp-theme-tevily wp-child-theme-tevily_child tevily-body-loading elementor-default",
     page_title_wrap: "",
     preferred_locations: &["header-navigation", "main-menu", "main_navigation", "primary"],
 };
+
+use anyhow::Result;
+use std::path::Path;
 
 impl PluginAdapter for ThemeTevily {
     fn slug(&self) -> &'static str {
@@ -41,6 +44,24 @@ impl PluginAdapter for ThemeTevily {
     }
     fn theme(&self) -> Option<&'static ThemeDef> {
         Some(&THEME)
+    }
+    /// Seed the tevily body-class suffix so `body_class()` stops falling
+    /// back to traveltour's `wp-theme-traveltour` tail. Idempotent
+    /// (`INSERT OR REPLACE`); elementor kit ids vary per page so they are
+    /// omitted here (render adds page-id-<id> itself).
+    fn migrate(&self, db: &Path) -> Result<()> {
+        let c = crate::db::conn(db)?;
+        let stylesheet: String = c
+            .query_row("SELECT value FROM settings WHERE key='stylesheet'", [], |r| r.get(0))
+            .unwrap_or_default();
+        if !(THEME.matches_stylesheet)(&stylesheet) {
+            return Ok(());
+        }
+        c.execute(
+            "INSERT OR REPLACE INTO settings(key, value) VALUES('site_body_suffix', ?1)",
+            ["wp-theme-tevily wp-child-theme-tevily_child tevily-body-loading elementor-default"],
+        )?;
+        Ok(())
     }
 }
 

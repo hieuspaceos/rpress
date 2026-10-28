@@ -90,7 +90,7 @@ impl PluginAdapter for ThemeTraveltour {
         static DEF: ThemeDef = ThemeDef {
             matches_stylesheet: matches_traveltour,
             template_dir: "traveltour",
-            body_suffix: "",
+            body_suffix: "wp-theme-traveltour wp-child-theme-traveltour-child gdlr-core-body tourmaster-body metaslider-plugin traveltour-body traveltour-body-front traveltour-full  traveltour-with-sticky-navigation gdlr-core-link-to-lightbox",
             page_title_wrap: "",
             preferred_locations: &["header-navigation", "main-menu", "main_navigation", "primary"],
         };

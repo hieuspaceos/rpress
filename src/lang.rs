@@ -105,11 +105,30 @@ pub fn template_name(
     cfg: &LangConfig,
     lang: &str,
 ) -> String {
-    let dirs: Vec<&std::path::Path> = [theme_dir, Some(templates)]
-        .into_iter()
-        .flatten()
-        .collect();
-    for name in [template_for(lang), template_for(&cfg.primary), "base_fr.html".into(), "base_es.html".into()] {
+    // The matched theme's dir is authoritative: try its bases first, and
+    // never fall ACROSS to a different theme's dir (a missing
+    // base_{lang} inside one theme dir means that theme wants the
+    // primary-lang fallback, not another theme's chrome). The shared
+    // root participates only when the theme dir itself has no bases
+    // (theme_template_dir already resolves that case to None).
+    let theme_has_bases = theme_dir
+        .map(|d| {
+            std::fs::read_dir(d)
+                .map(|rd| {
+                    rd.flatten().any(|e| {
+                        e.file_name().to_string_lossy().starts_with("base_")
+                            && e.path().is_file()
+                    })
+                })
+                .unwrap_or(false)
+        })
+        .unwrap_or(false);
+    let dirs: Vec<&std::path::Path> = if theme_has_bases {
+        theme_dir.into_iter().collect()
+    } else {
+        [theme_dir, Some(templates)].into_iter().flatten().collect()
+    };
+    for name in [template_for(lang), template_for(&cfg.primary), "base_fr.html".into(), "base_es.html".into(), "base_en.html".into()] {
         if dirs.iter().any(|d| d.join(&name).exists()) {
             return name;
         }

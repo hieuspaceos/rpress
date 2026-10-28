@@ -62,7 +62,7 @@ templates — never to the base ctx.
 | 03 | [Theme separation](./phase-03-theme-separation.md) | 02 | 2d | Done |
 | 04 | [Per-site theme CSS: traveltour-style-custom from site uploads](./phase-04-site-css.md) | 03 | 0.5d | Done |
 | 05 | [Visual smoke harness + aucoeur regression gate](./phase-05-visual-smoke.md) | 01–04, 06 | 1d | Pending |
-| 06 | [Tevily base templates authored from harvest/origin markup](./phase-06-tevily-bases.md) | 03 | 1.5d | Pending |
+| 06 | [Tevily base templates](./phase-06-tevily-bases.md) | 03 | 1.5d | Done |
 
 Total ≈ 8 dev-days. Phases 01–02 are sequential (nav lands in ctx
 first, then the ctx grows). 04 is small but must wait for 03's adapter
