@@ -230,6 +230,23 @@ harvest = true                  # render = origin HTML fetched once at import
 - Full editor/save semantics still need a Rust `PluginAdapter`
   (`tourmaster` stays Rust); specs cover claim + list + render-by-origin.
 
+### Revolution Slider fragments — `harvested_fragments`
+
+Pages whose builder JSON carries a `revolution-slider` element can't
+re-render the slider from the dump (RevSlider keeps slide data in
+plugin tables outside the WP export). At import the origin page is
+fetched once and its rendered `<rs-module-wrap>` markup — plus the
+`<script id="rs-initialisation-scripts">` footer init and any adjacent
+slider config `<style>`/`<script>` blocks — is stored in
+`harvested_fragments(post_id)`. The `revolution-slider` element then
+emits that fragment verbatim at render, preceded by the rs6 assets
+(`rs6.css`, `rbtools.min.js`, `rs6.min.js`, `setREVStartSize`) served
+from `www/wp-content/plugins/revslider/` (pulled with wp-content).
+Origin URLs are rewritten to `{{ site_url }}` like `harvested_pages`
+and protocol-relative `//origin` refs likewise; a post without a
+fragment row renders the element's wrapper-only fallback. Port-once:
+the origin only has to be live at import.
+
 ### Plugin settings & migration (operator notes)
 
 - Plugin-registered adapters (e.g. `tourmaster`, `theme-traveltour`)

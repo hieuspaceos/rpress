@@ -129,3 +129,98 @@ fn rewrite_tag_action(tag: &str, local: &str) -> String {
     t.replace_range(vstart..vend, &format!("{local}/form/enquiry"));
     t
 }
+/// Fetch `origin + path`, extract the Revolution Slider block and
+/// return it rewritten to `target` — or `Ok(None)` when the page
+/// carries no `<rs-module-wrap>`. RevSlider stores slide data in
+/// plugin tables outside the WP dump, so the rendered markup is the
+/// only portable source; `rs6` JS/CSS are pulled with wp-content and
+/// served from `www/`, so the fragment animates natively. Only the
+/// FIRST slider is extracted (GoodLayers emits at most one
+/// `revolution-slider` element per page in practice; a second one
+/// would share the same harvest anyway).
+pub(crate) fn revslider_fragment(origin: &str, path: &str, target: &str) -> Result<Option<String>> {
+    let html = page(origin, path, target)?;
+    let mut frag = extract_rs_module(&html);
+    // Protocol-relative refs (//host/…) survive page()'s absolute-URL
+    // rewrite — rs slides emit data-lazyload/src that way. Swap for the
+    // target wholesale so `//origin/x` → `{{ site_url }}/x` renders as
+    // an absolute local URL.
+    if let (Some(f), Some(oh)) = (frag.as_mut(), origin_host(origin)) {
+        *f = f.replace(&format!("//{oh}"), target);
+    }
+    Ok(frag)
+}
+
+fn origin_host(origin: &str) -> Option<&str> {
+    origin
+        .trim_start_matches("http://")
+        .trim_start_matches("https://")
+        .trim_end_matches('/')
+        .split('/')
+        .next()
+        .filter(|h| !h.is_empty())
+}
+
+/// `<rs-module-wrap>…</rs-module-wrap>` out of a full page, plus the
+/// adjacent inline config blocks — origin emits, directly before the
+/// wrap:
+///   <style>…#rev_slider_N_M .uranus…</style>  (arrow/bullet skin)
+///   <script>…window.RS_MODULES…</script>       (module config)
+/// both of which the fragment needs to self-initialize. The wrap is
+/// custom elements, so a plain close-tag search bounds it exactly.
+fn extract_rs_module(html: &str) -> Option<String> {
+    let Some(mut start) = html.find("<rs-module-wrap") else {
+        return None;
+    };
+    let end_wrap = html.find("</rs-module-wrap>")? + "</rs-module-wrap>".len();
+    // Walk back over immediately-preceding <style>/<script> blocks
+    // (separated only by whitespace) that reference this slider's ids.
+    loop {
+        let back = &html[..start];
+        let close = back.rfind("</style>").map(|i| (i, "</style>", "<style"))
+            .into_iter()
+            .chain(back.rfind("</script>").map(|i| (i, "</script>", "<script")))
+            .max_by_key(|(i, _, _)| *i);
+        let Some((ci, ctag, otag)) = close else { break };
+        if !html[ci + ctag.len()..start].trim().is_empty() {
+            break;
+        }
+        let back2 = &html[..ci];
+        let Some(oi) = back2.rfind(otag) else { break };
+        let block = &html[oi..ci + ctag.len()];
+        // Only absorb blocks that clearly belong to this slider —
+        // generic page scripts/styles stay with the page.
+        if !(block.contains("rev_slider") || block.contains("RS_MODULES") || block.contains("uranus")) {
+            break;
+        }
+        start = oi;
+    }
+    // The actual init lives in the footer as
+    // <script id="rs-initialisation-scripts">…revapi2.revolutionInit…
+    // — append it after the wrap so the fragment self-initializes
+    // wherever the element lands.
+    let mut frag = html[start..end_wrap].to_string();
+    if let Some(si) = html.find("id=\"rs-initialisation-scripts\"") {
+        if let Some(oi) = html[..si].rfind("<script") {
+            if let Some(ce) = html[si..].find("</script>") {
+                frag.push_str(&html[oi..si + ce + "</script>".len()]);
+            }
+        }
+    }
+    Some(frag)
+}
+
+/// Head assets the fragment needs — origin enqueues these globally;
+/// our pages don't, so the element render prepends them. rs6 needs
+/// `setREVStartSize` defined before the fragment's inline config
+/// calls it (origin defines it in <head>); it's version-stable
+/// boilerplate so we ship it verbatim rather than scrape it.
+/// Plugin paths live under `www/wp-content/plugins/revslider/`.
+pub(crate) const REVSLIDER_ASSETS: &str = concat!(
+    "<link rel='stylesheet' href='{{ site_url }}/wp-content/plugins/revslider/public/assets/css/rs6.css' media='all' />",
+    "<script src='{{ site_url }}/wp-content/plugins/revslider/public/assets/js/rbtools.min.js'></script>",
+    "<script src='{{ site_url }}/wp-content/plugins/revslider/public/assets/js/rs6.min.js'></script>",
+    "<script>",
+    "function setREVStartSize(e){window.RSIW=window.RSIW===undefined?window.innerWidth:window.RSIW;window.RSIH=window.RSIH===undefined?window.innerHeight:window.RSIH;try{var pw=document.getElementById(e.c).parentNode.offsetWidth,newh;pw=pw===0||isNaN(pw)||(e.l==\"fullwidth\"||e.layout==\"fullwidth\")?window.RSIW:pw;e.tabw=e.tabw===undefined?0:parseInt(e.tabw);e.thumbw=e.thumbw===undefined?0:parseInt(e.thumbw);e.tabh=e.tabh===undefined?0:parseInt(e.tabh);e.thumbh=e.thumbh===undefined?0:parseInt(e.thumbh);e.tabhide=e.tabhide===undefined?0:parseInt(e.tabhide);e.thumbhide=e.thumbhide===undefined?0:parseInt(e.thumbhide);e.mh=e.mh===undefined||e.mh==\"\"||e.mh===\"auto\"?0:parseInt(e.mh,0);if(e.layout===\"fullscreen\"||e.l===\"fullscreen\")newh=Math.max(e.mh,window.RSIH);else{e.gw=Array.isArray(e.gw)?e.gw:[e.gw];for(var i in e.rl)if(e.gw[i]===undefined||e.gw[i]===0)e.gw[i]=e.gw[i-1];e.gh=e.el===undefined||e.el===\"\"||(Array.isArray(e.el)&&e.el.length==0)?e.gh:e.el;e.gh=Array.isArray(e.gh)?e.gh:[e.gh];for(var i in e.rl)if(e.gh[i]===undefined||e.gh[i]===0)e.gh[i]=e.gh[i-1];var nl=new Array(e.rl.length),ix=0,sl;e.tabw=e.tabhide>=pw?0:e.tabw;e.thumbw=e.thumbhide>=pw?0:e.thumbw;e.tabh=e.tabhide>=pw?0:e.tabh;e.thumbh=e.thumbhide>=pw?0:e.thumbh;for(var i in e.rl)nl[i]=e.rl[i]<window.RSIW?0:e.rl[i];sl=nl[0];for(var i in nl)if(sl>nl[i]&&nl[i]>0){sl=nl[i];ix=i;}var m=pw>(e.gw[ix]+e.tabw+e.thumbw)?1:(pw-(e.tabw+e.thumbw))/(e.gw[ix]);newh=(e.gh[ix]*m)+(e.tabh+e.thumbh);}var el=document.getElementById(e.c);if(el!==null&&el)el.style.height=newh+\"px\";el=document.getElementById(e.c+\"_wrapper\");if(el!==null&&el){el.style.height=newh+\"px\";el.style.display=\"block\";}}catch(e){console.log(\"Failure at Presize of Slider:\"+e)}};",
+    "</script>",
+);

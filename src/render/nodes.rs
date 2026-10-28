@@ -780,6 +780,30 @@ fn render_node(
         gallery_items = JVal::from_serialize(items);
     }
 
+    if typ == "revolution-slider" {
+        // RevSlider slide data lives in plugin tables outside the WP
+        // dump — import harvests the origin's <rs-module-wrap> markup
+        // into harvested_fragments. Emit it verbatim plus the rs6
+        // assets (pulled with wp-content, served from www/); without a
+        // row the element renders its wrapper-only fallback.
+        if let (Some(c), Some(pid)) = (conn, post.get_attr("id").ok().and_then(|v| v.as_i64())) {
+            let frag: Option<String> = c
+                .query_row(
+                    "SELECT html FROM harvested_fragments WHERE post_id=?1",
+                    [pid],
+                    |r| r.get(0),
+                )
+                .ok();
+            if let Some(f) = frag {
+                let assets = crate::harvest::REVSLIDER_ASSETS.replace("{{ site_url }}", site_url);
+                return Ok(format!(
+                    "<div class=\"gdlr-core-revolution-slider-item gdlr-core-item-pdlr gdlr-core-item-pdb\">{assets}{}</div>",
+                    f.replace("{{ site_url }}", site_url)
+                ));
+            }
+        }
+    }
+
     let tpl_file = if ELEMENT_TYPES.contains(&typ) {
         format!("elements/{typ}.html")
     } else if typ == "normal" {

@@ -493,6 +493,11 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
              post_id INTEGER PRIMARY KEY,
              html TEXT NOT NULL,
              fetched_at TEXT NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS harvested_fragments(
+             post_id INTEGER PRIMARY KEY,
+             html TEXT NOT NULL,
+             fetched_at TEXT NOT NULL
          )",
     )?;
     let mut stmt_h = tx.prepare("INSERT OR IGNORE INTO harvest_posts(post_id) VALUES(?1)")?;
@@ -501,6 +506,11 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
     // collected during the posts pass, fetched AFTER tx.commit() —
     // never hold the write tx across HTTP.
     let mut harvest_targets: Vec<(i64, String, String, String)> = Vec::new();
+    // Posts whose builder JSON carries a `revolution-slider` element:
+    // (post_id, lang, slug) — same post-commit fetch, but only the
+    // <rs-module-wrap> fragment is stored (the page itself renders
+    // normally; the fragment fills the element's fallback slot).
+    let mut slider_targets: Vec<(i64, String, String)> = Vec::new();
 
     let mut wp_to_cms: HashMap<i64, i64> = HashMap::new();
 
@@ -570,6 +580,9 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
                     {
                         harvest_targets.push((p.id, lang.clone(), p.slug.clone(), base.to_string()));
                     }
+                }
+                if p.status == "publish" && body_json.contains("revolution-slider") {
+                    slider_targets.push((p.id, lang.clone(), p.slug.clone()));
                 }
                 wp_to_cms.insert(p.id, p.id);
                 if p.meta.contains_key("_elementor_data") {
@@ -1191,6 +1204,50 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
                 fetched.len(),
                 failed
             ));
+        }
+
+        // Posts whose builder carries a revolution-slider element: fetch
+        // the origin page once and keep only the <rs-module-wrap>
+        // fragment (revslider slide data lives in plugin tables outside
+        // the dump — rendered markup is the portable copy). The page
+        // itself still renders via the builder; the fragment fills the
+        // element's output at render time.
+        if !slider_targets.is_empty() {
+            let lang_cfg = crate::lang::config(&conn);
+            let front: i64 = conn
+                .query_row("SELECT CAST(value AS INTEGER) FROM settings WHERE key='page_on_front'", [], |r| r.get(0))
+                .unwrap_or(0);
+            let mut frags: Vec<(i64, String)> = Vec::new();
+            for (id, lang, slug) in &slider_targets {
+                let lp = crate::lang::rel_prefix(&lang_cfg, lang);
+                let path = if *id == front {
+                    if lp.is_empty() { String::new() } else { format!("{lp}/") }
+                } else if lp.is_empty() {
+                    format!("{slug}/")
+                } else {
+                    format!("{lp}/{slug}/")
+                };
+                match crate::harvest::revslider_fragment(origin, &path, "{{ site_url }}") {
+                    Ok(Some(f)) => frags.push((*id, f)),
+                    Ok(None) => rep.log(format!("[slider] {path} no rs-module-wrap — fallback stays")),
+                    Err(e) => rep.log(format!("[slider] {path} failed: {e:#} — fallback stays")),
+                }
+            }
+            if !frags.is_empty() {
+                let mut conn3 = crate::db::conn(db_path)?;
+                let tx3 = conn3.transaction()?;
+                {
+                    let mut ins = tx3.prepare(
+                        "INSERT OR REPLACE INTO harvested_fragments(post_id, html, fetched_at) \
+                         VALUES(?1, ?2, datetime('now'))",
+                    )?;
+                    for (id, html) in &frags {
+                        ins.execute(params![id, html])?;
+                    }
+                }
+                tx3.commit()?;
+            }
+            rep.log(format!("harvested_fragments: {} slider blocks stored", frags.len()));
         }
     }
 
