@@ -63,3 +63,21 @@ summary: "261028-site-agnostic-chrome executed end-to-end: theme-separated templ
 - **`template_name` must not fall ACROSS theme dirs**: tevily's missing
   `base_fr` correctly maps to its own `base_en`, not traveltour's
   `base_fr`.
+
+## Follow-ups (same day, commit 82aeee9)
+
+- **Site DB backfill** (dmc, imagedmc, imagetravel): all three had the
+  stale `theme_locations` schema + zero rows. Rebuilt table, seeded
+  bindings from dump `nav_menu_locations`: dmc `primary→137502(en)/485(es)`
+  (tevlity tevily/tevily_child mods), imagedmc `primary→89`,
+  imagetravel `primary→76` (traveltour mods had `a:0:{}` — bound Main
+  menu by inspection, it's the only 35-item menu). `menus.lang` fixed
+  by name pattern on dmc (Espanol→es, English→en).
+- **Menu label fallback**: WP stores empty `nav_label` when reusing the
+  target title — menu SQL now `COALESCE`s via `posts.title`/
+  `terms.name` on `object_id`. dmc went from 71 empty anchors to 0.
+- **Tourmaster style-custom css**: `carry_custom_css` generalized to a
+  (key, filename) table covering traveltour + tourmaster + global +
+  room files; base links guarded by `site.chrome.*`. blueskies emits
+  no such links (no uploads files); aucoeur emits all 4 with per-site
+  scoped twins under uploads.
