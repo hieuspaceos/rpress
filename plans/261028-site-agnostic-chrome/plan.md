@@ -1,7 +1,7 @@
 ---
 title: "Site-agnostic chrome — dynamic nav, site-scoped base ctx, per-theme templates"
 description: "Every rendered page wears aucoeurvietnam.com chrome because base_fr/base_es hardcode its nav/logo/footer and chrome.rs embeds its literals. Make chrome data-driven: header nav from menus/menu_items via theme_locations, site literals from settings/widgets, base templates resolved per settings.stylesheet through theme adapters, and traveltour-style-custom CSS carried per-site. Harvest path and public-path no-adapter invariant stay untouched."
-status: pending
+status: done
 priority: P1
 effort: "8-9d"
 branch: main
