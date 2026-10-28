@@ -1,0 +1,768 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Atrium v4 — rpress admin mock</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Lora:ital,wght@0,500;0,600;1,500;1,600&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+/* atrium-v4 · skin of v2/v3, layout: macOS-style bottom dock nav + slim top bar */
+
+:root {
+  --paper: oklch(97% 0.008 90);
+  --paper-2: oklch(94.5% 0.012 88);
+  --paper-3: oklch(91% 0.015 86);
+  --ink: oklch(24% 0.012 60);
+  --ink-2: oklch(33% 0.012 58);
+  --muted: oklch(51% 0.014 62);
+  --rule: oklch(90% 0.01 80);
+  --rule-2: oklch(82% 0.012 78);
+
+  --accent: oklch(60% 0.2 38);
+  --accent-soft: oklch(93.5% 0.055 55);
+  --accent-deep: oklch(48% 0.17 36);
+  --accent-ink: oklch(99% 0.005 80);
+  --teal: oklch(60% 0.1 195);
+  --teal-soft: oklch(93% 0.04 195);
+  --violet: oklch(60% 0.14 300);
+  --violet-soft: oklch(94% 0.045 300);
+  --lime: oklch(70% 0.14 130);
+  --lime-soft: oklch(94% 0.05 130);
+  --amber: oklch(73% 0.15 80);
+  --amber-soft: oklch(95% 0.055 88);
+  --ok: oklch(60% 0.12 150);
+  --focus: oklch(60% 0.2 38);
+
+  --glass: color-mix(in oklab, oklch(98% 0.006 90) 68%, transparent);
+  --glass-strong: color-mix(in oklab, oklch(98% 0.006 90) 82%, transparent);
+  --glass-border: oklch(100% 0 0 / 0.6);
+  --blur: blur(20px) saturate(1.5);
+  --shadow-float: 0 6px 24px -6px oklch(50% 0.02 60 / 0.18), 0 1px 3px oklch(50% 0.02 60 / 0.08);
+  --shadow-dock: 0 12px 36px -8px oklch(45% 0.02 60 / 0.28), 0 2px 8px oklch(50% 0.02 60 / 0.1);
+
+  --font-ui: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-text: "Lora", Georgia, serif;
+  --font-num: "IBM Plex Mono", ui-monospace, monospace;
+
+  --r-sm: 9px; --r-md: 13px; --r-lg: 18px; --r-pill: 999px;
+  --dur-micro: 100ms;
+  --dur-short: 160ms;
+  --ease-out: cubic-bezier(.25,.9,.3,1);
+  --ease-spring: cubic-bezier(.3,1.4,.4,1);
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; overflow-x: clip; }
+body {
+  font-family: var(--font-ui); color: var(--ink); font-size: 14px;
+  background:
+    radial-gradient(1100px 520px at 88% -8%, oklch(90% 0.09 45 / .8), transparent 62%),
+    radial-gradient(760px 460px at 60% 115%, oklch(90% 0.07 300 / .7), transparent 60%),
+    radial-gradient(700px 420px at -8% 60%, oklch(91% 0.07 190 / .6), transparent 58%),
+    var(--paper);
+  background-attachment: fixed;
+}
+body::before {
+  content: ""; position: fixed; inset: 0; z-index: 60; pointer-events: none;
+  opacity: .035; mix-blend-mode: multiply;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+::selection { background: color-mix(in oklab, var(--accent) 24%, transparent); }
+input, textarea { caret-color: var(--accent); }
+
+/* ================= SLIM TOP BAR ================= */
+
+#topbar {
+  position: fixed; inset: 0 0 auto 0; height: 30px; z-index: 40;
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+  border-bottom: 1px solid var(--glass-border);
+  display: flex; align-items: center; padding: 0 14px; gap: 14px;
+  font-size: 12px; color: var(--ink-2);
+}
+#topbar .mark { font-weight: 700; letter-spacing: -0.01em; color: var(--ink); display: flex; gap: 6px; align-items: center; }
+#topbar .mark .dot { width: 8px; height: 8px; border-radius: 3px; background: linear-gradient(135deg, var(--accent), var(--violet)); transform: rotate(-6deg); }
+#topbar a { color: var(--ink-2); text-decoration: none; font-weight: 500; }
+#topbar a:hover { color: var(--accent); }
+#topbar .spacer { flex: 1; }
+#topbar .who { font-family: var(--font-num); font-size: 10px; color: var(--muted); }
+
+/* ================= DOCK ================= */
+
+#dock-wrap {
+  position: fixed; left: 0; right: 0; bottom: 14px; z-index: 40;
+  display: flex; justify-content: center; pointer-events: none;
+}
+#dock {
+  pointer-events: auto;
+  display: flex; align-items: flex-end; gap: 6px;
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+  border: 1px solid var(--glass-border); border-radius: 20px;
+  box-shadow: var(--shadow-dock);
+  padding: 8px 10px;
+}
+#dock .app {
+  position: relative; display: flex; flex-direction: column; align-items: center;
+  width: 52px; padding: 6px 4px 4px; text-decoration: none; border-radius: 14px;
+  color: var(--ink-2);
+  transition: background-color var(--dur-micro) var(--ease-out),
+              transform var(--dur-short) var(--ease-spring);
+}
+#dock .app:hover { background: var(--paper-2); transform: translateY(-8px) scale(1.08); }
+#dock .app:active { transform: translateY(-4px) scale(1.02); }
+#dock .app svg { width: 26px; height: 26px; }
+#dock .app .lbl {
+  font-size: 9.5px; font-weight: 600; margin-top: 2px; letter-spacing: .02em;
+  opacity: 0; transition: opacity var(--dur-micro) var(--ease-out);
+}
+#dock .app:hover .lbl { opacity: 1; }
+/* tooltip above the dock, macOS style */
+#dock .app .tip {
+  position: absolute; bottom: calc(100% + 10px); left: 50%; translate: -50% 4px;
+  background: var(--glass-strong); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+  border: 1px solid var(--glass-border); border-radius: 8px;
+  box-shadow: var(--shadow-float);
+  font-size: 12px; font-weight: 500; color: var(--ink);
+  padding: 4px 10px; white-space: nowrap;
+  opacity: 0; pointer-events: none;
+  transition: opacity var(--dur-micro) var(--ease-out), translate var(--dur-micro) var(--ease-out);
+}
+#dock .app:hover .tip { opacity: 1; translate: -50% 0; }
+/* running indicator dot */
+#dock .app.current::after {
+  content: ""; position: absolute; bottom: 1px; left: 50%; translate: -50% 0;
+  width: 4px; height: 4px; border-radius: 2px; background: var(--accent);
+}
+#dock .app.current svg { color: var(--accent); }
+/* tinted app icons — each app its hue, like real dock icons */
+#dock .app .t1 { color: var(--accent); } #dock .app .t2 { color: var(--teal); }
+#dock .app .t3 { color: var(--violet); } #dock .app .t4 { color: var(--amber); }
+#dock .app .t5 { color: var(--lime); } #dock .app .t6 { color: var(--ok); }
+#dock .app svg { color: var(--muted); }
+#dock .app:hover svg { color: inherit; }
+#dock .app:hover .t1 { color: var(--accent); } #dock .app:hover .t2 { color: var(--teal); }
+#dock .app:hover .t3 { color: var(--violet); } #dock .app:hover .t4 { color: var(--amber); }
+#dock .app:hover .t5 { color: var(--lime); } #dock .app:hover .t6 { color: var(--ok); }
+#dock .sep { width: 1px; height: 34px; background: var(--rule); margin: 0 4px 6px; }
+#dock .badge {
+  position: absolute; top: 2px; right: 6px;
+  font-family: var(--font-num); font-size: 9px; font-weight: 500;
+  background: var(--accent); color: var(--accent-ink);
+  border-radius: var(--r-pill); padding: 1px 6px; min-width: 16px; text-align: center;
+}
+
+/* ================= CONTENT ================= */
+
+#wpcontent { margin: 30px 0 0; min-height: calc(100vh - 30px); padding-bottom: 110px; }
+.wrap { padding: 22px 32px 64px; max-width: 1240px; margin: 0 auto; }
+
+.kicker {
+  font-family: var(--font-num); font-size: 10px; font-weight: 500;
+  letter-spacing: .14em; text-transform: uppercase; color: var(--muted);
+  transform: rotate(-1deg); transform-origin: left; display: inline-block;
+}
+.kicker b { color: var(--accent); font-weight: 500; }
+
+.wp-heading {
+  display: flex; align-items: baseline; gap: 16px; margin: 4px 0 0;
+}
+.wp-heading h1 {
+  font-family: var(--font-text); font-style: italic; font-weight: 600; font-size: 40px;
+  margin: 0; line-height: 1; letter-spacing: -0.02em; color: var(--ink);
+}
+.wp-heading h1 .dot { color: var(--accent); font-style: normal; }
+.wp-heading .count { font-family: var(--font-num); font-size: 11px; color: var(--muted); }
+.wp-heading .page-title-action { margin-left: auto; }
+
+.btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-family: var(--font-ui); font-weight: 600; font-size: 13px;
+  padding: 7px 14px; border: 1px solid var(--rule-2); border-radius: var(--r-sm);
+  background: var(--paper); color: var(--ink-2); cursor: pointer;
+  box-shadow: 0 1px 2px oklch(50% 0.01 60 / 0.06);
+  transition: background-color var(--dur-micro) var(--ease-out),
+              border-color var(--dur-micro) var(--ease-out),
+              translate var(--dur-micro) var(--ease-out);
+}
+.btn:hover { background: var(--paper-2); border-color: var(--muted); color: var(--ink); }
+.btn:active { translate: 0 1px; }
+.btn-primary {
+  background: linear-gradient(120deg, var(--accent), oklch(58% 0.18 20));
+  border-color: transparent; color: var(--accent-ink);
+  box-shadow: 0 4px 14px -4px oklch(60% 0.2 38 / 0.55);
+}
+.btn-primary:hover { filter: brightness(1.05); }
+.btn-primary:active { translate: 0 2px; box-shadow: 0 1px 4px -2px oklch(60% 0.2 38 / 0.55); }
+.btn:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.btn.small { padding: 4px 10px; font-size: 12px; }
+
+.subsubsub { font-size: 13px; color: var(--muted); margin: 18px 0 14px; display: flex; gap: 4px; }
+.subsubsub a { color: var(--ink-2); text-decoration: none; padding: 3px 11px; border-radius: var(--r-pill); font-weight: 500;
+  transition: background-color var(--dur-micro) var(--ease-out), color var(--dur-micro) var(--ease-out); }
+.subsubsub a:hover { background: var(--paper-2); color: var(--ink); }
+.subsubsub a.current { background: var(--ink); color: var(--paper); font-weight: 600; }
+.subsubsub .num { font-family: var(--font-num); font-size: 10px; opacity: .7; }
+
+.card {
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+  border: 1px solid var(--glass-border); border-radius: var(--r-lg);
+  box-shadow: var(--shadow-float);
+  padding: 8px 14px 14px;
+}
+
+.tablenav { display: flex; align-items: center; gap: 8px; margin: 10px 0 4px; }
+.tablenav select, .tablenav input[type="search"] {
+  font-family: var(--font-ui); font-size: 13px; color: var(--ink);
+  background: var(--paper); border: 1px solid var(--rule-2); border-radius: var(--r-sm);
+  padding: 6px 9px; height: 32px;
+}
+.tablenav input[type="search"] { width: 200px; }
+.tablenav input[type="search"]:focus { border-color: var(--accent); }
+.tablenav select:focus-visible, .tablenav input:focus-visible {
+  outline: 2px solid var(--focus); outline-offset: 1px;
+}
+.tablenav .right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.tablenav .paging { font-family: var(--font-num); font-size: 11px; color: var(--muted); }
+
+table.wp-list-table { width: 100%; border-collapse: collapse; }
+.wp-list-table thead th {
+  font-family: var(--font-num); font-weight: 500; font-size: 10px;
+  letter-spacing: .1em; text-transform: uppercase;
+  color: var(--muted); text-align: left; padding: 8px 10px;
+  border-bottom: 1px solid var(--rule);
+}
+.wp-list-table thead th.num, .wp-list-table td.num {
+  text-align: right; font-family: var(--font-num); font-weight: 400;
+  font-variant-numeric: tabular-nums; letter-spacing: 0; text-transform: none;
+}
+.wp-list-table td { padding: 11px 10px; border-top: 1px solid var(--rule); vertical-align: top; }
+.wp-list-table tbody tr { transition: background-color var(--dur-micro) var(--ease-out); }
+.wp-list-table tbody tr:hover { background: var(--paper-2); }
+.wp-list-table td.cb { width: 30px; padding-top: 15px; }
+.wp-list-table input[type="checkbox"] {
+  appearance: none; width: 15px; height: 15px; margin: 0;
+  border: 1.5px solid var(--rule-2); border-radius: 5px; background: var(--paper);
+  cursor: pointer; transition: background-color var(--dur-micro) var(--ease-out), border-color var(--dur-micro) var(--ease-out), rotate var(--dur-micro) var(--ease-out);
+}
+.wp-list-table input[type="checkbox"]:checked { background: var(--accent); border-color: var(--accent); rotate: 90deg; }
+.wp-list-table input[type="checkbox"]:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.wp-list-table td.title a {
+  font-family: var(--font-text); font-weight: 600; font-size: 16px;
+  color: var(--ink); text-decoration: none;
+}
+.wp-list-table td.title a:hover { color: var(--accent); font-style: italic; }
+.wp-list-table td.title .row-meta { font-size: 12px; color: var(--muted); margin-top: 3px; }
+.wp-list-table td.title .row-actions {
+  font-size: 12px; margin-top: 5px;
+  opacity: 0; transition: opacity var(--dur-micro) var(--ease-out);
+}
+.wp-list-table tr:hover .row-actions, .wp-list-table tr:focus-within .row-actions { opacity: 1; }
+.wp-list-table .row-actions a { color: var(--muted); text-decoration: none; font-weight: 500; }
+.wp-list-table .row-actions a:hover { color: var(--accent); }
+.wp-list-table .row-actions .sep2 { color: var(--rule-2); margin: 0 5px; }
+.wp-list-table td { font-size: 13.5px; color: var(--ink-2); }
+.wp-list-table td.date { font-family: var(--font-num); font-size: 11px; color: var(--muted); }
+.wp-list-table td.date .rel { font-family: var(--font-ui); font-size: 11px; display: block; }
+
+.chip {
+  display: inline-block; font-size: 10.5px; font-weight: 600; padding: 2px 9px;
+  border-radius: var(--r-pill); letter-spacing: .02em;
+}
+.chip.draft { color: var(--teal); background: var(--teal-soft); }
+.chip.sched { color: var(--violet); background: var(--violet-soft); }
+.chip.sticky { color: var(--accent-deep); background: var(--accent-soft); }
+.chip.ok { color: var(--ok); background: var(--lime-soft); }
+
+.notice {
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+  border: 1px solid var(--glass-border); border-radius: var(--r-md);
+  box-shadow: var(--shadow-float);
+  padding: 10px 14px; margin: 16px 0; font-size: 13.5px; color: var(--ink-2);
+  display: flex; align-items: center; gap: 10px;
+  animation: drop-in 180ms var(--ease-out) 1;
+}
+@keyframes drop-in {
+  from { transform: translateY(-6px) rotate(-.4deg); opacity: 0; }
+  to { transform: translateY(0) rotate(0); opacity: 1; }
+}
+.notice svg { width: 16px; height: 16px; color: var(--ok); flex: none; }
+.notice a { color: var(--accent); font-weight: 600; text-decoration: none; }
+.notice a:hover { text-decoration: underline; }
+.notice .stamp {
+  margin-left: auto; font-family: var(--font-num); font-size: 10px;
+  color: var(--accent); border: 1px solid var(--accent-soft);
+  background: var(--accent-soft); border-radius: 6px; padding: 2px 7px;
+  transform: rotate(1.2deg);
+}
+/* ================= FERRIS — the press crab ================= */
+/* our mascot: a rust-crab pressman who hunts the cursor, Tom & Jerry style */
+
+#ferris {
+  position: fixed; left: 0; top: 0; z-index: 35;
+  width: 64px; cursor: pointer; will-change: transform;
+  filter: drop-shadow(0 4px 8px oklch(45% 0.02 60 / 0.25));
+}
+#ferris svg { width: 100%; display: block; }
+#ferris .leg { transform-origin: center; animation: legstep .35s ease-in-out infinite alternate; }
+#ferris .leg.l2, #ferris .leg.l4 { animation-delay: .18s; }
+/* revving up before the charge: legs blur, body squats */
+#ferris.rev .leg { animation-duration: .12s; }
+#ferris .claw { transform-origin: 30% 70%; }
+#ferris:hover .claw { animation: clawwave .4s ease-in-out 2; }
+#ferris:active .claw { animation: clawpress .5s ease-in-out 2; }
+#ferris .eye { animation: blink 5s ease-in-out infinite; }
+#ferris .tag {
+  position: absolute; left: 50%; bottom: calc(100% + 6px); translate: -50% 0;
+  font-family: var(--font-num); font-size: 9px; color: var(--muted);
+  background: var(--glass-strong); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+  border: 1px solid var(--glass-border); border-radius: 6px; padding: 2px 7px;
+  white-space: nowrap; opacity: 0; transition: opacity var(--dur-micro) var(--ease-out);
+}
+#ferris:hover .tag { opacity: 1; }
+
+/* speech bubble on click */
+#ferris .say {
+  position: absolute; left: 50%; bottom: calc(100% + 8px); translate: -50% 4px;
+  font-family: var(--font-ui); font-size: 12px; font-weight: 600; color: var(--ink);
+  background: var(--glass-strong); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+  border: 1px solid var(--glass-border); border-radius: 12px 12px 12px 4px;
+  box-shadow: var(--shadow-float);
+  padding: 6px 12px; white-space: nowrap;
+  opacity: 0; pointer-events: none;
+  transition: opacity var(--dur-micro) var(--ease-out), translate var(--dur-micro) var(--ease-out);
+}
+#ferris .say.show { opacity: 1; translate: -50% 0; }
+#ferris .say .em { color: var(--accent); }
+
+/* speed streaks — motion lines behind the dash */
+.streak {
+  position: fixed; z-index: 34; pointer-events: none;
+  width: 34px; height: 3px; border-radius: 2px;
+  background: color-mix(in oklab, var(--accent) 55%, transparent);
+  animation: streak-fly .35s var(--ease-out) forwards;
+}
+@keyframes streak-fly {
+  from { opacity: .9; transform: translateX(0) scaleX(1); }
+  to   { opacity: 0; transform: translateX(var(--fly, -60px)) scaleX(.4); }
+}
+
+/* dust puffs — little kicks at launch and dodge */
+.puff {
+  position: fixed; z-index: 34; pointer-events: none;
+  width: 12px; height: 12px; border-radius: 50%;
+  background: color-mix(in oklab, var(--muted) 45%, transparent);
+  animation: puff .5s var(--ease-out) forwards;
+}
+@keyframes puff {
+  from { opacity: .85; transform: translate(0,0) scale(.6); }
+  to   { opacity: 0; transform: translate(var(--dx, 0), var(--dy, -22px)) scale(1.9); }
+}
+
+@keyframes legstep {
+  from { transform: rotate(10deg); }
+  to   { transform: rotate(-10deg); }
+}
+@keyframes clawwave {
+  0%, 100% { transform: rotate(0); }
+  40%      { transform: rotate(-18deg); }
+}
+@keyframes clawpress {
+  0%, 100% { transform: rotate(0) translateY(0); }
+  45%      { transform: rotate(-14deg) translateY(5px); }
+}
+@keyframes blink {
+  0%, 92%, 100% { transform: scaleY(1); }
+  95%           { transform: scaleY(.15); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #ferris, #ferris .leg, #ferris .claw, #ferris .eye { animation: none !important; }
+  .streak, .puff { display: none !important; }
+}
+
+/* speech bubble on click */
+#ferris .say {
+  position: absolute; left: 50%; bottom: calc(100% + 8px); translate: -50% 4px;
+  font-family: var(--font-ui); font-size: 12px; font-weight: 600; color: var(--ink);
+  background: var(--glass-strong); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+  border: 1px solid var(--glass-border); border-radius: 12px 12px 12px 4px;
+  box-shadow: var(--shadow-float);
+  padding: 6px 12px; white-space: nowrap;
+  opacity: 0; pointer-events: none;
+  transition: opacity var(--dur-micro) var(--ease-out), translate var(--dur-micro) var(--ease-out);
+}
+#ferris .say.show { opacity: 1; translate: -50% 0; }
+#ferris .say .em { color: var(--accent); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; animation: none !important; }
+}
+</style>
+</head>
+<body>
+
+<div id="topbar">
+  <span class="mark"><span class="dot"></span>rpress</span>
+  <a href="#">Site name</a>
+  <a href="#">Updates <span style="font-family:var(--font-num);font-size:10px;color:var(--accent)">[2]</span></a>
+  <span class="spacer"></span>
+  <span class="who">editor · wp 7.1.3 parity · vps-01</span>
+</div>
+
+<main id="wpcontent">
+  <div class="wrap">
+
+    <span class="kicker">index <b>/01</b> — content</span>
+    <div class="wp-heading">
+      <h1>Posts<span class="dot">.</span></h1>
+      <span class="count">142 filed</span>
+      <a class="btn btn-primary page-title-action" href="#">Add new post</a>
+    </div>
+
+    <div class="notice">
+      <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="10" cy="10" r="7"/><path d="M7 10.5l2 2 4-5"/></svg>
+      3 posts updated. <a href="#">View latest →</a>
+      <span class="stamp">synced</span>
+    </div>
+
+    <div class="subsubsub">
+      <a href="#" class="current">All <span class="num">142</span></a>
+      <a href="#">Published <span class="num">118</span></a>
+      <a href="#">Drafts <span class="num">19</span></a>
+      <a href="#">Scheduled <span class="num">5</span></a>
+      <a href="#">Bin <span class="num">4</span></a>
+    </div>
+
+
+    <div class="card">
+      <div class="tablenav">
+        <select><option>Bulk actions</option><option>Move to Bin</option><option>Edit</option></select>
+        <button class="btn small">Apply</button>
+        <select><option>All dates</option></select>
+        <select><option>All categories</option></select>
+        <button class="btn small">Filter</button>
+        <div class="right">
+          <input type="search" placeholder="Search posts…">
+          <span class="paging">1–20 / 142</span>
+        </div>
+      </div>
+
+      <table class="wp-list-table">
+        <thead>
+          <tr>
+            <th class="cb"><input type="checkbox"></th>
+            <th>title</th>
+            <th>author</th>
+            <th>categories</th>
+            <th class="num">cmts</th>
+            <th>date</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="cb"><input type="checkbox"></td>
+            <td class="title">
+              <a href="#">A Slow Week for Rain on the Northern Coast</a> <span class="chip sticky">sticky</span>
+              <div class="row-meta">Features · The ferry schedule thins after October, and the ticket office…</div>
+              <div class="row-actions"><a href="#">Edit</a><span class="sep2">·</span><a href="#">Quick edit</a><span class="sep2">·</span><a href="#">Bin</a><span class="sep2">·</span><a href="#">View</a></div>
+            </td>
+            <td class="author">m.tran</td>
+            <td class="categories">Travel, Coast</td>
+            <td class="num">14</td>
+            <td class="date">Oct 24<span class="rel">4 days ago</span></td>
+          </tr>
+          <tr>
+            <td class="cb"><input type="checkbox"></td>
+            <td class="title">
+              <a href="#">The City Council Votes to Keep the Lido Open</a> <span class="chip draft">draft</span>
+              <div class="row-meta">Local · After two winters of closure threats, Tuesday's motion passed…</div>
+              <div class="row-actions"><a href="#">Edit</a><span class="sep2">·</span><a href="#">Quick edit</a><span class="sep2">·</span><a href="#">Bin</a><span class="sep2">·</span><a href="#">Preview</a></div>
+            </td>
+            <td class="author">j.okafor</td>
+            <td class="categories">News</td>
+            <td class="num">0</td>
+            <td class="date">Oct 22<span class="rel">6 days ago</span></td>
+          </tr>
+          <tr>
+            <td class="cb"><input type="checkbox" checked></td>
+            <td class="title">
+              <a href="#">Market Notes: Chili, Coffee and the Price of Shade</a> <span class="chip ok">live</span>
+              <div class="row-meta">Columns · Vendors under the awning agree the summer was kinder…</div>
+              <div class="row-actions"><a href="#">Edit</a><span class="sep2">·</span><a href="#">Quick edit</a><span class="sep2">·</span><a href="#">Bin</a><span class="sep2">·</span><a href="#">View</a></div>
+            </td>
+            <td class="author">m.tran</td>
+            <td class="categories">Opinion, Markets</td>
+            <td class="num">31</td>
+            <td class="date">Oct 20<span class="rel">8 days ago</span></td>
+          </tr>
+          <tr>
+            <td class="cb"><input type="checkbox"></td>
+            <td class="title">
+              <a href="#">A Repair Manual for the Village Bicycle Fleet</a> <span class="chip sched">queued</span>
+              <div class="row-meta">Guides · Forty bicycles, one shed, and a logbook that predates…</div>
+              <div class="row-actions"><a href="#">Edit</a><span class="sep2">·</span><a href="#">Quick edit</a><span class="sep2">·</span><a href="#">Bin</a><span class="sep2">·</span><a href="#">View</a></div>
+            </td>
+            <td class="author">a.nyoni</td>
+            <td class="categories">Guides</td>
+            <td class="num">6</td>
+            <td class="date">Oct 18<span class="rel">10 days ago</span></td>
+          </tr>
+          <tr>
+            <td class="cb"><input type="checkbox"></td>
+            <td class="title">
+              <a href="#">Notes on the Ferry Strike, Day Three</a> <span class="chip draft">draft</span>
+              <div class="row-meta">News · Commuters on the early crossings found the queues shorter…</div>
+              <div class="row-actions"><a href="#">Edit</a><span class="sep2">·</span><a href="#">Quick edit</a><span class="sep2">·</span><a href="#">Bin</a><span class="sep2">·</span><a href="#">Preview</a></div>
+            </td>
+            <td class="author">j.okafor</td>
+            <td class="categories">News</td>
+            <td class="num">2</td>
+            <td class="date">Oct 15<span class="rel">13 days ago</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+  </div>
+</main>
+
+<div id="dock-wrap">
+  <nav id="dock">
+    <a class="app" href="#"><span class="tip">Dashboard</span><svg class="t4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="3" y="4" width="14" height="4" rx="1"/><rect x="3" y="12" width="14" height="4" rx="1"/></svg><span class="lbl">Home</span></a>
+    <a class="app current" href="#"><span class="tip">Posts</span><svg class="t1" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="4" y="3" width="12" height="14" rx="1.5"/><path d="M7 7h6M7 10h6M7 13h4"/></svg><span class="lbl">Posts</span></a>
+    <a class="app" href="#"><span class="tip">Pages</span><svg class="t2" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="4" y="4" width="12" height="12" rx="1.5"/><path d="M4 9h12M9 4v12"/></svg><span class="lbl">Pages</span></a>
+    <a class="app" href="#"><span class="tip">Media</span><svg class="t3" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="3" y="3" width="14" height="14" rx="2"/><circle cx="8" cy="8" r="1.8"/><path d="M3 14l4-3 4 3 3-2 3 2"/></svg><span class="lbl">Media</span></a>
+    <a class="app" href="#"><span class="tip">Comments</span><svg class="t5" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="3" y="5" width="14" height="10" rx="2"/><path d="M6 9l2.5 2.5L13 9"/></svg><span class="lbl">Cmts</span><span class="badge">3</span></a>
+    <span class="sep"></span>
+    <a class="app" href="#"><span class="tip">Users</span><svg class="t2" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="10" cy="7" r="2.6"/><path d="M5 16c.8-2.6 2.7-3.6 5-3.6s4.2 1 5 3.6"/></svg><span class="lbl">Users</span></a>
+    <a class="app" href="#"><span class="tip">Widgets</span><svg class="t3" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="3" y="3" width="6" height="6" rx="1"/><rect x="11" y="3" width="6" height="6" rx="1"/><rect x="3" y="11" width="6" height="6" rx="1"/><rect x="11" y="11" width="6" height="6" rx="1"/></svg><span class="lbl">Wdgt</span></a>
+    <a class="app" href="#"><span class="tip">Menus</span><svg class="t6" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 5.5h12M4 10h12M4 14.5h8"/><path d="M15.5 13v4M13.5 15h4"/></svg><span class="lbl">Menus</span></a>
+    <a class="app" href="#"><span class="tip">Settings</span><svg class="t4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="10" cy="10" r="2.4"/><path d="M10 4v2M10 14v2M4 10h2M14 10h2"/></svg><span class="lbl">Prefs</span></a>
+
+    <span class="sep"></span>
+    <a class="app" href="#"><span class="tip">Add new</span><svg viewBox="0 0 20 20" fill="none" stroke="var(--accent)" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="3" width="14" height="14" rx="3"/><path d="M10 7v6M7 10h6"/></svg><span class="lbl">New</span></a>
+  </nav>
+<div id="ferris" title="Ferris, the press crab">
+  <span class="say" role="status"></span>
+  <span class="tag">ferris · press shift</span>
+  <svg viewBox="0 0 64 52" fill="none">
+    <g class="inner">
+    <!-- legs -->
+    <g stroke="oklch(48% 0.17 36)" stroke-width="3" stroke-linecap="round">
+      <path class="leg l1" d="M20 34 L10 40"/>
+      <path class="leg l2" d="M24 38 L16 46"/>
+      <path class="leg l3" d="M44 34 L54 40"/>
+      <path class="leg l4" d="M40 38 L48 46"/>
+    </g>
+    <!-- body -->
+    <path d="M14 26 Q14 12 32 12 Q50 12 50 26 Q50 36 32 36 Q14 36 14 26 Z" fill="oklch(60% 0.2 38)"/>
+    <path d="M18 22 Q18 15 32 15" stroke="oklch(70% 0.18 42)" stroke-width="2.5" stroke-linecap="round" fill="none" opacity=".8"/>
+    <!-- eyes -->
+    <g class="eye" style="transform-origin: 26px 14px">
+      <rect x="24" y="6" width="3" height="8" rx="1.5" fill="oklch(48% 0.17 36)"/>
+      <circle cx="25.5" cy="6" r="3" fill="oklch(24% 0.012 60)"/>
+    </g>
+    <g class="eye" style="transform-origin: 38px 14px; animation-delay:.1s">
+      <rect x="37" y="6" width="3" height="8" rx="1.5" fill="oklch(48% 0.17 36)"/>
+      <circle cx="38.5" cy="6" r="3" fill="oklch(24% 0.012 60)"/>
+    </g>
+    <!-- claws -->
+    <g class="claw">
+      <path d="M14 24 L4 18" stroke="oklch(48% 0.17 36)" stroke-width="3" stroke-linecap="round"/>
+      <path d="M2 12 Q-2 18 3 22 Q8 26 11 21 Q13 17 9 14 Q5 11 2 12 Z" fill="oklch(55% 0.19 38)"/>
+    </g>
+    <g class="claw" style="transform-origin: 70% 70%">
+      <path d="M50 24 L60 18" stroke="oklch(48% 0.17 36)" stroke-width="3" stroke-linecap="round"/>
+      <path d="M62 12 Q66 18 61 22 Q56 26 53 21 Q51 17 55 14 Q59 11 62 12 Z" fill="oklch(55% 0.19 38)"/>
+    </g>
+    <!-- the press plate it carries -->
+    <rect x="24" y="28" width="16" height="5" rx="1" fill="oklch(48% 0.17 36)" opacity=".9"/>
+    <path d="M26 30.5h12" stroke="oklch(96% 0.016 88)" stroke-width="1.4" stroke-linecap="round"/>
+    </g>
+  </svg>
+
+<script>
+// ================= FERRIS ENGINE — Tom & Jerry =================
+// wander the edges; spot a parked cursor → rev → CHARGE; cursor touch → dodge.
+const ferris = document.getElementById('ferris');
+const say = ferris.querySelector('.say');
+const inner = ferris.querySelector('.inner');
+const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+// ---- position state (top-left of the 64px box) ----
+let x = innerWidth - 120, y = innerHeight - 170;
+let dir = 1;                 // 1 = facing right, -1 = left
+let mode = 'enter';          // enter | wander | rev | charge | dodge | wait
+let tx = x, ty = y, speed = 0.55; // target + px/ms
+let modeUntil = 0, stillSince = 0, lastCx = 0, lastCy = 0;
+let vx = 0, vy = 0;
+
+const W = 64, H = 52;
+const rand = (a, b) => a + Math.random() * (b - a);
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+
+ferris.style.transform = `translate(${innerWidth + 90}px, ${y}px)`;
+
+// ---- particles ----
+function puff(px, py, n = 5, spread = 26) {
+  if (reduced) return;
+  for (let i = 0; i < n; i++) {
+    const el = document.createElement('i');
+    el.className = 'puff';
+    el.style.left = px + rand(-8, 8) + 'px';
+    el.style.top = py + rand(-6, 6) + 'px';
+    el.style.setProperty('--dx', rand(-spread, spread) + 'px');
+    el.style.setProperty('--dy', rand(-spread, -10) + 'px');
+    document.body.appendChild(el);
+    setTimeout(() => el.remove(), 600);
+  }
+}
+let streakCooldown = 0;
+function streak(px, py, fly, tilt = 0) {
+  if (reduced || performance.now() < streakCooldown) return;
+  streakCooldown = performance.now() + 60;
+  const el = document.createElement('i');
+  el.className = 'streak';
+  el.style.left = px + 'px';
+  el.style.top = py + rand(-4, 4) + 'px';
+  el.style.rotate = tilt + 'deg';
+  el.style.setProperty('--fly', fly + 'px');
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 450);
+}
+
+// ---- waypoints: patrol the viewport edges ----
+function edgeSpot() {
+  const m = 90;
+  const spots = [
+    [rand(innerWidth * .55, innerWidth * .9), rand(80, innerHeight * .3)],
+    [rand(m, innerWidth * .2), rand(90, innerHeight * .4)],
+    [rand(m, innerWidth * .3), rand(innerHeight * .45, innerHeight * .75)],
+    [rand(innerWidth * .4, innerWidth * .85), rand(innerHeight * .65, innerHeight * .82)],
+    [rand(innerWidth * .6, innerWidth - m), rand(innerHeight * .2, innerHeight * .55)],
+  ];
+  return spots[Math.floor(Math.random() * spots.length)];
+}
+
+function headTo(nx, ny, s = 0.55) { tx = clamp(nx, 8, innerWidth - W - 8); ty = clamp(ny, 40, innerHeight - H - 8); speed = s; }
+function face(dx) { if (Math.abs(dx) > 0.5) dir = dx < 0 ? -1 : 1; inner.style.transform = `scaleX(${dir})`; }
+
+// ---- cursor tracking ----
+let cx = -999, cy = -999, moveAt = 0;
+addEventListener('pointermove', e => {
+  cx = e.clientX; cy = e.clientY;
+  if (Math.hypot(cx - lastCx, cy - lastCy) > 12) { lastCx = cx; lastCy = cy; moveAt = performance.now(); }
+}, { passive: true });
+
+// ---- main loop ----
+let last = performance.now();
+function tick(now) {
+  const dt = Math.min(50, now - last); last = now;
+  const dcx = (x + W / 2) - cx, dcy = (y + H / 2) - cy;
+  const distCursor = Math.hypot(dcx, dcy);
+  const dx = tx - x, dy = ty - y, dist = Math.hypot(dx, dy);
+
+  if (mode === 'enter') {
+    // skitter in from the right edge, then start wandering
+    headTo(innerWidth * 0.82, innerHeight * 0.16, 1.2);
+    if (dist < 40) { mode = 'wander'; modeUntil = now + rand(800, 1600); const s = edgeSpot(); headTo(s[0], s[1]); }
+  }
+  else if (mode === 'wander' || mode === 'wait') {
+    // dodge: cursor touched the crab → bolt away
+    if (distCursor < 80) {
+      mode = 'dodge'; modeUntil = now + 380;
+      const away = Math.atan2(dcy, dcx);
+      vx = Math.cos(away) * 1.9; vy = Math.sin(away) * 1.9;
+      face(Math.cos(away)); puff(x + W / 2, y + H, 6); streak(x + W / 2, y + H / 2, -dir * 70);
+    }
+    // hunt: cursor parked ≥900ms and within 500px → rev then charge
+    else if (cx > 0 && now - moveAt > 900 && distCursor < 500) {
+      mode = 'rev'; modeUntil = now + 480;
+      ferris.classList.add('rev');
+      inner.style.transform = `scaleX(${dir}) scaleY(.82)`;   // the crouch
+      puff(x + W / 2, y + H, 3, 16);
+    }
+    else if (mode === 'wander' && dist < 24) {
+      mode = 'wait'; modeUntil = now + rand(600, 2000);
+    }
+    else if (mode === 'wait' && now > modeUntil) {
+      mode = 'wander'; const s = edgeSpot(); headTo(s[0], s[1]);
+    }
+  }
+  else if (mode === 'rev') {
+    if (distCursor > 560 || now - moveAt < 250) {              // prey escaped or twitched
+      ferris.classList.remove('rev'); mode = 'wander'; const s = edgeSpot(); headTo(s[0], s[1]);
+    } else if (now > modeUntil) {
+      // CHARGE — speed lines + dust, legs blur already on
+      ferris.classList.remove('rev');
+      inner.style.transform = `scaleX(${dir})`;
+      mode = 'charge'; modeUntil = now + 1400;
+      face(-dcx);
+      puff(x + W / 2, y + H, 8);
+      const aim = Math.atan2(-dcy, -dcx);
+      vx = Math.cos(aim) * 2.6; vy = Math.sin(aim) * 2.6;
+    }
+  }
+  else if (mode === 'charge') {
+    if (distCursor < 46 || now > modeUntil) {
+      mode = 'wander'; modeUntil = now + 700;
+      const s = edgeSpot(); headTo(s[0], s[1], 0.5);
+      puff(x + W / 2, y + H, 4);
+    }
+  }
+  else if (mode === 'dodge') {
+    if (now > modeUntil) { mode = 'wander'; const s = edgeSpot(); headTo(s[0], s[1]); }
+  }
+
+  // ---- integrate ----
+  if (mode === 'charge' || mode === 'dodge') {
+    x = clamp(x + vx * dt, 8, innerWidth - W - 8);
+    y = clamp(y + vy * dt, 40, innerHeight - H - 8);
+    streak(x + W / 2 - vx * 8, y + H / 2, -vx * 46, Math.atan2(vy, vx) * 180 / Math.PI);
+    if (Math.random() < .35) puff(x + W / 2, y + H, 1, 14);
+  } else {
+    const step = speed * dt;
+    if (dist > 0.5) {
+      const k = Math.min(1, step / dist);
+      x += dx * k; y += dy * k;
+      face(dx);
+    }
+  }
+
+  ferris.style.transform = `translate(${x}px, ${y}px)`;
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+
+// ---- chatter on click ----
+const lines = [
+  'fresh off the press. <span class="em">*</span>',
+  'queries: zero. <span class="em">claws: two.</span>',
+  'static files only, pal.',
+  'I do the publishing around here.',
+  'print it. ship it. <span class="em">done.</span>',
+  'no PHP was harmed.',
+  'crab on duty — keep it brief.',
+  'the cache is warm today.',
+  'wp-admin? never heard of it.',
+  'stamp it <span class="em">harder.</span>',
+  'can\'t catch me. <span class="em">try again.</span>',
+];
+let sayTimer;
+ferris.addEventListener('click', () => {
+  say.innerHTML = lines[Math.floor(Math.random() * lines.length)];
+  say.classList.add('show');
+  clearTimeout(sayTimer);
+  sayTimer = setTimeout(() => say.classList.remove('show'), 2400);
+});
+</script>
+</div>
+</div>
+
+</body>
+</html>

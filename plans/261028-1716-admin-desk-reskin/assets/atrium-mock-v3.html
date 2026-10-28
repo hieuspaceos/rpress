@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Atrium v3 — rpress admin mock</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Lora:ital,wght@0,500;0,600;1,500;1,600&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+/* atrium-v3 · same skin as v2, layout flipped: floating top nav bar instead of sidebar */
+
+:root {
+  --paper: oklch(97% 0.008 90);
+  --paper-2: oklch(94.5% 0.012 88);
+  --paper-3: oklch(91% 0.015 86);
+  --ink: oklch(24% 0.012 60);
+  --ink-2: oklch(33% 0.012 58);
+  --muted: oklch(51% 0.014 62);
+  --rule: oklch(90% 0.01 80);
+  --rule-2: oklch(82% 0.012 78);
+
+  --accent: oklch(60% 0.2 38);
+  --accent-soft: oklch(93.5% 0.055 55);
+  --accent-deep: oklch(48% 0.17 36);
+  --accent-ink: oklch(99% 0.005 80);
+  --teal: oklch(60% 0.1 195);
+  --teal-soft: oklch(93% 0.04 195);
+  --violet: oklch(60% 0.14 300);
+  --violet-soft: oklch(94% 0.045 300);
+  --lime: oklch(70% 0.14 130);
+  --lime-soft: oklch(94% 0.05 130);
+  --amber: oklch(73% 0.15 80);
+  --amber-soft: oklch(95% 0.055 88);
+  --ok: oklch(60% 0.12 150);
+  --focus: oklch(60% 0.2 38);
+
+  --glass: color-mix(in oklab, oklch(98% 0.006 90) 68%, transparent);
+  --glass-strong: color-mix(in oklab, oklch(98% 0.006 90) 82%, transparent);
+  --glass-border: oklch(100% 0 0 / 0.6);
+  --blur: blur(20px) saturate(1.5);
+  --shadow-float: 0 6px 24px -6px oklch(50% 0.02 60 / 0.18), 0 1px 3px oklch(50% 0.02 60 / 0.08);
+
+  --font-ui: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-text: "Lora", Georgia, serif;
+  --font-num: "IBM Plex Mono", ui-monospace, monospace;
+
+  --r-sm: 9px; --r-md: 13px; --r-lg: 18px; --r-pill: 999px;
+  --dur-micro: 100ms;
+  --dur-short: 160ms;
+  --ease-out: cubic-bezier(.25,.9,.3,1);
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; overflow-x: clip; }
+body {
+  font-family: var(--font-ui); color: var(--ink); font-size: 14px;
+  background:
+    radial-gradient(1100px 520px at 88% -8%, oklch(90% 0.09 45 / .8), transparent 62%),
+    radial-gradient(760px 460px at 60% 115%, oklch(90% 0.07 300 / .7), transparent 60%),
+    radial-gradient(700px 420px at -8% 60%, oklch(91% 0.07 190 / .6), transparent 58%),
+    var(--paper);
+  background-attachment: fixed;
+}
+body::before {
+  content: ""; position: fixed; inset: 0; z-index: 60; pointer-events: none;
+  opacity: .035; mix-blend-mode: multiply;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+::selection { background: color-mix(in oklab, var(--accent) 24%, transparent); }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: var(--rule-2); border-radius: 6px; border: 2px solid var(--paper); }
+::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+::-webkit-scrollbar-track { background: transparent; }
+input, textarea { caret-color: var(--accent); }
+
+/* ================= TOP NAV BAR ================= */
+
+#topnav {
+  position: fixed; inset: 10px 12px auto 12px; height: 48px; z-index: 40;
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+  border: 1px solid var(--glass-border); border-radius: var(--r-lg);
+  box-shadow: var(--shadow-float);
+  display: flex; align-items: center; padding: 0 8px 0 16px; gap: 4px;
+}
+#topnav .mark {
+  font-weight: 700; font-size: 15px; letter-spacing: -0.02em; color: var(--ink);
+  display: flex; align-items: center; gap: 8px; margin-right: 12px;
+}
+#topnav .mark .dot {
+  width: 10px; height: 10px; border-radius: 4px;
+  background: linear-gradient(135deg, var(--accent), var(--violet));
+  transform: rotate(-6deg);
+}
+#topnav nav { display: flex; align-items: center; gap: 2px; overflow-x: auto; scrollbar-width: none; }
+#topnav nav::-webkit-scrollbar { display: none; }
+#topnav nav a {
+  display: inline-flex; align-items: center; gap: 7px; flex: none;
+  padding: 6px 11px; color: var(--ink-2); text-decoration: none;
+  font-size: 13px; font-weight: 500; border-radius: var(--r-pill);
+  transition: background-color var(--dur-micro) var(--ease-out), color var(--dur-micro) var(--ease-out);
+}
+#topnav nav a svg { width: 16px; height: 16px; }
+#topnav nav a:hover { background: var(--paper-2); color: var(--ink); }
+#topnav nav a.current { background: var(--accent-soft); color: var(--accent-deep); font-weight: 600; }
+#topnav nav a.current svg { color: var(--accent); }
+/* tinted icons */
+#topnav nav .t1 { color: var(--accent); } #topnav nav .t2 { color: var(--teal); }
+#topnav nav .t3 { color: var(--violet); } #topnav nav .t4 { color: var(--amber); }
+#topnav nav .t5 { color: var(--lime); } #topnav nav .t6 { color: var(--ok); }
+#topnav nav a svg { color: var(--muted); }
+#topnav nav a:hover svg { color: var(--accent); }
+#topnav nav .divider { width: 1px; height: 20px; background: var(--rule); margin: 0 6px; flex: none; }
+
+#topnav .spacer { flex: 1; }
+#topnav .utility { display: flex; align-items: center; gap: 4px; }
+#topnav .utility a {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 10px; color: var(--ink-2); text-decoration: none;
+  font-size: 13px; font-weight: 500; border-radius: var(--r-pill);
+  transition: background-color var(--dur-micro) var(--ease-out), color var(--dur-micro) var(--ease-out);
+}
+#topnav .utility a:hover { background: var(--paper-2); color: var(--accent); }
+#topnav .utility a svg { width: 16px; height: 16px; color: var(--muted); }
+#topnav .new-btn {
+  background: var(--ink); color: var(--paper); border-radius: var(--r-pill);
+  padding: 6px 14px; font-weight: 600; font-size: 12px; text-decoration: none;
+  transition: background-color var(--dur-micro) var(--ease-out), translate var(--dur-micro) var(--ease-out);
+}
+#topnav .new-btn:hover { background: var(--accent); color: var(--accent-ink); }
+#topnav .avatar {
+  width: 28px; height: 28px; border-radius: var(--r-pill); flex: none;
+  background: linear-gradient(135deg, var(--teal), var(--violet));
+  display: flex; align-items: center; justify-content: center;
+  color: var(--accent-ink); font-weight: 700; font-size: 11px; margin-left: 4px;
+}
+
+/* ================= CONTENT ================= */
+
+#wpcontent { margin: 74px 0 0; min-height: calc(100vh - 86px); }
+.wrap { padding: 22px 32px 64px; max-width: 1240px; margin: 0 auto; }
+
+.kicker {
+  font-family: var(--font-num); font-size: 10px; font-weight: 500;
+  letter-spacing: .14em; text-transform: uppercase; color: var(--muted);
+  transform: rotate(-1deg); transform-origin: left; display: inline-block;
+}
+.kicker b { color: var(--accent); font-weight: 500; }
+
+.wp-heading {
+  display: flex; align-items: baseline; gap: 16px; margin: 4px 0 0;
+}
+.wp-heading h1 {
+  font-family: var(--font-text); font-style: italic; font-weight: 600; font-size: 40px;
+  margin: 0; line-height: 1; letter-spacing: -0.02em; color: var(--ink);
+}
+.wp-heading h1 .dot { color: var(--accent); font-style: normal; }
+.wp-heading .count { font-family: var(--font-num); font-size: 11px; color: var(--muted); }
+.wp-heading .page-title-action { margin-left: auto; }
+
+.btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-family: var(--font-ui); font-weight: 600; font-size: 13px;
+  padding: 7px 14px; border: 1px solid var(--rule-2); border-radius: var(--r-sm);
+  background: var(--paper); color: var(--ink-2); cursor: pointer;
+  box-shadow: 0 1px 2px oklch(50% 0.01 60 / 0.06);
+  transition: background-color var(--dur-micro) var(--ease-out),
+              border-color var(--dur-micro) var(--ease-out),
+              translate var(--dur-micro) var(--ease-out);
+}
+.btn:hover { background: var(--paper-2); border-color: var(--muted); color: var(--ink); }
+.btn:active { translate: 0 1px; }
+.btn-primary {
+  background: linear-gradient(120deg, var(--accent), oklch(58% 0.18 20));
+  border-color: transparent; color: var(--accent-ink);
+  box-shadow: 0 4px 14px -4px oklch(60% 0.2 38 / 0.55);
+}
+.btn-primary:hover { filter: brightness(1.05); }
+.btn-primary:active { translate: 0 2px; box-shadow: 0 1px 4px -2px oklch(60% 0.2 38 / 0.55); }
+.btn:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.btn.small { padding: 4px 10px; font-size: 12px; }
+
+.subsubsub { font-size: 13px; color: var(--muted); margin: 18px 0 14px; display: flex; gap: 4px; }
+.subsubsub a { color: var(--ink-2); text-decoration: none; padding: 3px 11px; border-radius: var(--r-pill); font-weight: 500;
+  transition: background-color var(--dur-micro) var(--ease-out), color var(--dur-micro) var(--ease-out); }
+.subsubsub a:hover { background: var(--paper-2); color: var(--ink); }
+.subsubsub a.current { background: var(--ink); color: var(--paper); font-weight: 600; }
+.subsubsub .num { font-family: var(--font-num); font-size: 10px; opacity: .7; }
+
+.card {
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+  border: 1px solid var(--glass-border); border-radius: var(--r-lg);
+  box-shadow: var(--shadow-float);
+  padding: 8px 14px 14px;
+}
+
+.tablenav { display: flex; align-items: center; gap: 8px; margin: 10px 0 4px; }
+.tablenav select, .tablenav input[type="search"] {
+  font-family: var(--font-ui); font-size: 13px; color: var(--ink);
+  background: var(--paper); border: 1px solid var(--rule-2); border-radius: var(--r-sm);
+  padding: 6px 9px; height: 32px;
+}
+.tablenav input[type="search"] { width: 200px; }
+.tablenav input[type="search"]:focus { border-color: var(--accent); }
+.tablenav select:focus-visible, .tablenav input:focus-visible {
+  outline: 2px solid var(--focus); outline-offset: 1px;
+}
+.tablenav .right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.tablenav .paging { font-family: var(--font-num); font-size: 11px; color: var(--muted); }
+
+table.wp-list-table { width: 100%; border-collapse: collapse; }
+.wp-list-table thead th {
+  font-family: var(--font-num); font-weight: 500; font-size: 10px;
+  letter-spacing: .1em; text-transform: uppercase;
+  color: var(--muted); text-align: left; padding: 8px 10px;
+  border-bottom: 1px solid var(--rule);
+}
+.wp-list-table thead th.num, .wp-list-table td.num {
+  text-align: right; font-family: var(--font-num); font-weight: 400;
+  font-variant-numeric: tabular-nums; letter-spacing: 0; text-transform: none;
+}
+.wp-list-table td { padding: 11px 10px; border-top: 1px solid var(--rule); vertical-align: top; }
+.wp-list-table tbody tr { transition: background-color var(--dur-micro) var(--ease-out); }
+.wp-list-table tbody tr:hover { background: var(--paper-2); }
+.wp-list-table td.cb { width: 30px; padding-top: 15px; }
+.wp-list-table input[type="checkbox"] {
+  appearance: none; width: 15px; height: 15px; margin: 0;
+  border: 1.5px solid var(--rule-2); border-radius: 5px; background: var(--paper);
+  cursor: pointer; transition: background-color var(--dur-micro) var(--ease-out), border-color var(--dur-micro) var(--ease-out), rotate var(--dur-micro) var(--ease-out);
+}
+.wp-list-table input[type="checkbox"]:checked { background: var(--accent); border-color: var(--accent); rotate: 90deg; }
+.wp-list-table input[type="checkbox"]:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.wp-list-table td.title a {
+  font-family: var(--font-text); font-weight: 600; font-size: 16px;
+  color: var(--ink); text-decoration: none;
+}
+.wp-list-table td.title a:hover { color: var(--accent); font-style: italic; }
+.wp-list-table td.title .row-meta { font-size: 12px; color: var(--muted); margin-top: 3px; }
+.wp-list-table td.title .row-actions {
+  font-size: 12px; margin-top: 5px;
+  opacity: 0; transition: opacity var(--dur-micro) var(--ease-out);
+}
+.wp-list-table tr:hover .row-actions, .wp-list-table tr:focus-within .row-actions { opacity: 1; }
+.wp-list-table .row-actions a { color: var(--muted); text-decoration: none; font-weight: 500; }
+.wp-list-table .row-actions a:hover { color: var(--accent); }
+.wp-list-table .row-actions .sep2 { color: var(--rule-2); margin: 0 5px; }
+.wp-list-table td { font-size: 13.5px; color: var(--ink-2); }
+.wp-list-table td.date { font-family: var(--font-num); font-size: 11px; color: var(--muted); }
+.wp-list-table td.date .rel { font-family: var(--font-ui); font-size: 11px; display: block; }
+
+.chip {
+  display: inline-block; font-size: 10.5px; font-weight: 600; padding: 2px 9px;
+  border-radius: var(--r-pill); letter-spacing: .02em;
+}
+.chip.draft { color: var(--teal); background: var(--teal-soft); }
+.chip.sched { color: var(--violet); background: var(--violet-soft); }
+.chip.sticky { color: var(--accent-deep); background: var(--accent-soft); }
+.chip.ok { color: var(--ok); background: var(--lime-soft); }
+
+.notice {
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+  border: 1px solid var(--glass-border); border-radius: var(--r-md);
+  box-shadow: var(--shadow-float);
+  padding: 10px 14px; margin: 16px 0; font-size: 13.5px; color: var(--ink-2);
+  display: flex; align-items: center; gap: 10px;
+  animation: drop-in 180ms var(--ease-out) 1;
+}
+@keyframes drop-in {
+  from { transform: translateY(-6px) rotate(-.4deg); opacity: 0; }
+  to { transform: translateY(0) rotate(0); opacity: 1; }
+}
+.notice svg { width: 16px; height: 16px; color: var(--ok); flex: none; }
+.notice a { color: var(--accent); font-weight: 600; text-decoration: none; }
+.notice a:hover { text-decoration: underline; }
+.notice .stamp {
+  margin-left: auto; font-family: var(--font-num); font-size: 10px;
+  color: var(--accent); border: 1px solid var(--accent-soft);
+  background: var(--accent-soft); border-radius: 6px; padding: 2px 7px;
+  transform: rotate(1.2deg);
+}
+
+.desk-foot {
+  margin-top: 24px; padding: 10px 14px; border-radius: var(--r-md);
+  font-size: 12px; color: var(--muted); display: flex; gap: 18px; align-items: center;
+  background: var(--glass); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+  border: 1px solid var(--glass-border);
+}
+.desk-foot .num { font-family: var(--font-num); }
+.desk-foot .sw { width: 9px; height: 9px; border-radius: 3px; display: inline-block; margin-right: 4px; vertical-align: -1px; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; animation: none !important; }
+}
+</style>
+</head>
+<body>
+
+<header id="topnav">
+  <span class="mark"><span class="dot"></span>rpress</span>
+  <nav>
+    <a href="#"><svg class="t4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="3" y="4" width="14" height="4" rx="1"/><rect x="3" y="12" width="14" height="4" rx="1"/></svg>Dashboard</a>
+    <a href="#" class="current"><svg class="t1" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="4" y="3" width="12" height="14" rx="1.5"/><path d="M7 7h6M7 10h6M7 13h4"/></svg>Posts</a>
+    <a href="#"><svg class="t2" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="4" y="4" width="12" height="12" rx="1.5"/><path d="M4 9h12M9 4v12"/></svg>Pages</a>
+    <a href="#"><svg class="t3" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="3" y="3" width="14" height="14" rx="2"/><circle cx="8" cy="8" r="1.8"/><path d="M3 14l4-3 4 3 3-2 3 2"/></svg>Media</a>
+    <a href="#"><svg class="t5" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="3" y="5" width="14" height="10" rx="2"/><path d="M6 9l2.5 2.5L13 9"/></svg>Comments</a>
+    <span class="divider"></span>
+    <a href="#"><svg class="t2" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="10" cy="7" r="2.6"/><path d="M5 16c.8-2.6 2.7-3.6 5-3.6s4.2 1 5 3.6"/></svg>Users</a>
+    <a href="#"><svg class="t3" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="3" y="3" width="6" height="6" rx="1"/><rect x="11" y="3" width="6" height="6" rx="1"/><rect x="3" y="11" width="6" height="6" rx="1"/><rect x="11" y="11" width="6" height="6" rx="1"/></svg>Widgets</a>
+    <a href="#"><svg class="t6" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 5.5h12M4 10h12M4 14.5h8"/><path d="M15.5 13v4M13.5 15h4"/></svg>Menus</a>
+    <a href="#"><svg class="t4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="10" cy="10" r="2.4"/><path d="M10 4v2M10 14v2M4 10h2M14 10h2"/></svg>Settings</a>
+  </nav>
+  <span class="spacer"></span>
+  <div class="utility">
+    <a href="#"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M10 4v11M5.5 9.5L10 4l4.5 5.5"/><path d="M5 15.5h10"/></svg>Updates <span class="chip" style="background:var(--amber-soft);color:var(--accent-deep)">2</span></a>
+    <a href="#" class="new-btn">+ New</a>
+    <span class="avatar">ed</span>
+  </div>
+</header>
+
+<main id="wpcontent">
+  <div class="wrap">
+
+    <span class="kicker">index <b>/01</b> — content</span>
+    <div class="wp-heading">
+      <h1>Posts<span class="dot">.</span></h1>
+      <span class="count">142 filed</span>
+      <a class="btn btn-primary page-title-action" href="#">Add new post</a>
+    </div>
+
+    <div class="notice">
+      <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="10" cy="10" r="7"/><path d="M7 10.5l2 2 4-5"/></svg>
+      3 posts updated. <a href="#">View latest →</a>
+      <span class="stamp">synced</span>
+    </div>
+
+    <div class="subsubsub">
+      <a href="#" class="current">All <span class="num">142</span></a>
+      <a href="#">Published <span class="num">118</span></a>
+      <a href="#">Drafts <span class="num">19</span></a>
+      <a href="#">Scheduled <span class="num">5</span></a>
+      <a href="#">Bin <span class="num">4</span></a>
+    </div>
+
+    <div class="card">
+      <div class="tablenav">
+        <select><option>Bulk actions</option><option>Move to Bin</option><option>Edit</option></select>
+        <button class="btn small">Apply</button>
+        <select><option>All dates</option></select>
+        <select><option>All categories</option></select>
+        <button class="btn small">Filter</button>
+        <div class="right">
+          <input type="search" placeholder="Search posts…">
+          <span class="paging">1–20 / 142</span>
+        </div>
+      </div>
+
+      <table class="wp-list-table">
+        <thead>
+          <tr>
+            <th class="cb"><input type="checkbox"></th>
+            <th>title</th>
+            <th>author</th>
+            <th>categories</th>
+            <th class="num">cmts</th>
+            <th>date</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="cb"><input type="checkbox"></td>
+            <td class="title">
+              <a href="#">A Slow Week for Rain on the Northern Coast</a> <span class="chip sticky">sticky</span>
+              <div class="row-meta">Features · The ferry schedule thins after October, and the ticket office…</div>
+              <div class="row-actions"><a href="#">Edit</a><span class="sep2">·</span><a href="#">Quick edit</a><span class="sep2">·</span><a href="#">Bin</a><span class="sep2">·</span><a href="#">View</a></div>
+            </td>
+            <td class="author">m.tran</td>
+            <td class="categories">Travel, Coast</td>
+            <td class="num">14</td>
+            <td class="date">Oct 24<span class="rel">4 days ago</span></td>
+          </tr>
+          <tr>
+            <td class="cb"><input type="checkbox"></td>
+            <td class="title">
+              <a href="#">The City Council Votes to Keep the Lido Open</a> <span class="chip draft">draft</span>
+              <div class="row-meta">Local · After two winters of closure threats, Tuesday's motion passed…</div>
+              <div class="row-actions"><a href="#">Edit</a><span class="sep2">·</span><a href="#">Quick edit</a><span class="sep2">·</span><a href="#">Bin</a><span class="sep2">·</span><a href="#">Preview</a></div>
+            </td>
+            <td class="author">j.okafor</td>
+            <td class="categories">News</td>
+            <td class="num">0</td>
+            <td class="date">Oct 22<span class="rel">6 days ago</span></td>
+          </tr>
+          <tr>
+            <td class="cb"><input type="checkbox" checked></td>
+            <td class="title">
+              <a href="#">Market Notes: Chili, Coffee and the Price of Shade</a> <span class="chip ok">live</span>
+              <div class="row-meta">Columns · Vendors under the awning agree the summer was kinder…</div>
+              <div class="row-actions"><a href="#">Edit</a><span class="sep2">·</span><a href="#">Quick edit</a><span class="sep2">·</span><a href="#">Bin</a><span class="sep2">·</span><a href="#">View</a></div>
+            </td>
+            <td class="author">m.tran</td>
+            <td class="categories">Opinion, Markets</td>
+            <td class="num">31</td>
+            <td class="date">Oct 20<span class="rel">8 days ago</span></td>
+          </tr>
+          <tr>
+            <td class="cb"><input type="checkbox"></td>
+            <td class="title">
+              <a href="#">A Repair Manual for the Village Bicycle Fleet</a> <span class="chip sched">queued</span>
+              <div class="row-meta">Guides · Forty bicycles, one shed, and a logbook that predates…</div>
+              <div class="row-actions"><a href="#">Edit</a><span class="sep2">·</span><a href="#">Quick edit</a><span class="sep2">·</span><a href="#">Bin</a><span class="sep2">·</span><a href="#">View</a></div>
+            </td>
+            <td class="author">a.nyoni</td>
+            <td class="categories">Guides</td>
+            <td class="num">6</td>
+            <td class="date">Oct 18<span class="rel">10 days ago</span></td>
+          </tr>
+          <tr>
+            <td class="cb"><input type="checkbox"></td>
+            <td class="title">
+              <a href="#">Notes on the Ferry Strike, Day Three</a> <span class="chip draft">draft</span>
+              <div class="row-meta">News · Commuters on the early crossings found the queues shorter…</div>
+              <div class="row-actions"><a href="#">Edit</a><span class="sep2">·</span><a href="#">Quick edit</a><span class="sep2">·</span><a href="#">Bin</a><span class="sep2">·</span><a href="#">Preview</a></div>
+            </td>
+            <td class="author">j.okafor</td>
+            <td class="categories">News</td>
+            <td class="num">2</td>
+            <td class="date">Oct 15<span class="rel">13 days ago</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="desk-foot">
+      <span>rpress admin — "Atrium" v3 · top-nav</span>
+      <span class="num">render: static · queries: 0</span>
+      <span style="margin-left:auto">
+        <span class="sw" style="background:var(--accent)"></span>
+        <span class="sw" style="background:var(--teal)"></span>
+        <span class="sw" style="background:var(--violet)"></span>
+        <span class="sw" style="background:var(--amber)"></span>
+        <span class="sw" style="background:var(--lime)"></span>
+      </span>
+    </div>
+
+  </div>
+</main>
+
+</body>
+</html>

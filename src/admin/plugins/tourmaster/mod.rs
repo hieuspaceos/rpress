@@ -48,7 +48,7 @@ static KINDS: &[KindDef] = &[KindDef {
     add_label: "Add New Tour",
     head: HEAD_TOUR,
     row_cols: tour_row_cols,
-    url_base_key: Some("tour_base"),
+    url_base_key: Some("tour_base"), url_base: None,
     taxonomies: &[
         "duree", "duracion", "region", "region-es", "style", "estilo",
         "profil", "perfil", "activites", "Activites", "pays", "Pays",

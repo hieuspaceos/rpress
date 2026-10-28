@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Atrium v4 — mobile</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Lora:ital,wght@0,500;0,600;1,500;1,600&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+/* atrium-v4 mobile · dock becomes a bottom tab bar, table collapses to title+meta, same skin */
+
+:root {
+  --paper: oklch(97% 0.008 90);
+  --paper-2: oklch(94.5% 0.012 88);
+  --paper-3: oklch(91% 0.015 86);
+  --ink: oklch(24% 0.012 60);
+  --ink-2: oklch(33% 0.012 58);
+  --muted: oklch(51% 0.014 62);
+  --rule: oklch(90% 0.01 80);
+  --rule-2: oklch(82% 0.012 78);
+
+  --accent: oklch(60% 0.2 38);
+  --accent-soft: oklch(93.5% 0.055 55);
+  --accent-deep: oklch(48% 0.17 36);
+  --accent-ink: oklch(99% 0.005 80);
+  --teal: oklch(60% 0.1 195);
+  --teal-soft: oklch(93% 0.04 195);
+  --violet: oklch(60% 0.14 300);
+  --violet-soft: oklch(94% 0.045 300);
+  --lime: oklch(70% 0.14 130);
+  --lime-soft: oklch(94% 0.05 130);
+  --amber: oklch(73% 0.15 80);
+  --amber-soft: oklch(95% 0.055 88);
+  --ok: oklch(60% 0.12 150);
+  --focus: oklch(60% 0.2 38);
+
+  --glass: color-mix(in oklab, oklch(98% 0.006 90) 68%, transparent);
+  --glass-strong: color-mix(in oklab, oklch(98% 0.006 90) 85%, transparent);
+  --glass-border: oklch(100% 0 0 / 0.6);
+  --blur: blur(20px) saturate(1.5);
+  --shadow-float: 0 6px 24px -6px oklch(50% 0.02 60 / 0.18), 0 1px 3px oklch(50% 0.02 60 / 0.08);
+  --shadow-dock: 0 12px 36px -8px oklch(45% 0.02 60 / 0.28), 0 2px 8px oklch(50% 0.02 60 / 0.1);
+
+  --font-ui: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-text: "Lora", Georgia, serif;
+  --font-num: "IBM Plex Mono", ui-monospace, monospace;
+
+  --r-sm: 9px; --r-md: 13px; --r-lg: 18px; --r-pill: 999px;
+  --dur-micro: 100ms;
+  --dur-short: 160ms;
+  --ease-out: cubic-bezier(.25,.9,.3,1);
+  --ease-spring: cubic-bezier(.3,1.4,.4,1);
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; overflow-x: clip; }
+body {
+  font-family: var(--font-ui); color: var(--ink); font-size: 14px;
+  background:
+    radial-gradient(500px 300px at 90% -5%, oklch(90% 0.09 45 / .8), transparent 62%),
+    radial-gradient(420px 300px at 50% 110%, oklch(90% 0.07 300 / .7), transparent 60%),
+    radial-gradient(380px 300px at -10% 55%, oklch(91% 0.07 190 / .6), transparent 58%),
+    var(--paper);
+  background-attachment: fixed;
+}
+::selection { background: color-mix(in oklab, var(--accent) 24%, transparent); }
+input, textarea { caret-color: var(--accent); }
+
+/* ============ PHONE FRAME (demo only) ============ */
+.stage {
+  min-height: 100vh; display: flex; align-items: center; justify-content: center;
+  padding: 20px; background: oklch(88% 0.01 260);
+}
+.phone {
+  width: 390px; height: 780px; max-height: 92vh;
+  border-radius: 44px; overflow: hidden; position: relative;
+  border: 6px solid oklch(20% 0.01 60);
+  box-shadow: 0 30px 80px -20px oklch(30% 0.02 60 / 0.5);
+  background:
+    radial-gradient(500px 300px at 90% -5%, oklch(90% 0.09 45 / .8), transparent 62%),
+    radial-gradient(420px 300px at 50% 110%, oklch(90% 0.07 300 / .7), transparent 60%),
+    radial-gradient(380px 300px at -10% 55%, oklch(91% 0.07 190 / .6), transparent 58%),
+    var(--paper);
+}
+.island {
+  position: absolute; top: 10px; left: 50%; translate: -50% 0; z-index: 50;
+  width: 110px; height: 28px; border-radius: 14px; background: oklch(18% 0.01 60);
+}
+
+/* ================= SLIM TOP BAR ================= */
+
+#topbar {
+  position: absolute; inset: 0 0 auto 0; height: 40px; z-index: 40;
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+  border-bottom: 1px solid var(--glass-border);
+  display: flex; align-items: center; padding: 30px 14px 0; gap: 12px;
+  font-size: 12px; color: var(--ink-2);
+}
+#topbar .mark { font-weight: 700; letter-spacing: -0.01em; color: var(--ink); display: flex; gap: 6px; align-items: center; }
+#topbar .mark .dot { width: 8px; height: 8px; border-radius: 3px; background: linear-gradient(135deg, var(--accent), var(--violet)); transform: rotate(-6deg); }
+#topbar a { color: var(--ink-2); text-decoration: none; font-weight: 500; }
+#topbar a:hover { color: var(--accent); }
+#topbar .spacer { flex: 1; }
+
+/* ================= DOCK → tab bar ================= */
+
+#dock-wrap {
+  position: absolute; left: 0; right: 0; bottom: 0; z-index: 40;
+}
+#dock {
+  display: flex; align-items: stretch; gap: 0;
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+  border-top: 1px solid var(--glass-border);
+  padding: 6px 4px 18px;
+}
+#dock .app {
+  position: relative; flex: 1; display: flex; flex-direction: column; align-items: center;
+  padding: 6px 2px 4px; text-decoration: none; border-radius: 10px;
+  color: var(--muted);
+  transition: color var(--dur-micro) var(--ease-out), transform var(--dur-short) var(--ease-spring);
+}
+#dock .app:active { transform: scale(.92); }
+#dock .app svg { width: 23px; height: 23px; }
+#dock .app .lbl { font-size: 9px; font-weight: 600; margin-top: 3px; }
+#dock .app.current { color: var(--accent); }
+#dock .app.current svg { color: var(--accent); }
+#dock .app.current::before {
+  content: ""; position: absolute; top: 0; left: 50%; translate: -50% 0;
+  width: 18px; height: 3px; border-radius: 0 0 3px 3px; background: var(--accent);
+}
+#dock .badge {
+  position: absolute; top: 2px; right: calc(50% - 22px);
+  font-family: var(--font-num); font-size: 8.5px; font-weight: 500;
+  background: var(--accent); color: var(--accent-ink);
+  border-radius: var(--r-pill); padding: 1px 5px; min-width: 14px; text-align: center;
+}
+/* overflow item */
+#dock .app.more svg { color: var(--muted); }
+
+/* ================= CONTENT ================= */
+
+#wpcontent { position: absolute; inset: 40px 0 82px; overflow-y: auto; }
+.wrap { padding: 14px 16px 30px; }
+
+.kicker {
+  font-family: var(--font-num); font-size: 9px; font-weight: 500;
+  letter-spacing: .14em; text-transform: uppercase; color: var(--muted);
+  transform: rotate(-1deg); transform-origin: left; display: inline-block;
+}
+.kicker b { color: var(--accent); font-weight: 500; }
+
+.wp-heading {
+  display: flex; align-items: baseline; gap: 10px; margin: 6px 0 0;
+}
+.wp-heading h1 {
+  font-family: var(--font-text); font-style: italic; font-weight: 600; font-size: 30px;
+  margin: 0; line-height: 1; letter-spacing: -0.02em; color: var(--ink);
+}
+.wp-heading h1 .dot { color: var(--accent); font-style: normal; }
+.wp-heading .count { font-family: var(--font-num); font-size: 10px; color: var(--muted); }
+.wp-heading .page-title-action { margin-left: auto; }
+
+.btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-family: var(--font-ui); font-weight: 600; font-size: 12px;
+  padding: 7px 12px; border: 1px solid var(--rule-2); border-radius: var(--r-sm);
+  background: var(--paper); color: var(--ink-2); cursor: pointer;
+  transition: background-color var(--dur-micro) var(--ease-out);
+}
+.btn:active { translate: 0 1px; }
+.btn-primary {
+  background: linear-gradient(120deg, var(--accent), oklch(58% 0.18 20));
+  border-color: transparent; color: var(--accent-ink);
+  box-shadow: 0 4px 14px -4px oklch(60% 0.2 38 / 0.55);
+}
+.btn-icon { padding: 7px 9px; }
+
+/* filter pills — scrollable row */
+.subsubsub {
+  font-size: 12.5px; color: var(--muted); margin: 14px 0 12px;
+  display: flex; gap: 4px; overflow-x: auto; scrollbar-width: none; padding-bottom: 2px;
+}
+.subsubsub::-webkit-scrollbar { display: none; }
+.subsubsub a { color: var(--ink-2); text-decoration: none; padding: 4px 11px; border-radius: var(--r-pill); font-weight: 500; flex: none; }
+.subsubsub a.current { background: var(--ink); color: var(--paper); font-weight: 600; }
+.subsubsub .num { font-family: var(--font-num); font-size: 9px; opacity: .7; }
+
+.notice {
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+  border: 1px solid var(--glass-border); border-radius: var(--r-md);
+  box-shadow: var(--shadow-float);
+  padding: 9px 12px; margin: 12px 0; font-size: 12.5px; color: var(--ink-2);
+  display: flex; align-items: center; gap: 8px;
+}
+.notice svg { width: 15px; height: 15px; color: var(--ok); flex: none; }
+.notice a { color: var(--accent); font-weight: 600; text-decoration: none; }
+
+/* posts become a LIST of cards on mobile — title + meta, actions in a row */
+.posts { display: flex; flex-direction: column; gap: 8px; }
+.post {
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+  border: 1px solid var(--glass-border); border-radius: var(--r-md);
+  box-shadow: var(--shadow-float);
+  padding: 12px 14px;
+}
+.post .top { display: flex; align-items: flex-start; gap: 10px; }
+.post .check {
+  appearance: none; width: 16px; height: 16px; margin: 3px 0 0; flex: none;
+  border: 1.5px solid var(--rule-2); border-radius: 5px; background: var(--paper);
+}
+.post .check:checked { background: var(--accent); border-color: var(--accent); }
+.post .main { flex: 1; min-width: 0; }
+.post a.t {
+  font-family: var(--font-text); font-weight: 600; font-size: 16px;
+  color: var(--ink); text-decoration: none; display: block;
+}
+.post a.t:active { color: var(--accent); }
+.post .meta { font-size: 11.5px; color: var(--muted); margin-top: 4px; }
+.post .meta .num { font-family: var(--font-num); font-size: 10px; }
+.post .foot { display: flex; align-items: center; gap: 8px; margin-top: 9px; }
+.post .foot .acts { margin-left: auto; display: flex; gap: 4px; }
+.post .foot .acts button {
+  font-family: var(--font-ui); font-size: 11px; font-weight: 600;
+  padding: 4px 10px; border-radius: var(--r-pill);
+  border: 1px solid var(--rule-2); background: var(--paper); color: var(--ink-2);
+}
+.post .foot .acts button:active { background: var(--paper-2); }
+
+.chip {
+  display: inline-block; font-size: 10px; font-weight: 600; padding: 2px 8px;
+  border-radius: var(--r-pill); letter-spacing: .02em;
+}
+.chip.draft { color: var(--teal); background: var(--teal-soft); }
+.chip.sched { color: var(--violet); background: var(--violet-soft); }
+.chip.sticky { color: var(--accent-deep); background: var(--accent-soft); }
+.chip.ok { color: var(--ok); background: var(--lime-soft); }
+
+/* floating search field */
+.searchrow { display: flex; gap: 8px; margin: 0 0 12px; }
+.searchrow input {
+  flex: 1; font-family: var(--font-ui); font-size: 13px; color: var(--ink);
+  background: var(--glass-strong); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+  border: 1px solid var(--glass-border); border-radius: var(--r-pill);
+  padding: 8px 14px; box-shadow: var(--shadow-float);
+}
+.searchrow input:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.searchrow button {
+  border: 1px solid var(--glass-border); border-radius: var(--r-pill);
+  background: var(--ink); color: var(--paper); font-weight: 600; font-size: 12px;
+  padding: 8px 14px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; animation: none !important; }
+}
+</style>
+</head>
+<body>
+
+<div class="stage">
+  <div class="phone">
+    <div class="island"></div>
+
+    <div id="topbar">
+      <span class="mark"><span class="dot"></span>rpress</span>
+      <a href="#">Site name</a>
+      <span class="spacer"></span>
+      <a href="#">
+        <svg viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M10 4v11M5.5 9.5L10 4l4.5 5.5"/><path d="M5 15.5h10"/></svg>
+      </a>
+    </div>
+
+    <main id="wpcontent">
+      <div class="wrap">
+
+        <span class="kicker">index <b>/01</b> — content</span>
+        <div class="wp-heading">
+          <h1>Posts<span class="dot">.</span></h1>
+          <span class="count">142</span>
+          <a class="btn btn-primary page-title-action btn-icon" href="#">
+            <svg viewBox="0 0 20 20" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10 4v12M4 10h12"/></svg>
+          </a>
+        </div>
+
+        <div class="notice">
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="10" cy="10" r="7"/><path d="M7 10.5l2 2 4-5"/></svg>
+          3 posts updated. <a href="#">View →</a>
+        </div>
+
+        <div class="subsubsub">
+          <a href="#" class="current">All <span class="num">142</span></a>
+          <a href="#">Published <span class="num">118</span></a>
+          <a href="#">Drafts <span class="num">19</span></a>
+          <a href="#">Scheduled <span class="num">5</span></a>
+          <a href="#">Bin <span class="num">4</span></a>
+        </div>
+
+        <div class="searchrow">
+          <input type="search" placeholder="Search posts…">
+          <button>Go</button>
+        </div>
+
+        <div class="posts">
+          <div class="post">
+            <div class="top">
+              <input class="check" type="checkbox">
+              <div class="main">
+                <a class="t" href="#">A Slow Week for Rain on the Northern Coast</a>
+                <div class="meta">m.tran · Travel, Coast · <span class="num">Oct 24</span> · 14 cmts</div>
+              </div>
+            </div>
+            <div class="foot">
+              <span class="chip sticky">sticky</span>
+              <div class="acts"><button>Edit</button><button>Bin</button><button>View</button></div>
+            </div>
+          </div>
+
+          <div class="post">
+            <div class="top">
+              <input class="check" type="checkbox">
+              <div class="main">
+                <a class="t" href="#">The City Council Votes to Keep the Lido Open</a>
+                <div class="meta">j.okafor · News · <span class="num">Oct 22</span> · 0 cmts</div>
+              </div>
+            </div>
+            <div class="foot">
+              <span class="chip draft">draft</span>
+              <div class="acts"><button>Edit</button><button>Bin</button><button>Preview</button></div>
+            </div>
+          </div>
+
+          <div class="post">
+            <div class="top">
+              <input class="check" type="checkbox" checked>
+              <div class="main">
+                <a class="t" href="#">Market Notes: Chili, Coffee and the Price of Shade</a>
+                <div class="meta">m.tran · Opinion, Markets · <span class="num">Oct 20</span> · 31 cmts</div>
+              </div>
+            </div>
+            <div class="foot">
+              <span class="chip ok">live</span>
+              <div class="acts"><button>Edit</button><button>Bin</button><button>View</button></div>
+            </div>
+          </div>
+
+          <div class="post">
+            <div class="top">
+              <input class="check" type="checkbox">
+              <div class="main">
+                <a class="t" href="#">A Repair Manual for the Village Bicycle Fleet</a>
+                <div class="meta">a.nyoni · Guides · <span class="num">Oct 18</span> · 6 cmts</div>
+              </div>
+            </div>
+            <div class="foot">
+              <span class="chip sched">queued</span>
+              <div class="acts"><button>Edit</button><button>Bin</button><button>View</button></div>
+            </div>
+          </div>
+
+          <div class="post">
+            <div class="top">
+              <input class="check" type="checkbox">
+              <div class="main">
+                <a class="t" href="#">Notes on the Ferry Strike, Day Three</a>
+                <div class="meta">j.okafor · News · <span class="num">Oct 15</span> · 2 cmts</div>
+              </div>
+            </div>
+            <div class="foot">
+              <span class="chip draft">draft</span>
+              <div class="acts"><button>Edit</button><button>Bin</button><button>Preview</button></div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </main>
+
+    <div id="dock-wrap">
+      <nav id="dock">
+        <a class="app" href="#"><svg class="t4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="3" y="4" width="14" height="4" rx="1"/><rect x="3" y="12" width="14" height="4" rx="1"/></svg><span class="lbl">Home</span></a>
+        <a class="app current" href="#"><svg class="t1" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="4" y="3" width="12" height="14" rx="1.5"/><path d="M7 7h6M7 10h6M7 13h4"/></svg><span class="lbl">Posts</span></a>
+        <a class="app" href="#"><svg class="t3" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="3" y="3" width="14" height="14" rx="2"/><circle cx="8" cy="8" r="1.8"/><path d="M3 14l4-3 4 3 3-2 3 2"/></svg><span class="lbl">Media</span></a>
+        <a class="app" href="#"><svg class="t5" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="3" y="5" width="14" height="10" rx="2"/><path d="M6 9l2.5 2.5L13 9"/></svg><span class="lbl">Cmts</span><span class="badge">3</span></a>
+        <a class="app more" href="#"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="5" cy="10" r="1.2"/><circle cx="10" cy="10" r="1.2"/><circle cx="15" cy="10" r="1.2"/></svg><span class="lbl">More</span></a>
+      </nav>
+    </div>
+
+  </div>
+</div>
+
+</body>
+</html>

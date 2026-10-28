@@ -411,7 +411,11 @@ async fn public_page(State(app): State<App>, headers: HeaderMap, ConnectInfo(pee
             let rel = format!("{bare}.html");
             if let Some(b) = read_out(sc, &rel) {
                 let mime = public_mime(&rel).to_string();
-                return ([(header::CONTENT_TYPE, mime), (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string())], b)
+                // `no-cache` (not `no-store`): browser may cache but must
+                // revalidate before reuse — keeps rebuilt css/js fresh on
+                // plain reloads; no header meant heuristic caching could
+                // pin a stale stylesheet for days.
+                return ([(header::CONTENT_TYPE, mime), (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()), (header::CACHE_CONTROL, "no-cache".to_string())], b)
                     .into_response();
             }
         }
@@ -445,7 +449,7 @@ async fn public_page(State(app): State<App>, headers: HeaderMap, ConnectInfo(pee
     for cand in candidates {
         if let Some(b) = read_out(sc, &cand) {
             let mime = if cand.ends_with(".md") { "text/markdown; charset=utf-8".to_string() } else { public_mime(&cand).to_string() };
-            return ([(header::CONTENT_TYPE, mime), (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string())], b)
+            return ([(header::CONTENT_TYPE, mime), (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()), (header::CACHE_CONTROL, "no-cache".to_string())], b)
                 .into_response();
         }
     }
@@ -954,6 +958,7 @@ pub(crate) fn html_admin(s: &Sess, title: &str, body: &str, htmx: bool, screen: 
 <link rel="stylesheet" href="/admin/wp/buttons.min.css">
 <link rel="stylesheet" href="/admin/wp/colors.min.css">
 <link rel="stylesheet" href="/admin/wp/cms-overrides.css">
+<link rel="stylesheet" href="/admin/wp/atrium.css">
 <script>var ajaxurl='/admin/'; var pagenow='{screen}';</script>
 <script>var wp=window.wp||{{}};wp.i18n={{__:function(s){{return s;}},_x:function(s){{return s;}},sprintf:function(f){{var a=[].slice.call(arguments,1);var i=0;return f.replace(/%[sd]/g,function(){{return String(a[i++]);}});}}}};</script>
 <script src="/admin/wp/jquery.min.js"></script>
@@ -1365,6 +1370,7 @@ pub(crate) fn chrome_end(s: &Sess) -> String {
 <p id="footer-left" class="alignleft">{site_name}</p>
 <p id="footer-upgrade" class="alignright">Version 7.1.3 chrome</p>
 </div>
+<script src="/admin/wp/atrium.js" defer></script>
 </div><!-- wpwrap -->"#)
 }
 /// `/admin/plugins/{slug}/{*rest}` — dispatch to the adapter's
@@ -1565,6 +1571,22 @@ async fn wp_asset(State(app): State<App>, headers: HeaderMap, Path(path): Path<S
                 });
         }
     }
+    /* `<adapter-slug>/<rest>`: plugin asset namespace for registered
+       adapters that vendor their own admin assets under
+       `www/wp-content/plugins/<slug>/` (tourmaster framework css/js).
+       Only asset extensions are servable — `.php`, `.ini`, `.xml` et al.
+       404 so vendored plugin code never becomes downloadable. */
+    if b.is_none() {
+        if let Some((slug, rest)) = path.split_once('/') {
+            const ASSET_EXT: &[&str] = &["css", "js", "woff2", "woff", "ttf", "svg", "png", "jpg", "jpeg", "gif", "ico", "webp"];
+            let ext_ok = std::path::Path::new(rest)
+                .extension().and_then(|e| e.to_str())
+                .map(|e| ASSET_EXT.contains(&e)).unwrap_or(false);
+            if ext_ok && plugins::adapter_for_slug(slug).is_some() {
+                b = safe_read_under(&sc.www.join("wp-content/plugins").join(slug), rest);
+            }
+        }
+    }
     let Some(b) = b else { return StatusCode::NOT_FOUND.into_response() };
     let ct = match PathBuf::from(&path).extension().and_then(|s| s.to_str()).unwrap_or("") {
         "css" => "text/css; charset=utf-8",
@@ -1573,6 +1595,11 @@ async fn wp_asset(State(app): State<App>, headers: HeaderMap, Path(path): Path<S
         "woff" => "font/woff",
         "ttf" => "font/ttf",
         "svg" => "image/svg+xml",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "ico" => "image/x-icon",
+        "webp" => "image/webp",
         _ => "application/octet-stream",
     };
     ([(header::CONTENT_TYPE, ct)], b).into_response()

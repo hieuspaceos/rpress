@@ -13,6 +13,7 @@ pub(crate) fn html_login(title: &str, body: &str) -> Html<String> {
 <link rel="stylesheet" href="/admin/wp/admin-schemes.min.css">
 <link rel="stylesheet" href="/admin/wp/wp-tooltip.min.css">
 <link rel="stylesheet" href="/admin/wp/login.min.css">
+<link rel="stylesheet" href="/admin/wp/atrium.css">
 <script src="/admin/wp/jquery.min.js"></script>
 </head><body class="login no-js login-action-login wp-core-ui admin-color-modern">
 <script>document.body.className = document.body.className.replace('no-js','js');</script>

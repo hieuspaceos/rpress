@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Atrium — rpress admin mock</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Inter:wght@400;500;600;700&family=Lora:ital,wght@0,500;0,600;1,500&display=swap" rel="stylesheet">
+<style>
+/* atrium-mock · Notion warmth × Apple glass · coral signal, teal support, floating blurred surfaces */
+
+:root {
+  /* Notion-warm paper */
+  --paper: oklch(97% 0.008 90);
+  --paper-2: oklch(94.5% 0.012 88);
+  --paper-3: oklch(91% 0.015 86);
+  --ink: oklch(24% 0.012 60);
+  --ink-2: oklch(33% 0.012 58);
+  --muted: oklch(51% 0.014 62);
+  --rule: oklch(90% 0.01 80);
+  --rule-2: oklch(82% 0.012 78);
+
+  /* Signals */
+  --accent: oklch(62% 0.19 42);            /* coral */
+  --accent-soft: oklch(94% 0.05 55);
+  --accent-deep: oklch(50% 0.16 40);
+  --accent-ink: oklch(99% 0.005 80);
+  --teal: oklch(62% 0.09 195);
+  --teal-soft: oklch(93% 0.04 195);
+  --violet: oklch(62% 0.13 300);
+  --violet-soft: oklch(94% 0.04 300);
+  --ok: oklch(62% 0.11 150);
+  --ok-soft: oklch(94% 0.04 150);
+  --amber: oklch(75% 0.14 85);
+  --amber-soft: oklch(95% 0.05 90);
+  --focus: oklch(62% 0.19 42);
+
+  /* Glass */
+  --glass: color-mix(in oklab, oklch(98% 0.006 90) 72%, transparent);
+  --glass-strong: color-mix(in oklab, oklch(98% 0.006 90) 85%, transparent);
+  --glass-border: oklch(100% 0 0 / 0.55);
+  --blur: blur(18px) saturate(1.4);
+  --shadow-float: 0 4px 20px -4px oklch(50% 0.02 60 / 0.16), 0 1px 3px oklch(50% 0.02 60 / 0.08);
+  --shadow-pop: 0 12px 40px -8px oklch(45% 0.02 60 / 0.22), 0 2px 6px oklch(50% 0.02 60 / 0.08);
+
+  --font-ui: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-text: "Lora", Georgia, serif;
+  --font-num: "IBM Plex Mono", ui-monospace, monospace;
+
+  --r-sm: 8px; --r-md: 12px; --r-lg: 16px; --r-pill: 999px;
+  --dur-micro: 100ms;
+  --dur-short: 160ms;
+  --ease-out: cubic-bezier(.25,.9,.3,1);
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; overflow-x: clip; }
+body {
+  font-family: var(--font-ui); color: var(--ink); font-size: 14px;
+  /* warm gradient wash so glass has something to blur over */
+  background:
+    radial-gradient(1200px 500px at 85% -10%, var(--accent-soft), transparent 60%),
+    radial-gradient(900px 480px at -10% 110%, var(--teal-soft), transparent 55%),
+    var(--paper);
+  background-attachment: fixed;
+}
+::selection { background: color-mix(in oklab, var(--accent) 22%, transparent); }
+
+/* ================= CHROME ================= */
+
+#wpadminbar {
+  position: fixed; inset: 10px 12px auto 12px; height: 44px; z-index: 40;
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+  border: 1px solid var(--glass-border); border-radius: var(--r-lg);
+  box-shadow: var(--shadow-float);
+  display: flex; align-items: center; padding: 0 8px 0 16px; gap: 14px;
+  font-size: 13px;
+}
+#wpadminbar .mark {
+  font-weight: 700; font-size: 15px; letter-spacing: -0.02em; color: var(--ink);
+  display: flex; align-items: center; gap: 8px;
+}
+#wpadminbar .mark .dot {
+  width: 9px; height: 9px; border-radius: 3px;
+  background: linear-gradient(135deg, var(--accent), var(--accent-deep));
+}
+#wpadminbar a { color: var(--ink-2); text-decoration: none; display: inline-flex; align-items: center; gap: 6px; font-weight: 500; }
+#wpadminbar a:hover { color: var(--accent); }
+#wpadminbar .spacer { flex: 1; }
+#wpadminbar .new-btn {
+  background: var(--ink); color: var(--paper); border-radius: var(--r-pill);
+  padding: 5px 13px; font-weight: 600; font-size: 12px;
+  transition: background-color var(--dur-micro) var(--ease-out), translate var(--dur-micro) var(--ease-out);
+}
+#wpadminbar .new-btn:hover { background: var(--accent); color: var(--accent-ink); }
+#wpadminbar .who { color: var(--muted); }
+
+#adminmenu {
+  position: fixed; inset: 66px auto 12px 12px; width: 196px; z-index: 30;
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+  border: 1px solid var(--glass-border); border-radius: var(--r-lg);
+  box-shadow: var(--shadow-float);
+  padding: 8px; display: flex; flex-direction: column;
+}
+#adminmenu .sect {
+  font-size: 10.5px; font-weight: 600; letter-spacing: .04em;
+  text-transform: uppercase; color: var(--muted);
+  padding: 10px 10px 4px;
+}
+#adminmenu a {
+  position: relative; display: flex; align-items: center; gap: 10px;
+  padding: 6px 10px; margin: 1px 0; color: var(--ink-2); text-decoration: none;
+  font-size: 13.5px; font-weight: 500; border-radius: var(--r-sm);
+  transition: background-color var(--dur-micro) var(--ease-out), color var(--dur-micro) var(--ease-out);
+}
+#adminmenu a svg { width: 17px; height: 17px; flex: none; color: var(--muted); transition: color var(--dur-micro) var(--ease-out); }
+#adminmenu a:hover { background: var(--paper-2); color: var(--ink); }
+#adminmenu a:hover svg { color: var(--accent); }
+#adminmenu a.current { background: var(--accent-soft); color: var(--accent-deep); font-weight: 600; }
+#adminmenu a.current svg { color: var(--accent); }
+#adminmenu .sep { height: 1px; background: var(--rule); margin: 6px 4px; }
+#adminmenu .grow { flex: 1; }
+
+/* ================= CONTENT ================= */
+
+#wpcontent { margin: 66px 16px 0 220px; min-height: calc(100vh - 78px); }
+.wrap { padding: 18px 26px 64px; max-width: 1160px; }
+
+.wp-heading {
+  display: flex; align-items: flex-end; gap: 16px; margin: 4px 0 0;
+}
+.wp-heading h1 {
+  font-family: var(--font-text); font-weight: 600; font-size: 32px;
+  margin: 0; line-height: 1.05; letter-spacing: -0.01em; color: var(--ink);
+}
+.wp-heading .count { font-family: var(--font-num); font-size: 11px; color: var(--muted); padding-bottom: 6px; }
+.wp-heading .page-title-action { margin-left: auto; }
+
+/* buttons — soft pill/rounded, coral primary */
+.btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-family: var(--font-ui); font-weight: 600; font-size: 13px;
+  padding: 7px 14px; border: 1px solid var(--rule-2); border-radius: var(--r-sm);
+  background: var(--paper); color: var(--ink-2); cursor: pointer;
+  box-shadow: 0 1px 2px oklch(50% 0.01 60 / 0.06);
+  transition: background-color var(--dur-micro) var(--ease-out),
+              border-color var(--dur-micro) var(--ease-out),
+              translate var(--dur-micro) var(--ease-out);
+}
+.btn:hover { background: var(--paper-2); border-color: var(--muted); color: var(--ink); }
+.btn:active { translate: 0 1px; }
+.btn-primary {
+  background: var(--accent); border-color: var(--accent); color: var(--accent-ink);
+  box-shadow: 0 2px 8px -2px oklch(62% 0.19 42 / 0.5);
+}
+.btn-primary:hover { background: var(--accent-deep); border-color: var(--accent-deep); color: var(--accent-ink); }
+.btn:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.btn.small { padding: 4px 10px; font-size: 12px; }
+
+/* filter links */
+.subsubsub { font-size: 13px; color: var(--muted); margin: 18px 0 12px; display: flex; gap: 4px; }
+.subsubsub a { color: var(--ink-2); text-decoration: none; padding: 3px 10px; border-radius: var(--r-pill); font-weight: 500;
+  transition: background-color var(--dur-micro) var(--ease-out), color var(--dur-micro) var(--ease-out); }
+.subsubsub a:hover { background: var(--paper-2); color: var(--ink); }
+.subsubsub a.current { background: var(--ink); color: var(--paper); font-weight: 600; }
+.subsubsub .num { font-family: var(--font-num); font-size: 10px; opacity: .7; }
+
+/* card: table + toolbar inside one floating glass card */
+.card {
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+  border: 1px solid var(--glass-border); border-radius: var(--r-lg);
+  box-shadow: var(--shadow-float);
+  padding: 8px 14px 14px;
+}
+
+.tablenav { display: flex; align-items: center; gap: 8px; margin: 10px 0 4px; }
+.tablenav select, .tablenav input[type="search"] {
+  font-family: var(--font-ui); font-size: 13px; color: var(--ink);
+  background: var(--paper); border: 1px solid var(--rule-2); border-radius: var(--r-sm);
+  padding: 6px 9px; height: 32px;
+}
+.tablenav input[type="search"] { width: 200px; }
+.tablenav input[type="search"]:focus { border-color: var(--accent); }
+.tablenav select:focus-visible, .tablenav input:focus-visible {
+  outline: 2px solid var(--focus); outline-offset: 1px;
+}
+.tablenav .right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.tablenav .paging { font-family: var(--font-num); font-size: 11px; color: var(--muted); }
+
+/* list table — airy, hover rows, colored status pills */
+table.wp-list-table { width: 100%; border-collapse: collapse; }
+.wp-list-table thead th {
+  font-family: var(--font-ui); font-weight: 600; font-size: 11.5px;
+  color: var(--muted); text-align: left; padding: 8px 10px;
+  border-bottom: 1px solid var(--rule);
+}
+.wp-list-table thead th.num, .wp-list-table td.num {
+  text-align: right; font-family: var(--font-num); font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+.wp-list-table td { padding: 11px 10px; border-top: 1px solid var(--rule); vertical-align: top; }
+.wp-list-table tbody tr { border-radius: var(--r-sm); transition: background-color var(--dur-micro) var(--ease-out); }
+.wp-list-table tbody tr:hover { background: var(--paper-2); }
+.wp-list-table td.cb { width: 30px; padding-top: 15px; }
+.wp-list-table input[type="checkbox"] {
+  appearance: none; width: 15px; height: 15px; margin: 0;
+  border: 1.5px solid var(--rule-2); border-radius: 4px; background: var(--paper);
+  cursor: pointer; transition: background-color var(--dur-micro) var(--ease-out), border-color var(--dur-micro) var(--ease-out);
+}
+.wp-list-table input[type="checkbox"]:checked { background: var(--accent); border-color: var(--accent); }
+.wp-list-table input[type="checkbox"]:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.wp-list-table td.title a {
+  font-family: var(--font-text); font-weight: 600; font-size: 15.5px;
+  color: var(--ink); text-decoration: none;
+}
+.wp-list-table td.title a:hover { color: var(--accent); }
+.wp-list-table td.title .row-meta {
+  font-size: 12px; color: var(--muted); margin-top: 3px;
+}
+.wp-list-table td.title .row-actions {
+  font-size: 12px; margin-top: 5px;
+  opacity: 0; transition: opacity var(--dur-micro) var(--ease-out);
+}
+.wp-list-table tr:hover .row-actions, .wp-list-table tr:focus-within .row-actions { opacity: 1; }
+.wp-list-table .row-actions a { color: var(--muted); text-decoration: none; font-weight: 500; }
+.wp-list-table .row-actions a:hover { color: var(--accent); }
+.wp-list-table .row-actions .sep2 { color: var(--rule-2); margin: 0 5px; }
+.wp-list-table td { font-size: 13.5px; color: var(--ink-2); }
+.wp-list-table td.date { font-family: var(--font-num); font-size: 11px; color: var(--muted); }
+.wp-list-table td.date .rel { font-family: var(--font-ui); font-size: 11px; display: block; }
+.sticky-pin { color: var(--accent); font-size: 12px; font-weight: 600; }
+
+/* colored status pills — the "more colour" */
+.chip {
+  display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 9px;
+  border-radius: var(--r-pill); color: var(--ink-2); background: var(--paper-2);
+}
+.chip.draft { color: var(--teal); background: var(--teal-soft); }
+.chip.sched { color: var(--violet); background: var(--violet-soft); }
+.chip.sticky { color: var(--accent-deep); background: var(--accent-soft); }
+.chip.ok { color: var(--ok); background: var(--ok-soft); }
+
+/* notice — soft glass banner */
+.notice {
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+  border: 1px solid var(--glass-border); border-radius: var(--r-md);
+  box-shadow: var(--shadow-float);
+  padding: 10px 14px; margin: 16px 0; font-size: 13.5px; color: var(--ink-2);
+  display: flex; align-items: center; gap: 10px;
+  animation: drop-in 180ms var(--ease-out) 1;
+}
+@keyframes drop-in {
+  from { transform: translateY(-6px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+.notice svg { width: 16px; height: 16px; color: var(--ok); flex: none; }
+.notice a { color: var(--accent); font-weight: 600; text-decoration: none; }
+.notice a:hover { text-decoration: underline; }
+
+.desk-foot {
+  margin-top: 24px; padding: 10px 14px; border-radius: var(--r-md);
+  font-size: 12px; color: var(--muted); display: flex; gap: 18px;
+  background: var(--glass); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+  border: 1px solid var(--glass-border);
+}
+.desk-foot .num { font-family: var(--font-num); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; animation: none !important; }
+}
+</style>
+</head>
+<body>
+
+<div id="wpadminbar">
+  <span class="mark"><span class="dot"></span>rpress</span>
+  <a href="#">
+    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="3" y="3" width="14" height="14" rx="3"/><path d="M7 8h6M7 12h6"/></svg>
+    Site name
+  </a>
+  <a href="#">
+    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M10 4v11M5.5 9.5L10 4l4.5 5.5"/><path d="M5 15.5h10"/></svg>
+    Updates <span class="chip amber" style="background:var(--amber-soft);color:var(--accent-deep);font-size:10px">2</span>
+  </a>
+  <span class="spacer"></span>
+  <a href="#" class="new-btn">+ New</a>
+  <span class="who">Howdy, editor</span>
+</div>
+
+<nav id="adminmenu">
+  <div class="sect">Content</div>
+  <a href="#"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="3" y="4" width="14" height="4" rx="1"/><rect x="3" y="12" width="14" height="4" rx="1"/></svg>Dashboard</a>
+  <a href="#" class="current"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="4" y="3" width="12" height="14" rx="1.5"/><path d="M7 7h6M7 10h6M7 13h4"/></svg>Posts</a>
+  <a href="#"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="4" y="4" width="12" height="12" rx="1.5"/><path d="M4 9h12M9 4v12"/></svg>Pages</a>
+  <a href="#"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="3" y="3" width="14" height="14" rx="2"/><circle cx="8" cy="8" r="1.8"/><path d="M3 14l4-3 4 3 3-2 3 2"/></svg>Media</a>
+  <a href="#"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="3" y="5" width="14" height="10" rx="2"/><path d="M6 9l2.5 2.5L13 9"/></svg>Comments</a>
+  <div class="sect">Manage</div>
+  <a href="#"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="10" cy="7" r="2.6"/><path d="M5 16c.8-2.6 2.7-3.6 5-3.6s4.2 1 5 3.6"/></svg>Users</a>
+  <a href="#"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="3" y="3" width="6" height="6" rx="1"/><rect x="11" y="3" width="6" height="6" rx="1"/><rect x="3" y="11" width="6" height="6" rx="1"/><rect x="11" y="11" width="6" height="6" rx="1"/></svg>Widgets</a>
+  <a href="#"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 5.5h12M4 10h12M4 14.5h8"/><path d="M15.5 13v4M13.5 15h4"/></svg>Menus</a>
+  <a href="#"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="10" cy="10" r="2.4"/><path d="M10 4v2M10 14v2M4 10h2M14 10h2"/></svg>Settings</a>
+  <span class="grow"></span>
+  <div class="sect">System</div>
+  <a href="#"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 4h12v12H4z" rx="1.5"/><path d="M8 8l4 2-4 2z"/></svg>Plugins</a>
+</nav>
+
+<main id="wpcontent">
+  <div class="wrap">
+
+    <div class="wp-heading">
+      <h1>Posts</h1>
+      <span class="count">142 filed</span>
+      <a class="btn btn-primary page-title-action" href="#">Add new post</a>
+    </div>
+
+    <div class="notice">
+      <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="10" cy="10" r="7"/><path d="M7 10.5l2 2 4-5"/></svg>
+      3 posts updated. <a href="#">View latest →</a>
+    </div>
+
+    <div class="subsubsub">
+      <a href="#" class="current">All <span class="num">142</span></a>
+      <a href="#">Published <span class="num">118</span></a>
+      <a href="#">Drafts <span class="num">19</span></a>
+      <a href="#">Scheduled <span class="num">5</span></a>
+      <a href="#">Bin <span class="num">4</span></a>
+    </div>
+
+    <div class="card">
+      <div class="tablenav">
+        <select><option>Bulk actions</option><option>Move to Bin</option><option>Edit</option></select>
+        <button class="btn small">Apply</button>
+        <select><option>All dates</option></select>
+        <select><option>All categories</option></select>
+        <button class="btn small">Filter</button>
+        <div class="right">
+          <input type="search" placeholder="Search posts…">
+          <span class="paging">1–20 of 142</span>
+        </div>
+      </div>
+
+      <table class="wp-list-table">
+        <thead>
+          <tr>
+            <th class="cb"><input type="checkbox"></th>
+            <th>Title</th>
+            <th>Author</th>
+            <th>Categories</th>
+            <th class="num">Cmts</th>
+            <th>Date</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="cb"><input type="checkbox"></td>
+            <td class="title">
+              <a href="#">A Slow Week for Rain on the Northern Coast</a> <span class="chip sticky">sticky</span>
+              <div class="row-meta">Features · The ferry schedule thins after October, and the ticket office…</div>
+              <div class="row-actions"><a href="#">Edit</a><span class="sep2">·</span><a href="#">Quick edit</a><span class="sep2">·</span><a href="#">Bin</a><span class="sep2">·</span><a href="#">View</a></div>
+            </td>
+            <td class="author">m.tran</td>
+            <td class="categories">Travel, Coast</td>
+            <td class="num">14</td>
+            <td class="date">Oct 24<span class="rel">4 days ago</span></td>
+          </tr>
+          <tr>
+            <td class="cb"><input type="checkbox"></td>
+            <td class="title">
+              <a href="#">The City Council Votes to Keep the Lido Open</a> <span class="chip draft">draft</span>
+              <div class="row-meta">Local · After two winters of closure threats, Tuesday's motion passed…</div>
+              <div class="row-actions"><a href="#">Edit</a><span class="sep2">·</span><a href="#">Quick edit</a><span class="sep2">·</span><a href="#">Bin</a><span class="sep2">·</span><a href="#">Preview</a></div>
+            </td>
+            <td class="author">j.okafor</td>
+            <td class="categories">News</td>
+            <td class="num">0</td>
+            <td class="date">Oct 22<span class="rel">6 days ago</span></td>
+          </tr>
+          <tr>
+            <td class="cb"><input type="checkbox" checked></td>
+            <td class="title">
+              <a href="#">Market Notes: Chili, Coffee and the Price of Shade</a> <span class="chip ok">live</span>
+              <div class="row-meta">Columns · Vendors under the awning agree the summer was kinder…</div>
+              <div class="row-actions"><a href="#">Edit</a><span class="sep2">·</span><a href="#">Quick edit</a><span class="sep2">·</span><a href="#">Bin</a><span class="sep2">·</span><a href="#">View</a></div>
+            </td>
+            <td class="author">m.tran</td>
+            <td class="categories">Opinion, Markets</td>
+            <td class="num">31</td>
+            <td class="date">Oct 20<span class="rel">8 days ago</span></td>
+          </tr>
+          <tr>
+            <td class="cb"><input type="checkbox"></td>
+            <td class="title">
+              <a href="#">A Repair Manual for the Village Bicycle Fleet</a> <span class="chip sched">queued</span>
+              <div class="row-meta">Guides · Forty bicycles, one shed, and a logbook that predates…</div>
+              <div class="row-actions"><a href="#">Edit</a><span class="sep2">·</span><a href="#">Quick edit</a><span class="sep2">·</span><a href="#">Bin</a><span class="sep2">·</span><a href="#">View</a></div>
+            </td>
+            <td class="author">a.nyoni</td>
+            <td class="categories">Guides</td>
+            <td class="num">6</td>
+            <td class="date">Oct 18<span class="rel">10 days ago</span></td>
+          </tr>
+          <tr>
+            <td class="cb"><input type="checkbox"></td>
+            <td class="title">
+              <a href="#">Notes on the Ferry Strike, Day Three</a> <span class="chip draft">draft</span>
+              <div class="row-meta">News · Commuters on the early crossings found the queues shorter…</div>
+              <div class="row-actions"><a href="#">Edit</a><span class="sep2">·</span><a href="#">Quick edit</a><span class="sep2">·</span><a href="#">Bin</a><span class="sep2">·</span><a href="#">Preview</a></div>
+            </td>
+            <td class="author">j.okafor</td>
+            <td class="categories">News</td>
+            <td class="num">2</td>
+            <td class="date">Oct 15<span class="rel">13 days ago</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="desk-foot">
+      <span>rpress admin — "Atrium"</span>
+      <span class="num">render: static · queries: 0</span>
+      <span style="margin-left:auto">notion warmth × glass · coral / teal / violet</span>
+    </div>
+
+  </div>
+</main>
+
+</body>
+</html>

@@ -865,7 +865,7 @@ tinymce.init({{
   toolbar3: '',
   wp_autoresize_on: true,
   relative_urls: false,
-  content_css: '/admin/wp/editor.min.css,/admin/wp/cms-overrides.css'
+  content_css: '/admin/wp/editor.min.css,/admin/wp/cms-overrides.css,/admin/wp/atrium.css'
 }});
 document.getElementById('content-html') && document.getElementById('content-html').addEventListener('click', function(){{ if (typeof tinymce !== 'undefined' && tinymce.get('content')) tinymce.get('content').hide(); }});
 document.getElementById('content-tmce') && document.getElementById('content-tmce').addEventListener('click', function(){{ if (typeof tinymce !== 'undefined' && tinymce.get('content')) tinymce.get('content').show(); }});
@@ -959,13 +959,16 @@ pub(crate) fn edit_html(sc: &SiteCtx, s: &Sess, f: &crud::PostForm) -> String {
         format!("Add New {kind_label}")
     };
     let menu = spec_for_kind(&f.kind).map(|k| k.section).unwrap_or("posts");
-    let permalink = public_path(sc, &f.lang, &f.kind, &f.slug);
+    /* WP permalink preview: an empty stored slug previews the slugified
+       title (`get_sample_permalink`), never a bare `//`. */
+    let preview_slug = if f.slug.is_empty() { crud::slugify(&f.title) } else { f.slug.clone() };
+    let permalink = public_path(sc, &f.lang, &f.kind, &preview_slug);
     let permalink_base = {
         let origin = site_url(sc).trim_end_matches('/').to_string();
         let rel = permalink.strip_prefix(&origin).unwrap_or(&permalink);
         let p = rel.trim_end_matches('/');
-        let base = if !f.slug.is_empty() && p.ends_with(&f.slug) {
-            p[..p.len() - f.slug.len()].to_string()
+        let base = if !preview_slug.is_empty() && p.ends_with(&preview_slug) {
+            p[..p.len() - preview_slug.len()].to_string()
         } else {
             format!("{p}/")
         };
@@ -1384,7 +1387,7 @@ renderTagChips();
         permalink = esc(&permalink),
         permalink_base = esc(&permalink_base),
 
-        slug = esc(&f.slug),
+        slug = esc(&preview_slug),
         excerpt = esc(&f.excerpt),
         rankmath = rankmath::metabox_html(sc, s, f),
         draft = if f.status == "draft" { "selected" } else { "" },

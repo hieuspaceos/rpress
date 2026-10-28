@@ -645,7 +645,7 @@ autoresize_min_height:250,\
 relative_urls:false,\
 convert_urls:false,\
 entity_encoding:'raw',\
-content_css:'/admin/wp/editor.min.css,/admin/wp/cms-overrides.css',\
+content_css:'/admin/wp/editor.min.css,/admin/wp/cms-overrides.css,/admin/wp/atrium.css',\
 setup:function(ed){\
 ed.on('BeforeSetContent',function(e){\
 if(typeof e.content==='string')e.content=wgt_protect(e.content,wgt_tok[id]);});\
