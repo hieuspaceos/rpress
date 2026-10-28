@@ -697,6 +697,13 @@ pub(crate) fn write_404(out: &Path, templates: &Path, conn: &Connection, site_ur
 /// by construction; links still resolve locally (assets 307-fallback).
 fn harvest_page(origin: &str, path: &str, site_url: &str) -> Result<String> {
     let base = origin.trim_end_matches('/');
+    // Scheme-less stored origins need a scheme to fetch; default https.
+    let base = if base.contains("://") {
+        base.to_string()
+    } else {
+        format!("https://{base}")
+    };
+    let base = base.as_str();
     let url = format!("{base}/{}", path.trim_start_matches('/'));
     let o = Command::new("curl")
         .args(["-sfL", "--max-time", "30", "-A", "rpress-harvest/1.0", &url])

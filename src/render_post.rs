@@ -800,9 +800,17 @@ pub(crate) fn rewrite_origin(raw: &str, site: &str, conn: &Connection) -> String
         s
     } else {
         let site = site.trim_end_matches('/');
-        let origin = origin.trim_end_matches('/');
-        s.replace(origin, site)
+        let mut origin = origin.trim_end_matches('/').to_string();
+        // Scheme-less stored origin: replacing the bare host inside an
+        // absolute URL yields `https:http://…` — assume https, the only
+        // real-world case for imported sites.
+        if !origin.contains("://") {
+            origin = format!("https://{origin}");
+        }
+        s.replace(&origin, site)
             .replace(&origin.replacen("https://", "http://", 1), site)
+            .replace(&origin.replacen("https://", "https:http://", 1), site)
+            .replace(&origin.replacen("https://", "http:http://", 1), site)
     }
 }
 

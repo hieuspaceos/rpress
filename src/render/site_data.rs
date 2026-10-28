@@ -653,14 +653,26 @@ fn chrome_ctx(conn: &Connection, site_url: &str, lang: &str) -> Value {
         )
         .ok()
     };
+    // Fallback when the theme option is unset (common on imported sites):
+    // first media whose filename contains 'logo', smallest wp_id — the
+    // same heuristic the origin's header uses.
+    let logo_fallback = || -> Option<(String, String)> {
+        conn.query_row(
+            "SELECT path, COALESCE(alt,'') FROM media              WHERE LOWER(path) LIKE '%logo%' ORDER BY wp_id LIMIT 1",
+            [],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+        )
+        .ok()
+    };
     let logo_img = |key: &str, cls: &str| -> Value {
         media_path(&tget(key))
+            .or_else(logo_fallback)
             .map(|(p, alt)| {
                 json!(format!(
                     "<a class=\"{cls}\" href=\"{site_url}/\" ><img src=\"{site_url}/wp-content/uploads/{p}\" alt=\"{alt}\" srcset=\"{site_url}/wp-content/uploads/{p} 1x, {site_url}/wp-content/uploads/{p} 2x\"  /></a>"
                 ))
             })
-            .unwrap_or(Value::Null)
+            .unwrap_or_else(|| json!(""))
     };
     // top-bar HTML payloads carry origin URLs + [gdlr_core_icon]
     // shortcodes: expand shortcodes, then re-anchor own-origin links on
@@ -873,27 +885,55 @@ fn sticky_html(btns: &[Value], _lang: &str) -> String {
 
 /// Cross-language flag strip in the sticky rail — all configured langs,
 /// flag PNG from media (falls back to the polylang .svg filename base).
+/// Resolve a language's flag image to a URL that exists under the site's
+/// own www/ docroot (or uploaded media) — "" when nothing exists, so the
+/// template falls back to a text chip instead of a broken <img>.
+/// Candidate order: uploaded 'flag {lang}' media → polylang flags/{lang}.png
+/// → polylang vendor svg.
+pub(crate) fn flag_src(conn: &Connection, site_url: &str, lang: &str) -> String {
+    let site = site_url.trim_end_matches('/');
+    let img: String = conn
+        .query_row(
+            "SELECT path FROM media WHERE LOWER(alt)=LOWER(?1) OR LOWER(title)=LOWER(?1) LIMIT 1",
+            [format!("flag {lang}")],
+            |r| r.get(0),
+        )
+        .unwrap_or_default();
+    if !img.is_empty() {
+        return format!("{site}/wp-content/uploads/{img}");
+    }
+    let www = conn
+        .path()
+        .map(|p| std::path::Path::new(p).parent().unwrap_or(std::path::Path::new("")).join("www"))
+        .unwrap_or_default();
+    let rels = [
+        format!("wp-content/plugins/polylang/flags/{lang}.png"),
+        format!("wp-content/plugins/polylang/vendor/wpsyntex/flags/{}", crate::lang::flag_file(lang)),
+    ];
+    for rel in rels {
+        if www.join(&rel).is_file() {
+            return format!("{site}/{rel}");
+        }
+    }
+    String::new()
+}
+
 fn lang_flags_sticky_html(conn: &Connection, site_url: &str) -> String {
     let cfg = crate::lang::config(conn);
+    if cfg.langs.len() < 2 {
+        return String::new(); // single-language sites have no switcher
+    }
     let mut out = String::new();
     for l in &cfg.langs {
         let url = format!("{}{}/", site_url.trim_end_matches('/'), crate::lang::url_prefix(&cfg, l));
-        // WP used uploaded flag PNGs (2024/06/{country}.png); resolve by
-        // media alt/title 'flag {lang}' or fall back to the polylang svg.
-        let img: String = conn
-            .query_row(
-                "SELECT path FROM media WHERE LOWER(alt)=LOWER(?1) OR LOWER(title)=LOWER(?1) LIMIT 1",
-                [format!("flag {l}")],
-                |r| r.get(0),
-            )
-            .unwrap_or_else(|_| String::new());
-        let src = if img.is_empty() {
-            format!("{site_url}/wp-content/plugins/polylang/vendor/wpsyntex/flags/{}", crate::lang::flag_file(l))
+        let src = flag_src(conn, site_url, l);
+        let inner = if src.is_empty() {
+            l.to_uppercase()
         } else {
-            format!("{site_url}/wp-content/uploads/{img}")
+            format!("<img src=\"{src}\"/>")
         };
         out.push_str(&format!(
-            "<a class=\"lang-flag mobile {l}\" href=\"{url}\" target=\"_blank\"><span style=\"color: #fff; margin-left: 12px\"><img src=\"{src}\"/></span></a>\n"
+            "<a class=\"lang-flag mobile {l}\" href=\"{url}\"><span style=\"color: #fff; margin-left: 12px\">{inner}</span></a>\n"
         ));
     }
     out

@@ -492,7 +492,12 @@ pub(crate) fn chrome_vars(
                 let root = format!("{}{}/", site_url, crate::lang::url_prefix(&lang_cfg, l));
                 if !is_front && a == root { String::new() } else { a }
             };
-            json!({"lang": l, "url": url, "flag": crate::lang::flag_file(l)})
+            let src = if lang_cfg.langs.len() < 2 {
+                String::new() // no switcher on single-language sites
+            } else {
+                crate::render::site_data::flag_src(conn, site_url, l)
+            };
+            json!({"lang": l, "url": url, "flag": crate::lang::flag_file(l), "src": src})
         })
         .collect();
 
