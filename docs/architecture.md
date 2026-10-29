@@ -84,6 +84,7 @@ imported WP domain; empty = no rewrite).
 | `tax.rs` | `edit-tags.php` | Categories/Tags two-column screen, save/delete/bulk |
 | `admin.rs` | `upload.php`, APIs | media, static-generate + status, `api/v1/posts` JSON, intake handlers |
 | `plugins/` | plugin metaboxes (`add_meta_box`) | per-kind editor plugins: `EditorPlugin{kind, load, metabox, assets, save}` registry (`PLUGINS`), `tourmaster/` — ported WP metabox |
+| `bridge/` | a real wp-admin for opted-in plugins | `mod.rs` runtime pick + state map + proxy, `php_cgi.rs` (`php -S` + sandbox-exec, preferred), `playground.rs` (WASM fallback), `http.rs` cookie/header translation, `mu-plugin/bridge.php` (rpress-session auto-login, write whitelist pull-back) |
 
 ## `src/db/` module map (wp-includes equivalents)
 
@@ -152,6 +153,20 @@ from WP/Polylang; preserved, not normalized.
 - **text-box content is entity-decoded at render** (`render.rs::render_node`).
   TinyMCE saves store `&lt;h1&gt;`; WP decodes entities on output, so we mirror
   it for the static build and the live-mode preview.
+- **Plugin bridge runs native `php -S`, not WASM, when php-cli is installed.**
+  `bridge::RuntimeKind::PhpCgi` (`src/admin/bridge/php_cgi.rs`) builds a symlink-
+  farm docroot under `www/bridge/<slug>/` (hardlinked WP core, site plugins/
+  themes/uploads linked per-child, vendored sqlite drop-in), renders
+  `wp-config.php` with the token/theme/plugin constants, then spawns
+  `php -S 127.0.0.1:<port>` wrapped in `sandbox-exec` (macOS Seatbelt,
+  deny-default: read only docroot/www/templates/system dirs, write only
+  `db/` + `uploads/` + site `mu-plugins`, loopback-only network — proven
+  denies on `~/.ssh`, `rpress.db`, outbound HTTP). ~86MB RSS vs ~1.2GB for
+  `@wp-playground/cli`; warm request ~100ms. WP installs once via a CLI
+  `wp_install()` call (not the HTTP wizard — its `wp_remote_get` retries
+  cost ~14s inside the sandbox); `wp.db` is disposable per spawn and
+  whitelisted writes pull back to `rpress.db`. On hosts without `php`,
+  `bridge_for` falls back to `RuntimeKind::Playground` automatically.
 
 ## What this is NOT
 

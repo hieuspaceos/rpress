@@ -30,6 +30,7 @@ use parking_lot::Mutex;
 use std::time::{Duration, Instant};
 
 pub(crate) mod http;
+pub(crate) mod php_cgi;
 pub(crate) mod playground;
 pub(crate) mod pull;
 
@@ -81,15 +82,17 @@ pub(crate) struct BridgeResponse {
     pub(crate) body: Vec<u8>,
 }
 
-/// Runtime type picked at spawn (decision gate, phase-06 spec).
+/// Runtime type picked at spawn. `PhpCgi` is preferred when `php` is on
+/// PATH (~60-70MB RSS, <200ms spawn, sandbox-exec confined); `Playground`
+/// stays the fallback on hosts without php-cli.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[allow(dead_code)] // PhpCgi reserved for hosts without Node
+#[allow(dead_code)]
 pub(crate) enum RuntimeKind {
-    /// `@wp-playground/cli` — WASM PHP inside Node, our only available
-    /// runtime on hosts with Node (this host: node v26, no php-cgi).
+    /// `@wp-playground/cli` — WASM PHP inside Node (~1.2GB RSS, multi-second
+    /// cold start). Fallback when php-cli is absent.
     Playground,
-    /// `php-cgi` behind FastCGI — pick where Node is a worse dep than
-    /// php-cgi; requires the hardening list. Not implemented in MVP.
+    /// `php -S` builtin server behind HTTP on loopback, wrapped in
+    /// `sandbox-exec` on macOS (deny-default FS + loopback-only net).
     PhpCgi,
 }
 
@@ -120,7 +123,7 @@ fn spawn(
 ) -> Result<BridgeState> {
     match kind {
         RuntimeKind::Playground => playground::spawn(site, slug, www, rpress_db, post_id, plugin_file, templates),
-        RuntimeKind::PhpCgi => anyhow::bail!("php-cgi runtime not implemented in MVP (install Node + @wp-playground/cli)"),
+        RuntimeKind::PhpCgi => php_cgi::spawn(site, slug, www, rpress_db, post_id, plugin_file, templates),
     }
 }
 

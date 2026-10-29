@@ -286,7 +286,20 @@ pub async fn serve(db: PathBuf, templates: PathBuf, out: PathBuf, www: PathBuf, 
     }
     let listener = tokio::net::TcpListener::bind(bind).await?;
     eprintln!("rpress listening on http://{bind}");
-    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await?;
+    let sites_down = state.sites.clone();
+    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
+        .with_graceful_shutdown(async move {
+            let _ = tokio::signal::ctrl_c().await;
+            /* Ctrl-C: kill every spawned bridge before exiting — otherwise
+               each restart leaks a ~900MB wp-playground child (the idle
+               reaper only covers in-process timeouts). */
+            for sc in sites_down.values() {
+                for k in bridge::reap(&sc.bridges, Duration::ZERO) {
+                    eprintln!("bridge: shutdown kill {k}");
+                }
+            }
+        })
+        .await?;
     Ok(())
 }
 
@@ -1460,7 +1473,14 @@ async fn bridge_dispatch(
         .rsplit('/')
         .find_map(|seg| seg.parse::<i64>().ok());
     let resp = tokio::task::spawn_blocking(move || {
-        let h = bridge::bridge_for(&bridges, &site, slug, bridge::RuntimeKind::Playground, &www, &db, post_id, adapter.wp_plugin_file(), &tpl)?;
+        // Prefer native php -S (~100MB, sandbox-exec confined) over the
+        // ~1.2GB WASM playground; fall back when php isn't installed.
+        let kind = if bridge::php_cgi::php_bin().is_some() {
+            bridge::RuntimeKind::PhpCgi
+        } else {
+            bridge::RuntimeKind::Playground
+        };
+        let h = bridge::bridge_for(&bridges, &site, slug, kind, &www, &db, post_id, adapter.wp_plugin_file(), &tpl)?;
         // Entry mutex serializes this bridge's runtime; the global map
         // lock is already released — other sites' bridge traffic flows.
         let mut st = h.lock();
@@ -1569,6 +1589,11 @@ async fn wp_asset(State(app): State<App>, headers: HeaderMap, Path(path): Path<S
                     let p = std::path::Path::new(rest);
                     let stem = p.file_stem().and_then(|s| s.to_str())?;
                     safe_read_under(&plugins.join(stem), rest)
+                        // …and its bundled twin
+                        // `templates/wp-plugins/tourmaster/tourmaster.css`.
+                        .or_else(|| {
+                            safe_read_under(&sc.templates.join("wp-plugins").join(stem), rest)
+                        })
                 })
                 // Site copy absent → the vendored bundle the bridge mounts
                 // (playground.rs mounts it for the same reason).
@@ -1587,7 +1612,11 @@ async fn wp_asset(State(app): State<App>, headers: HeaderMap, Path(path): Path<S
                 .extension().and_then(|e| e.to_str())
                 .map(|e| ASSET_EXT.contains(&e)).unwrap_or(false);
             if ext_ok && plugins::adapter_for_slug(slug).is_some() {
-                b = safe_read_under(&sc.www.join("wp-content/plugins").join(slug), rest);
+                b = safe_read_under(&sc.www.join("wp-content/plugins").join(slug), rest)
+                    // Site copy absent → the vendored bundle under
+                    // templates/wp-plugins/<slug>/ (same fallback the
+                    // bridge mounts; tourmaster framework css/js/img).
+                    .or_else(|| safe_read_under(&sc.templates.join("wp-plugins").join(slug), rest));
             }
         }
     }

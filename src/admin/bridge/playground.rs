@@ -18,7 +18,7 @@ use std::time::Instant;
 
 /// mu-plugin + SQLite drop-in shipped with the binary — written into the
 /// bridge dir at spawn so the runtime path needs no repo checkout.
-const MU_PLUGIN: &str = include_str!("mu-plugin/bridge.php");
+pub(crate) const MU_PLUGIN: &str = include_str!("mu-plugin/bridge.php");
 
 /// A running `@wp-playground/cli server` child.
 pub(crate) struct Playground {
@@ -39,8 +39,18 @@ impl PhpRuntime for Playground {
     }
 }
 
+/// If the parent exits without `kill()` (restart, crash), the child must
+/// not leak — ~900MB per orphaned playground. `Drop` is the last-resort
+/// fence; `BridgeHandle` drops when the map entry is removed or the map
+/// itself dies with the process.
+impl Drop for Playground {
+    fn drop(&mut self) {
+        self.kill();
+    }
+}
+
 /// First free port on 127.0.0.1.
-fn free_port() -> Result<u16> {
+pub(crate) fn free_port() -> Result<u16> {
     Ok(TcpListener::bind("127.0.0.1:0")?.local_addr()?.port())
 }
 
@@ -233,7 +243,7 @@ pub(crate) fn spawn(
 /// the mu-plugin `wp_insert_post`s it on first admin request (WP must
 /// create its own tables first; direct SQLite projection would fight
 /// the installer). wp.db stays disposable; rpress.db is the only truth.
-fn project_post(rpress_db: &Path, wp_content: &Path, post_id: i64) -> Result<()> {
+pub(crate) fn project_post(rpress_db: &Path, wp_content: &Path, post_id: i64) -> Result<()> {
     let src = crate::db::conn(rpress_db).context("open rpress.db for projection")?;
     let post: Option<serde_json::Value> = src
         .query_row(
@@ -318,7 +328,7 @@ mod tests {
 /// True when `dir` contains PHP that registers a page-builder element
 /// (`gdlr_core_page_builder_element::add_element`). Bounded walk: element
 /// files live ~2-3 levels deep (`tour/include/pb/pb-element-tour.php`).
-fn dir_provides_pb_element(dir: &std::path::Path) -> bool {
+pub(crate) fn dir_provides_pb_element(dir: &std::path::Path) -> bool {
     fn walk(d: &std::path::Path, depth: u8) -> bool {
         if depth > 4 {
             return false;
@@ -347,7 +357,7 @@ fn dir_provides_pb_element(dir: &std::path::Path) -> bool {
 /// as a fallback when `settings` lacks the row (DBs imported before the
 /// option entered the import allowlist). Reuses `sqldump::rows`, so SQL
 /// escapes are already handled. Missing dump → `None`, silent.
-fn option_from_dump(dump: Option<&Path>, key: &str) -> Option<String> {
+pub(crate) fn option_from_dump(dump: Option<&Path>, key: &str) -> Option<String> {
     let dump = dump?;
     if !dump.is_file() {
         return None;

@@ -93,6 +93,13 @@ WordPress or integrate a specialized provider.
 - **Agent-ready surface** — deterministic CLI commands, markdown mirrors, and
   `llms.txt` make the migrated site inspectable and operable by AI agents while
   the human admin remains available for review/fallback edits.
+- **Plugin bridge** — plugins that opt in get a real wp-admin surface: a
+  sandboxed `php -S` child (WP core hardlinked into `www/bridge/<slug>/`,
+  vendored sqlite drop-in, ~86MB RSS, ~100ms warm request) proxied at
+  `/admin/plugin-<slug>/*`; rpress sessions auto-login via a mu-plugin and
+  whitelisted writes pull back into `rpress.db`. Falls back to
+  `@wp-playground/cli` (WASM PHP) on hosts without `php`. See
+  `docs/architecture.md` → Decisions.
 
 ## The model
 

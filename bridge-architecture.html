@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<title>rpress — PHP Bridge architecture (PhpCgi)</title>
+<style>
+  :root{
+    --bg:#f6f1ea; --ink:#2b2620; --muted:#7d746a; --line:#d8cfc2;
+    --paper:#fdfbf8; --accent:#c96f4a; --teal:#3e7d6f; --violet:#6d5aa8;
+    --ok:#3d8b5f; --warn:#b07d2b;
+  }
+  *{box-sizing:border-box;margin:0}
+  body{background:var(--bg);color:var(--ink);font:15px/1.55 "Space Grotesk",system-ui,sans-serif;padding:40px 24px;max-width:1080px;margin:0 auto}
+  h1{font-size:26px;letter-spacing:-.02em;margin-bottom:6px}
+  .sub{color:var(--muted);margin-bottom:32px}
+  h2{font-size:13px;text-transform:uppercase;letter-spacing:.12em;color:var(--accent);margin:36px 0 14px}
+  svg{display:block;width:100%;height:auto}
+  .legend{display:flex;gap:18px;flex-wrap:wrap;margin-top:10px;font-size:12.5px;color:var(--muted)}
+  .sw{width:12px;height:12px;border-radius:3px;display:inline-block;vertical-align:-2px;margin-right:6px}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:14px}
+  .card{background:var(--paper);border:1px solid var(--line);border-radius:14px;padding:16px 18px}
+  .card b{display:block;font-size:14px;margin-bottom:6px}
+  .card p{font-size:13px;color:var(--muted)}
+  .num{font-family:ui-monospace,monospace;color:var(--accent);font-weight:700}
+  table{width:100%;border-collapse:collapse;font-size:13.5px;margin-top:6px}
+  th{text-align:left;font-size:11.5px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);border-bottom:1px solid var(--line);padding:6px 10px}
+  td{border-bottom:1px solid #ece4d8;padding:8px 10px;vertical-align:top}
+  td.k{font-family:ui-monospace,monospace;color:var(--violet);white-space:nowrap}
+</style>
+</head>
+<body>
+
+<h1>PHP Bridge — kiến trúc <code>RuntimeKind::PhpCgi</code></h1>
+<p class="sub">rpress (Rust) ↔ sidecar <code>php&nbsp;-S</code> qua HTTP loopback — thay thế WP-Playground WASM ~1.2GB</p>
+
+<h2>Luồng request</h2>
+<svg viewBox="0 0 1020 620" xmlns="http://www.w3.org/2000/svg" font-family="inherit">
+  <!-- ═══ browser ═══ -->
+  <rect x="30" y="30" width="180" height="86" rx="14" fill="var(--paper)" stroke="var(--line)"/>
+  <text x="120" y="62" text-anchor="middle" font-size="14" font-weight="700">Browser admin</text>
+  <text x="120" y="84" text-anchor="middle" font-size="11.5" fill="var(--muted)">click sửa element</text>
+  <text x="120" y="100" text-anchor="middle" font-size="10.5" fill="var(--muted)">Page Builder / Tour Settings</text>
+
+  <!-- arrow 1 -->
+  <path d="M210 73 L310 73" stroke="var(--accent)" stroke-width="2" marker-end="url(#a)"/>
+  <text x="260" y="62" text-anchor="middle" font-size="10.5" fill="var(--muted)">POST /admin/plugins/…/ajax</text>
+  <text x="260" y="88" text-anchor="middle" font-size="10" fill="var(--accent)">+ rpress session cookie</text>
+
+  <!-- ═══ rpress ═══ -->
+  <rect x="310" y="20" width="300" height="290" rx="14" fill="var(--paper)" stroke="var(--line)" stroke-width="1.5"/>
+  <text x="460" y="46" text-anchor="middle" font-size="15" font-weight="700">rpress (Rust, ~60MB)</text>
+
+  <rect x="326" y="62" width="268" height="52" rx="9" fill="#f4eee6" stroke="var(--line)"/>
+  <text x="460" y="82" text-anchor="middle" font-size="12">plugin_screen → adapter</text>
+  <text x="460" y="99" text-anchor="middle" font-size="10.5" fill="var(--muted)">need_auth · bridge opt-in</text>
+
+  <rect x="326" y="122" width="268" height="52" rx="9" fill="#f4eee6" stroke="var(--line)"/>
+  <text x="460" y="142" text-anchor="middle" font-size="12">bridge_dispatch → bridge_for()</text>
+  <text x="460" y="159" text-anchor="middle" font-size="10.5" fill="var(--muted)">spawn khi chưa có · kill khi idle>TTL</text>
+
+  <rect x="326" y="182" width="268" height="52" rx="9" fill="#f4eee6" stroke="var(--line)"/>
+  <text x="460" y="202" text-anchor="middle" font-size="12">HTTP forward 127.0.0.1:&lt;port&gt;</text>
+  <text x="460" y="219" text-anchor="middle" font-size="10.5" fill="var(--muted)">+ X-Rpress-Bridge token</text>
+
+  <rect x="326" y="242" width="268" height="52" rx="9" fill="#f4eee6" stroke="var(--line)"/>
+  <text x="460" y="262" text-anchor="middle" font-size="12">pull() wp.db → rpress.db</text>
+  <text x="460" y="279" text-anchor="middle" font-size="10.5" fill="var(--muted)">whitelisted writes only</text>
+
+  <!-- ═══ sandbox boundary ═══ -->
+  <rect x="640" y="20" width="350" height="540" rx="16" fill="none" stroke="var(--ok)" stroke-width="2" stroke-dasharray="7 5"/>
+  <text x="815" y="44" text-anchor="middle" font-size="12" font-weight="700" fill="var(--ok)">sandbox-exec · deny default</text>
+
+  <!-- ═══ php -S ═══ -->
+  <rect x="660" y="58" width="310" height="90" rx="12" fill="var(--paper)" stroke="var(--line)"/>
+  <text x="815" y="84" text-anchor="middle" font-size="14" font-weight="700">php -S 127.0.0.1:&lt;port&gt;</text>
+  <text x="815" y="104" text-anchor="middle" font-size="11" fill="var(--muted)">PHP 8.5.12 (patched) · ~100–150MB</text>
+  <text x="815" y="122" text-anchor="middle" font-size="11" fill="var(--muted)">WP 6.7 + plugin + theme chạy thật</text>
+
+  <!-- docroot -->
+  <rect x="660" y="168" width="310" height="120" rx="12" fill="#f4eee6" stroke="var(--line)"/>
+  <text x="815" y="192" text-anchor="middle" font-size="12.5" font-weight="700">docroot (symlink farm)</text>
+  <text x="675" y="216" font-size="11" fill="var(--ink)">• wp-* core → templates/wp-core (copy)</text>
+  <text x="675" y="236" font-size="11" fill="var(--ink)">• plugins/<tspan fill="var(--violet)">slug</tspan> → www/wp-content/plugins/*</text>
+  <text x="675" y="256" font-size="11" fill="var(--ink)">• uploads → www/wp-content/uploads</text>
+  <text x="675" y="276" font-size="11" fill="var(--ink)">• database → bridge db_dir (disposable)</text>
+
+  <!-- mu-plugins -->
+  <rect x="660" y="306" width="310" height="86" rx="12" fill="#f4eee6" stroke="var(--line)"/>
+  <text x="815" y="330" text-anchor="middle" font-size="12.5" font-weight="700">wp-content/mu-plugins</text>
+  <text x="675" y="352" font-size="11" fill="var(--ink)">rpress-bridge.php — token fence, uid=1, mint nonce</text>
+  <text x="675" y="372" font-size="11" fill="var(--ink)">rpress-admin.php · rpress-sqlite.php · site mu-…</text>
+
+  <!-- wp-config -->
+  <rect x="660" y="410" width="310" height="70" rx="12" fill="#f4eee6" stroke="var(--line)"/>
+  <text x="815" y="434" text-anchor="middle" font-size="12.5" font-weight="700">wp-config.php (rendered)</text>
+  <text x="675" y="456" font-size="11" fill="var(--ink)">DB_ENGINE=sqlite · FQDBDIR=db_dir</text>
+  <text x="675" y="474" font-size="11" fill="var(--ink)">RPRESS_BRIDGE_TOKEN/PLUGIN/THEME</text>
+
+  <!-- sqlite -->
+  <rect x="660" y="498" width="310" height="48" rx="12" fill="#f4eee6" stroke="var(--line)"/>
+  <text x="815" y="520" text-anchor="middle" font-size="12">wp.db (sqlite-database-integration)</text>
+  <text x="815" y="538" text-anchor="middle" font-size="10.5" fill="var(--muted)">disposable · re-projected mỗi spawn</text>
+
+  <!-- arrow to php -->
+  <path d="M610 105 L648 105" stroke="var(--teal)" stroke-width="2" marker-end="url(#a)"/>
+  <text x="629" y="95" text-anchor="middle" font-size="10" fill="var(--muted)">HTTP</text>
+
+  <!-- arrow back -->
+  <path d="M648 128 L610 128" stroke="var(--teal)" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#a)"/>
+  <text x="629" y="145" text-anchor="middle" font-size="10" fill="var(--muted)">JSON</text>
+
+  <!-- rpress.db -->
+  <rect x="330" y="330" width="260" height="60" rx="12" fill="var(--paper)" stroke="var(--line)"/>
+  <text x="460" y="354" text-anchor="middle" font-size="12.5" font-weight="700">rpress.db</text>
+  <text x="460" y="374" text-anchor="middle" font-size="11" fill="var(--muted)">source of truth (posts, settings)</text>
+  <path d="M460 310 L460 328" stroke="var(--violet)" stroke-width="2" marker-end="url(#a)"/>
+  <path d="M460 268 L460 288" stroke="var(--violet)" stroke-width="2" marker-end="url(#a)"/>
+
+  <!-- FS deny zone -->
+  <rect x="30" y="150" width="180" height="140" rx="12" fill="#f9f0ec" stroke="var(--warn)" stroke-dasharray="6 4"/>
+  <text x="120" y="174" text-anchor="middle" font-size="12" font-weight="700" fill="var(--warn)">FS bị cấm</text>
+  <text x="120" y="196" text-anchor="middle" font-size="10.5" fill="var(--muted)">~/.ssh · .env</text>
+  <text x="120" y="214" text-anchor="middle" font-size="10.5" fill="var(--muted)">rpress.db · dump.sql</text>
+  <text x="120" y="232" text-anchor="middle" font-size="10.5" fill="var(--muted)">outbound network</text>
+  <text x="120" y="250" text-anchor="middle" font-size="10.5" fill="var(--muted)">exec shell</text>
+  <path d="M210 220 L640 320" stroke="var(--warn)" stroke-width="1.4" stroke-dasharray="5 4"/>
+  <text x="410" y="280" text-anchor="middle" font-size="10" fill="var(--warn)">đọc/ghi đều bị deny</text>
+
+  <defs><marker id="a" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8" fill="none" stroke="currentColor" stroke-width="1.6" color="var(--accent)"/></marker></defs>
+</svg>
+
+<h2>Spawn lifecycle</h2>
+<svg viewBox="0 0 1020 170" xmlns="http://www.w3.org/2000/svg">
+  <g font-size="12" text-anchor="middle">
+    <rect x="20" y="60" width="170" height="54" rx="10" fill="var(--paper)" stroke="var(--line)"/>
+    <text x="105" y="84" font-weight="700">ajax đầu tiên</text><text x="105" y="102" fill="var(--muted)" font-size="10.5">entry mutex, 1 spawn</text>
+    <rect x="215" y="60" width="170" height="54" rx="10" fill="var(--paper)" stroke="var(--line)"/>
+    <text x="300" y="84" font-weight="700">build docroot</text><text x="300" y="102" fill="var(--muted)" font-size="10.5">copy core + symlinks + config</text>
+    <rect x="410" y="60" width="170" height="54" rx="10" fill="var(--paper)" stroke="var(--line)"/>
+    <text x="495" y="84" font-weight="700">php -S lên</text><text x="495" y="102" fill="var(--muted)" font-size="10.5">~50–200ms, probe port</text>
+    <rect x="605" y="60" width="170" height="54" rx="10" fill="var(--paper)" stroke="var(--line)"/>
+    <text x="690" y="84" font-weight="700">serve requests</text><text x="690" y="102" fill="var(--muted)" font-size="10.5">mỗi req reset last_used</text>
+    <rect x="800" y="60" width="200" height="54" rx="10" fill="var(--paper)" stroke="var(--line)"/>
+    <text x="900" y="84" font-weight="700">idle > TTL → kill</text><text x="900" y="102" fill="var(--muted)" font-size="10.5">10min · hoặc parent exit (Drop)</text>
+  </g>
+  <g stroke="var(--accent)" stroke-width="2" marker-end="url(#a2)">
+    <line x1="190" y1="87" x2="213" y2="87"/><line x1="385" y1="87" x2="408" y2="87"/>
+    <line x1="580" y1="87" x2="603" y2="87"/><line x1="775" y1="87" x2="798" y2="87"/>
+  </g>
+  <defs><marker id="a2" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8" fill="none" stroke="var(--accent)" stroke-width="1.6"/></marker></defs>
+</svg>
+
+<h2>So với WASM</h2>
+<div class="grid">
+  <div class="card"><b>WASM (Playground)</b>
+    <p>~1.2GB RSS · spawn 1–3s · cần Node · FS isolation qua mounts · idle 0% CPU</p></div>
+  <div class="card"><b>php -S + sandbox-exec</b>
+    <p>~100–150MB · spawn &lt;200ms · cần php-cli · FS deny qua Seatbelt · exec/network-out chặn</p></div>
+</div>
+
+<h2>Rủi ro &amp; đã giảm</h2>
+<table>
+  <tr><th>Threat</th><th>Cơ chế</th></tr>
+  <tr><td class="k">PHP RCE (CVE kiểu PHP2Shell)</td><td><span class="num">sandbox-exec</span>: đọc chỉ docroot + uploads + www/wp-content; ghi chỉ db_dir + uploads + mu-plugins; network chỉ loopback; `system/exec` vẫn chạy được trong allow-scope nên bổ sung `disable_functions` trong php.ini spawn nếu cần chặt hơn.</td></tr>
+  <tr><td class="k">Đọc .env / rpress.db / ~</td><td>deny default → mọi path ngoài allow-list đều bị từ chối.</td></tr>
+  <tr><td class="k">Exfil qua outbound net</td><td>deny network-outbound ngoại trừ loopback → WP không gọi được wordpress.org/attacker server.</td></tr>
+  <tr><td class="k">Bridge process leak</td><td>Drop::drop() kill + graceful-shutdown reap + TTL_IDLE.</td></tr>
+  <tr><td class="k">Linux không có sandbox-exec</td><td>`sandboxed()` trả None → chạy trần vẫn có token fence + loopback; production nên bubblewrap/cgroup nếu bắt buộc.</td></tr>
+</table>
+
+</body>
+</html>

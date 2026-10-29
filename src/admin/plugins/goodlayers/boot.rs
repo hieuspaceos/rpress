@@ -314,8 +314,29 @@ fn animation_atts(m: &Map<String, Value>) -> String {
 /* ---------------- option defs ---------------- */
 
 
+/// Parsed `elements.json`/`wrappers.json` — vendored dumps that never
+/// change between requests. `OnceLock` keys on `templates` path so a
+/// test pointing at a different tree still parses its own copy.
+static DEFS_CACHE: std::sync::OnceLock<(std::path::PathBuf, Value, Value)> = std::sync::OnceLock::new();
+
 fn defs(sc: &SiteCtx) -> (Value, Value) {
     let dir = sc.templates.join("admin/wp/gdlr");
+    let cached = DEFS_CACHE.get_or_init(|| {
+        let mut e: Value = std::fs::read_to_string(dir.join("elements.json"))
+            .ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_else(|| json!({}));
+        let mut w: Value = std::fs::read_to_string(dir.join("wrappers.json"))
+            .ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_else(|| json!({}));
+        strip_origin_urls(&mut e);
+        strip_origin_urls(&mut w);
+        (dir.clone(), e, w)
+    });
+    // Path changed (different site templates root): re-parse, don't serve
+    // the other tree's defs. OnceLock keeps the first; a second tree pays
+    // the same one-time cost.
+    if cached.0 == dir { (cached.1.clone(), cached.2.clone()) } else { defs_uncached(&dir) }
+}
+
+fn defs_uncached(dir: &std::path::Path) -> (Value, Value) {
     let mut e: Value = std::fs::read_to_string(dir.join("elements.json"))
         .ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_else(|| json!({}));
     let mut w: Value = std::fs::read_to_string(dir.join("wrappers.json"))
@@ -348,9 +369,19 @@ fn strip_origin_urls(v: &mut Value) {
 // `crate::url_util::strip_origin` — this Value-tree walker stays here
 // because it rewrites a fixed path fragment, not a host.
 
+static ICONS_CACHE: std::sync::OnceLock<(std::path::PathBuf, Value)> = std::sync::OnceLock::new();
+
 fn icons(sc: &SiteCtx) -> Value {
-    std::fs::read_to_string(sc.templates.join("admin/wp/gdlr/icons.json"))
-        .ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_else(|| json!({}))
+    let p = sc.templates.join("admin/wp/gdlr/icons.json");
+    let cached = ICONS_CACHE.get_or_init(|| {
+        let v = std::fs::read_to_string(&p).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_else(|| json!({}));
+        (p.clone(), v)
+    });
+    if cached.0 == p {
+        cached.1.clone()
+    } else {
+        std::fs::read_to_string(&p).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_else(|| json!({}))
+    }
 }
 
 // GoodLayers options live under the `plugin:goodlayers:` settings
