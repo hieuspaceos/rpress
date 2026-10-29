@@ -767,6 +767,25 @@ pub fn media_attached_to(db: &Path, id: i64) -> Result<Vec<(i64, String)>> {
     Ok(rows)
 }
 
+/// Batch variant of `media_attached_to`: one scan of `posts` →
+/// `media_id → [(post_id, title)]` for the whole page of a media list —
+/// avoids the N+1 (20 queries ≈ 100ms+ on a real library).
+pub fn media_attached_map(db: &Path) -> Result<std::collections::HashMap<i64, Vec<(i64, String)>>> {
+    let c = crate::db::conn(db)?;
+    let mut s = c.prepare(
+        "SELECT featured_media_id, id, COALESCE(NULLIF(title,''),'(no title)') FROM posts WHERE featured_media_id IS NOT NULL ORDER BY id DESC",
+    )?;
+    let mut out: std::collections::HashMap<i64, Vec<(i64, String)>> = std::collections::HashMap::new();
+    for r in s.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?)))? {
+        let (mid, pid, t) = r?;
+        let e = out.entry(mid).or_default();
+        if e.len() < 5 {
+            e.push((pid, t));
+        }
+    }
+    Ok(out)
+}
+
 /// "Detach": remove featured-image reference from a post.
 pub fn media_detach(db: &Path, media_id: i64, post_id: i64) -> Result<()> {
     let c = crate::db::conn(db)?;

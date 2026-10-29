@@ -35,7 +35,7 @@
   --glass: color-mix(in oklab, oklch(98% 0.006 90) 68%, transparent);
   --glass-strong: color-mix(in oklab, oklch(98% 0.006 90) 82%, transparent);
   --glass-border: oklch(100% 0 0 / 0.6);
-  --blur: blur(20px) saturate(1.5);
+  --blur: blur(14px) saturate(1.25);
   --shadow-float: 0 6px 24px -6px oklch(50% 0.02 60 / 0.18), 0 1px 3px oklch(50% 0.02 60 / 0.08);
   --shadow-dock: 0 12px 36px -8px oklch(45% 0.02 60 / 0.28), 0 2px 8px oklch(50% 0.02 60 / 0.1);
 
@@ -92,7 +92,7 @@ body.wp-admin, body.login {
 }
 body.wp-admin::before, body.login::before {
   content: ""; position: fixed; inset: 0; z-index: 99998; pointer-events: none;
-  opacity: .035; mix-blend-mode: multiply;
+  opacity: .045;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)'/%3E%3C/svg%3E");
 }
 .wp-admin ::selection { background: color-mix(in oklab, var(--accent) 24%, transparent); }

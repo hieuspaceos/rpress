@@ -250,6 +250,7 @@ pub(crate) async fn media_page(State(app): State<App>, headers: HeaderMap, Query
 
     let mut body = String::new();
     let mut grid = String::new();
+    let attach_map = crud::media_attached_map(&sc.db).unwrap_or_default();
     for m in &rows {
         let url = format!("/wp-content/uploads/{}", m.path);
         let file_name = m.path.rsplit('/').next().unwrap_or(&m.path);
@@ -271,7 +272,7 @@ pub(crate) async fn media_page(State(app): State<App>, headers: HeaderMap, Query
         } else {
             m.created.clone()
         };
-        let attached = crud::media_attached_to(&sc.db, m.id).unwrap_or_default();
+        let attached = attach_map.get(&m.id).cloned().unwrap_or_default();
         let uploaded_to = if attached.is_empty() {
             "<span class=\"uploaded-to-empty\">(Unattached)</span>".to_string()
         } else {
