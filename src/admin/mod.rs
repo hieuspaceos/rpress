@@ -1560,6 +1560,7 @@ async fn wp_asset(State(app): State<App>, headers: HeaderMap, Path(path): Path<S
     if b.is_none() {
         if let Some(rest) = path.strip_prefix("gdlr/") {
             let plugins = sc.www.join("wp-content/plugins");
+            let bundled = sc.templates.join("wp-plugins").join("goodlayers-core");
             b = safe_read_under(&plugins.join("goodlayers-core"), rest)
                 .or_else(|| safe_read_under(&plugins, rest))
                 // `gdlr/tourmaster.css` → `plugins/tourmaster/tourmaster.css`
@@ -1568,7 +1569,10 @@ async fn wp_asset(State(app): State<App>, headers: HeaderMap, Path(path): Path<S
                     let p = std::path::Path::new(rest);
                     let stem = p.file_stem().and_then(|s| s.to_str())?;
                     safe_read_under(&plugins.join(stem), rest)
-                });
+                })
+                // Site copy absent → the vendored bundle the bridge mounts
+                // (playground.rs mounts it for the same reason).
+                .or_else(|| safe_read_under(&bundled, rest));
         }
     }
     /* `<adapter-slug>/<rest>`: plugin asset namespace for registered

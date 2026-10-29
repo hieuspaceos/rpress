@@ -1231,6 +1231,7 @@ return false">Add</button>
     format!(
         r###"{chrome}<div class="wrap">
 <h1 class="wp-heading-inline">{h1}</h1>
+<a href="/admin/{menu}" class="page-title-action">← {kind_label}s</a>
 <a href="/admin/new/{add_kind}" class="page-title-action">Add {kind_label}</a>
 <hr class="wp-header-end">
 <form name="post" method="post" action="/admin/save" id="post">

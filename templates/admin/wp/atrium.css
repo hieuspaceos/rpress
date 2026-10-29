@@ -118,13 +118,16 @@ body.wp-admin::before, body.login::before {
   background: transparent; color: var(--accent);
 }
 #wpadminbar .ab-top-menu > li > .ab-item:hover { color: var(--accent); background: transparent; }
-#wpadminbar .menupop .ab-sub-wrapper .ab-submenu {
+#wpadminbar .menupop .ab-sub-wrapper {
   background: var(--glass-solid);
   background: var(--glass-strong);
   -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
   border: 1px solid var(--glass-border);
   border-radius: var(--r-md);
   box-shadow: var(--shadow-float);
+  padding: 0;
+}
+#wpadminbar .menupop .ab-sub-wrapper .ab-submenu {
   padding: 4px;
   top: 36px;
 }
@@ -420,6 +423,7 @@ h1.wp-heading-inline {
   color: var(--ink);
 }
 h1.wp-heading-inline::after { content: "."; color: var(--accent); font-style: normal; }
+.wrap { padding-left: 24px; padding-right: 24px; }
 .wrap h2, .wrap h3 { font-family: var(--font-ui); color: var(--ink); }
 a.page-title-action { margin-left: 8px; }
 
@@ -1562,6 +1566,15 @@ ul.subsubsub li a, .nav-tab {
 }
 
 /* tooltip rise for adminbar submenu */
+#wpadminbar .menupop .ab-sub-wrapper {
+  background: var(--glass-solid);
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-float);
+  padding: 0;
+}
 #wpadminbar .menupop .ab-sub-wrapper .ab-submenu { transition: opacity var(--dur-micro) var(--ease-out); }
 
 /* global reduced-motion kill switch — last, wins everything */

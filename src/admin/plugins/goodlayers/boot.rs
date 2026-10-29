@@ -1286,7 +1286,8 @@ fn section_head_list(conn: &Connection, sc: &SiteCtx, defs_e: &Value, defs_w: &V
                 for wt in ["background", "sidebar", "flexbox"] {
                     let st = defs_w.get(wt).and_then(|w| w.get("settings")).cloned().unwrap_or(json!({}));
                     let thumb = val_str(st.get("thumbnail").unwrap_or(&Value::Null));
-                    let thumb = if thumb.starts_with('/') { format!("{GDLR_URL}{thumb}") } else { format!("{GDLR_URL}/{thumb}") };
+                    let thumb = if thumb.is_empty() { String::new() } else if thumb.starts_with('/') { format!("{GDLR_URL}{thumb}") } else { format!("{GDLR_URL}/{thumb}") };
+                    let thumb = if thumb.is_empty() { format!("{GDLR_URL}/framework/images/page-builder/wrapper.png") } else { thumb };
                     content += &format!("<div class=\"gdlr-core-page-builder-head-content-wrapper-item gdlr-core-pb-list-draggable\" data-template=\"wrapper\" data-type=\"{wt}\" ><div class=\"gdlr-core-page-builder-head-content-wrapper-item-thumbnail gdlr-core-media-image\" ><img src=\"{}\" alt=\"\" /></div><div class=\"gdlr-core-page-builder-head-content-wrapper-item-title\" >{}</div></div>",
                         esc(&thumb), esc(&val_str(st.get("title").unwrap_or(&json!(wt)))));
                 }
