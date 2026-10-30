@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # rpress installer — one command on a fresh Linux VPS:
-#   curl -fsSL https://raw.githubusercontent.com/OWNER/REPO/main/rpress/install.sh | bash
-# Or clone the repo and run ./rpress/install.sh from the rpress/ dir.
+#   curl -fsSL https://raw.githubusercontent.com/hieuspaceos/rpress/main/install.sh | bash
+# Or clone the repo and run ./install.sh from the repo root.
 #
 # What it does, in order (every step is skippable/interactive):
 #   1. Detect OS/arch; install ONLY what's missing (curl/rsync; php-cli +
@@ -21,7 +21,7 @@
 #   RPRESS_RELEASE_REPO=x/y  GitHub repo to fetch the binary from
 set -euo pipefail
 
-RPRESS_RELEASE_REPO="${RPRESS_RELEASE_REPO:-OWNER/REPO}"
+RPRESS_RELEASE_REPO="${RPRESS_RELEASE_REPO:-hieuspaceos/rpress}"
 ARCH="$(uname -m)"
 case "$ARCH" in
   x86_64|amd64)  TARGET="x86_64-unknown-linux-gnu" ;;

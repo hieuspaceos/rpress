@@ -123,11 +123,11 @@ back — the same trick WP caching plugins approximate. nginx or a CDN can front
 ## Install on a Linux VPS — one command
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/OWNER/REPO/main/rpress/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/hieuspaceos/rpress/main/install.sh | bash
 ```
 
-(replace `OWNER/REPO` with the repo hosting this file — or clone the repo
-and run `rpress/install.sh` directly). The script installs a released Linux
+(or clone the repo and run `./install.sh` directly). The script installs a
+released Linux
 binary when one exists, otherwise builds from source; runs `site init` to
 import the WP dump; writes + starts a hardened `rpress-<slug>` systemd
 unit; and prints the nginx proxy block. No PHP/MySQL needed for the core —
