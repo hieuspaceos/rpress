@@ -1285,7 +1285,7 @@ return false">Add</button>
 </div></div>
 <div id="major-publishing-actions">
 <div id="delete-action"><button type="button" class="submitdelete deletion button-link" onclick="var b=new URLSearchParams();b.append('csrf','{csrf}');b.append('id','{id}');b.append('status','trash');fetch('/admin/trash',{{method:'POST',headers:{{'Content-Type':'application/x-www-form-urlencoded'}},body:b}}).then(function(){{location.href='/admin/posts'}});return false">Move to Trash</button></div>
-<div id="publishing-action"><a href="{preview_href}" target="_blank" class="button button-secondary button-large" style="margin-right:8px">{preview_label}</a><button class="button button-primary button-large" id="publish" type="submit">Update</button></div>
+<div id="publishing-action"><a href="{preview_href}" target="_blank" class="button button-secondary button-large" id="preview-btn" data-draft="{is_draft}" style="margin-right:8px">{preview_label}</a><button class="button button-primary button-large" id="publish" type="submit">Update</button></div>
 </div>
 </div>
 </div></div>
@@ -1369,6 +1369,32 @@ renderTagChips();
   }});
 }})();
 (function() {{
+  /* Draft preview = WP semantics: save the form silently, THEN open the
+     rendered preview — the link alone only shows the last saved state. */
+  var btn = document.getElementById('preview-btn');
+  var form = document.getElementById('post');
+  if (!btn || !form || btn.dataset.draft !== '1') return;
+  btn.addEventListener('click', function(ev) {{
+    ev.preventDefault();
+    btn.textContent = 'Saving preview…';
+    /* run the submit listeners (TinyMCE save, gdlr canvas → #gdlr-json,
+       cat checklist → hidden field) without navigating away */
+    form.dispatchEvent(new Event('submit', {{cancelable: true}}));
+    var body = new URLSearchParams(new FormData(form));
+    fetch(form.action, {{method: 'POST', credentials: 'same-origin',
+      headers: {{'Content-Type': 'application/x-www-form-urlencoded'}}, body: body}})
+      .then(function(r) {{
+        btn.textContent = 'Preview';
+        if (r.ok || r.redirected) {{ window.open(btn.href, '_blank'); }}
+        else {{ alert('Save failed — preview shows the last saved version.'); window.open(btn.href, '_blank'); }}
+      }})
+      .catch(function() {{
+        btn.textContent = 'Preview';
+        window.open(btn.href, '_blank');
+      }});
+  }});
+}})();
+(function() {{
   var form = document.getElementById('post');
   var field = document.getElementById('catfield');
   if (!form) return;
@@ -1410,6 +1436,7 @@ renderTagChips();
         pub_label = pub_label,
         preview_href = esc(&preview_href),
         preview_label = preview_label,
+        is_draft = if f.status == "publish" { "0" } else { "1" },
         revisions_box = revisions_box,
         fr_flag = fr_flag,
         es_flag = es_flag,
