@@ -234,7 +234,6 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
                         || k.starts_with("glsr_")
                         || k.starts_with("cf7sr_")
                         || k.starts_with("ml-slider_")
-                        || k == "ml-slider_settings"
                         /* Widget instances: `sidebars_widgets` maps each WP
                            sidebar to its ordered widget ids; `widget_{id_base}`
                            holds the instance payloads those ids index into. */
@@ -592,10 +591,11 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
                         // `[contact-form-7 id="…"]` carries the first 7
                         // chars of the form's `_hash` postmeta (CF7 ≥5.9
                         // switched shortcode ids off numeric post ids).
-                        // Store hash7 → slug so render resolves it.
-                        if let Some(h) = meta1(p, "_hash").filter(|h| h.len() >= 7) {
+                        // Store hash7 → slug so render resolves it. Char-
+                        // safe slice — a non-ASCII hash must not panic.
+                        if let Some(h7) = meta1(p, "_hash").and_then(|h| h.get(..7).map(str::to_string)) {
                             let _ = stmt_set.execute(params![
-                                format!("cf7hash:{}", &h[..7]), slug
+                                format!("cf7hash:{h7}"), slug
                             ]);
                         }
                         // Legacy numeric-id shortcodes resolve on wp_id.

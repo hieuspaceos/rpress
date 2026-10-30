@@ -1636,6 +1636,9 @@ async fn plugin_screen(
     let Ok((s, sc)) = need_auth(&app, &headers) else {
         return Redirect::to("/admin/login").into_response();
     };
+    if s.role != "admin" {
+        return StatusCode::FORBIDDEN.into_response();
+    }
     let Some(adapter) = plugins::adapter_for_slug(&slug) else {
         return StatusCode::NOT_FOUND.into_response();
     };

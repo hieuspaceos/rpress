@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 /// Create a backup archive for the site whose workdir is `work/<site>`.
 /// Returns the archive path. `env_file` may be empty → env skipped.
 pub fn run_backup(work: &Path, env_file: &Path, keep: usize) -> Result<PathBuf> {
+    let keep = keep.max(1); // keep=0 would delete the archive just made
     let db = work.join("rpress.db");
     anyhow::ensure!(db.is_file(), "no rpress.db at {}", db.display());
     let dir = work.join("backups");

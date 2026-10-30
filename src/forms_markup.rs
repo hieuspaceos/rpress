@@ -258,11 +258,11 @@ pub fn form_html(markup: &str, slug: &str, site_url: &str) -> String {
     }
     inner.push_str(rest);
     format!(
-        "<div class=\"wpcf7 no-js\"><form action=\"{site_url}/form/{}\" method=\"post\" class=\"wpcf7-form init\" novalidate=\"novalidate\">\
+        "<div class=\"wpcf7 no-js\"><form action=\"{}/form/{}\" method=\"post\" class=\"wpcf7-form init\" novalidate=\"novalidate\">\
          <input type=\"hidden\" name=\"_form\" value=\"{}\" />\
          <input type=\"text\" name=\"_gotcha\" value=\"\" style=\"display:none\" tabindex=\"-1\" autocomplete=\"off\" />\
          {}</form></div>",
-        esc(slug), esc(slug), inner
+        esc(site_url), esc(slug), esc(slug), inner
     )
 }
 
@@ -298,12 +298,14 @@ fn tag_html(t: &Tag, esc: &dyn Fn(&str) -> String) -> String {
         }
         "checkbox" | "radio" => {
             let ty = &t.type_;
+            // CF7 posts radios as `name`, checkboxes as `name[]`.
+            let attr_name = if ty == "checkbox" { format!("{}[]", t.name) } else { t.name.clone() };
             let mut items = String::new();
             for (ix, v) in vals.iter().enumerate() {
                 let first = if ix == 0 { " first" } else { "" };
                 items.push_str(&format!(
-                    "<span class=\"wpcf7-list-item{first}\"><label><input type=\"{ty}\" name=\"{}[]\" value=\"{}\" /><span class=\"wpcf7-list-item-label\">{}</span></label></span>",
-                    esc(&t.name), esc(v), esc(v)));
+                    "<span class=\"wpcf7-list-item{first}\"><label><input type=\"{ty}\" name=\"{}\" value=\"{}\" /><span class=\"wpcf7-list-item-label\">{}</span></label></span>",
+                    esc(&attr_name), esc(v), esc(v)));
             }
             wrap(&format!("<span class=\"{cls}\">{items}</span>"))
         }
@@ -333,6 +335,8 @@ fn tag_html(t: &Tag, esc: &dyn Fn(&str) -> String) -> String {
             wrap(&format!("<select name=\"{}\" class=\"wpcf7-countrytext wpcf7-select {cls}\"{req}{id_attr}>{o}</select>", esc(&t.name)))
         }
         "hidden" | "dynamictext" => format!("<input type=\"hidden\" name=\"{}\" value=\"{}\" />", esc(&t.name), esc(vals.first().map(|s| s.as_str()).unwrap_or(""))),
+        // `[file]` can't post — the form is urlencoded and intake reads
+        // axum Form; the input renders but bytes are silently dropped.
         "file" => wrap(&format!("<input type=\"file\" name=\"{}\" class=\"wpcf7-file {cls}\"{req} />", esc(&t.name))),
         "cf7sr-turnstile" | "turnstile" => String::new(),
         _ => {

@@ -101,8 +101,12 @@ pub(crate) fn expand_shortcodes(s: &str, site_url: &str, conn: Option<&Connectio
                             let html = crate::forms_markup::form_html(&m, &slug, site_url);
                             out.extend_from_slice(html.as_bytes());
                             i += end + 1;
-                            continue;
                         }
+                        // Unknown/resolved-miss: CF7 renders nothing for
+                        // an unknown form — consume the tag rather than
+                        // leaking `[contact-form-7 …]` verbatim.
+                        i += end + 1;
+                        continue;
                     }
                     "gdlr_core_button" => {
                         let a = sc_attrs(head);

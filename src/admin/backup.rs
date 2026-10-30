@@ -16,9 +16,16 @@ fn backups_dir(sc: &SiteCtx) -> std::path::PathBuf {
     sc.db.parent().unwrap_or_else(|| std::path::Path::new(".")).join("backups")
 }
 
+/// Admin-only below — archives embed sites/<slug>.env (secrets);
+/// editor sessions must not create or read them.
+fn admin_only(s: &super::Sess) -> Result<(), Response> {
+    if s.role == "admin" { Ok(()) } else { Err(StatusCode::FORBIDDEN.into_response()) }
+}
+
 /// GET — list archives + "Backup now" button.
 pub(crate) async fn backup_page(State(app): State<App>, headers: HeaderMap) -> Response {
     let Ok((s, sc)) = need_auth(&app, &headers) else { return Redirect::to("/admin/login").into_response(); };
+    if let Err(r) = admin_only(&s) { return r; }
     let dir = backups_dir(sc);
     let files = crate::backup::list(&dir);
     let mut rows = String::new();
@@ -53,17 +60,25 @@ pub(crate) struct CsrfForm {
 pub(crate) async fn backup_run(State(app): State<App>, headers: HeaderMap, Form(f): Form<CsrfForm>) -> Response {
     let Ok((s, sc)) = need_auth(&app, &headers) else { return Redirect::to("/admin/login").into_response(); };
     if let Err(r) = check_csrf(&s, &f.csrf) { return r; }
+    if let Err(r) = admin_only(&s) { return r; }
     let work = sc.db.parent().unwrap_or_else(|| std::path::Path::new(".")).to_path_buf();
     let env = crate::site::env_path(&std::env::current_dir().unwrap_or_default(), &sc.slug);
-    match crate::backup::run_backup(&work, &env, 5) {
-        Ok(_) => Redirect::to("/admin/tools/backup").into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("backup failed: {e}")).into_response(),
+    // VACUUM INTO + tar of a multi-GB www/ takes minutes — never block
+    // a tokio worker on it.
+    let res = tokio::task::spawn_blocking(move || crate::backup::run_backup(&work, &env, 5))
+        .await;
+    match res {
+        Ok(Ok(_)) => Redirect::to("/admin/tools/backup").into_response(),
+        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, format!("backup failed: {e}")).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("backup task: {e}")).into_response(),
     }
+
 }
 
 /// GET download — basename only (`backup::resolve` guards traversal).
 pub(crate) async fn backup_download(State(app): State<App>, headers: HeaderMap, AxPath(name): AxPath<String>) -> Response {
-    let Ok((_s, sc)) = need_auth(&app, &headers) else { return Redirect::to("/admin/login").into_response(); };
+    let Ok((s, sc)) = need_auth(&app, &headers) else { return Redirect::to("/admin/login").into_response(); };
+    if let Err(r) = admin_only(&s) { return r; }
     let dir = backups_dir(sc);
     let Ok(path) = crate::backup::resolve(&dir, &name) else { return StatusCode::BAD_REQUEST.into_response() };
     // Stream in chunks — a multi-GB archive can't be read into memory.

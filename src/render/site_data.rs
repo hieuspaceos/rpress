@@ -1141,13 +1141,15 @@ fn chaty_js(conn: &Connection, site_url: &str) -> String {
             .map(|s| s.trim().to_lowercase())
             .filter(|s| !s.is_empty())
             .collect();
-        let pat = format!("cht_social{sfx}_%");
+        // LIKE `_` is a wildcard — `cht_social_1_%` would also match
+        // `cht_social_10_*`; GLOB keeps the underscores literal.
+        let pat = format!("cht_social{sfx}_*");
         let sql = if sfx.is_empty() {
             // suffixless widget — exclude `cht_social_<N>_*` rows that
             // belong to widgets 1+.
-            "SELECT key, value FROM settings WHERE key LIKE ?1 AND key NOT GLOB 'cht_social_[0-9]_*'"
+            "SELECT key, value FROM settings WHERE key GLOB ?1 AND key NOT GLOB 'cht_social_[0-9]_*'"
         } else {
-            "SELECT key, value FROM settings WHERE key LIKE ?1"
+            "SELECT key, value FROM settings WHERE key GLOB ?1"
         };
         let mut st = match conn.prepare(sql) {
             Ok(s) => s,
@@ -1162,7 +1164,9 @@ fn chaty_js(conn: &Connection, site_url: &str) -> String {
         let mut channels = Vec::new();
         for (k, v) in rows {
             let name = k.rsplit('_').next().unwrap_or("").to_string();
-            if !wanted.is_empty() && !wanted.iter().any(|w| w == &name.to_lowercase()) {
+            // Origin emits only the selected set — an empty selection
+            // means NO channels, not "all configured ones".
+            if wanted.is_empty() || !wanted.iter().any(|w| w == &name.to_lowercase()) {
                 continue;
             }
             let Ok(rec) = crate::php_serialize::unserialize(v.as_bytes()) else { continue };
@@ -1235,17 +1239,21 @@ fn chaty_js(conn: &Connection, site_url: &str) -> String {
         "token": get("cht_token"),
         "chaty_widgets": widgets,
     });
+    // JSON into inline <script>: `</` inside any setting (cta text,
+    // custom css, a channel record) would break out of the script tag —
+    // escape it. serde_json handles quotes; it does NOT handle `</`.
+    let settings_json = settings.to_string().replace("</", "<\\/");
     format!(
         "<script id=\"chaty-front-end-js-extra\">\nvar chaty_settings = {};\n</script>\n\
          <script defer id=\"chaty-front-end-js\" src=\"{site_url}/wp-content/plugins/chaty/dist/js/script.js\"></script>\n\
          <script defer id=\"chaty-mail-check-js\" src=\"{site_url}/wp-content/plugins/chaty/admin/assets/js/mailcheck.js\"></script>\n\
          <script id=\"chaty-picmo-js-js\" src=\"{site_url}/wp-content/plugins/chaty/admin/assets/js/picmo-umd.min.js\"></script>",
-        settings
+        settings_json
     )
 }
 fn chaty_css(conn: &Connection, site_url: &str) -> String {
     let has: bool = conn
-        .query_row("SELECT 1 FROM settings WHERE key='cht_active' OR key LIKE 'cht_active_%' LIMIT 1", [], |r| {
+        .query_row("SELECT 1 FROM settings WHERE value='1' AND (key='cht_active' OR key GLOB 'cht_active_[0-9]*') LIMIT 1", [], |r| {
             r.get::<_, i64>(0)
         })
         .is_ok();

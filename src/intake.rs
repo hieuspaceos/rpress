@@ -120,11 +120,13 @@ pub fn submit_form(db: &Path, slug: &str, fields: &HashMap<String, String>, ip: 
         // tag's last quoted opt carries `question|answer`.
         if t.type_ == "quiz" {
             let v = fields.get(&t.name).cloned().unwrap_or_default();
-            // Quoted opts carry "question|answer" — answers may span
-            // whitespace-split tokens ("... (indice: P**s)|Paris"), so
-            // join opts and take the text after the last '|'.
+            // CF7 `[quiz]` may carry several "q|a" pairs and picks one
+            // at random; the renderer always shows the FIRST pair
+            // (forms_markup::tag_html), so validate against that same
+            // pair — text after '|' inside the first quoted segment.
             let joined = t.opts.join(" ");
-            let want = joined.rsplit('|').next().unwrap_or("").trim_matches('"').trim().to_string();
+            let first_quoted = joined.split('"').nth(1).unwrap_or("");
+            let want = first_quoted.rsplit('|').next().unwrap_or("").trim().to_string();
             if !want.is_empty() && !v.trim().eq_ignore_ascii_case(&want) {
                 anyhow::bail!("quiz_failed:{}", t.name);
             }

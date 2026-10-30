@@ -109,11 +109,11 @@ fn settings<'a>(
                 let Ok(Form(f)) = Form::<SettingsForm>::from_request(req, &()).await else {
                     return StatusCode::BAD_REQUEST.into_response();
                 };
-                let spec: Vec<FieldSpec> = widget_fields("")
-                    .into_iter()
-                    .chain(widget_fields("_1"))
-                    .collect();
-                match save_settings_fields(s, sc, &f, &spec) {
+                // Two independent forms post to this URL — each carries a
+                // hidden `sfx`. Saving both specs at once would zero the
+                // other widget's rows, so only its own spec applies.
+                let sfx = if f.fields.get("sfx").map(|s| s.as_str()) == Some("_1") { "_1" } else { "" };
+                match save_settings_fields(s, sc, &f, &widget_fields(sfx)) {
                     Ok(()) => Redirect::to("/admin/plugins/chaty/settings").into_response(),
                     Err(r) => r,
                 }
@@ -140,6 +140,10 @@ fn settings<'a>(
                         &s.csrf,
                         "",
                         &widget_fields(sfx),
+                    ).replacen(
+                        "<input type=\"hidden\" name=\"csrf\"",
+                        &format!("<input type=\"hidden\" name=\"sfx\" value=\"{sfx}\"><input type=\"hidden\" name=\"csrf\""),
+                        1,
                     ));
                 }
                 Html(format!("{}{}{}", chrome("plugins", s), body, chrome_end(s))).into_response()
