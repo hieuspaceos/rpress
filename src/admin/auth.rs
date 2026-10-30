@@ -263,16 +263,23 @@ pub(crate) async fn two_fa_page(
         return Redirect::to("/admin/login").into_response();
     }
     let body = format!(
-        r##"<div class="wrap"><h1>Two-factor authentication</h1>
-<form method="post" action="/admin/2fa">
+        r##"<div id="login">
+<h1 class="wp-login-logo"><a href="/admin" title="Two-factor authentication">Two-factor authentication</a></h1>
+<form name="loginform" method="post" action="/admin/2fa">
 <input type="hidden" name="p" value="{p}">
-<p><label>Authentication code<br><input name="code" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" autofocus style="font-size:24px;width:10em"></label></p>
+<p>
+<label for="code">Authentication Code</label>
+<input type="text" name="code" id="code" class="input" size="20" inputmode="numeric" pattern="[0-9A-Za-z-]*" autocomplete="one-time-code" autofocus>
+</p>
 <p class="description">6-digit code from your authenticator app, or a backup code (xxxx-xxxx).</p>
-<p><button class="button button-primary">Verify</button></p>
-</form></div>"##,
+<p class="submit">
+<input type="submit" class="button button-primary button-large" value="Verify">
+</p>
+</form>
+</div>"##,
         p = esc(p)
     );
-    Html(format!("<!DOCTYPE html><html><head><meta charset=utf-8><title>2FA</title></head><body>{body}</body></html>")).into_response()
+    html_login("Two-Factor Authentication", &body).into_response()
 }
 
 /// POST `/admin/2fa` — verify TOTP or backup code against the pending
