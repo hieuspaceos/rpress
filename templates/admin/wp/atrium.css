@@ -138,7 +138,6 @@ body.wp-admin::before, body.login::before {
 }
 #wpadminbar .menupop .ab-sub-wrapper .ab-submenu {
   padding: 4px;
-  top: 36px;
 }
 #wpadminbar .menupop ul li a.ab-item,
 #wpadminbar .quicklinks .menupop ul li a.ab-item,
