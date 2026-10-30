@@ -1767,10 +1767,8 @@ body.login .message::before { background: var(--ok); }
 
 /* tooltip rise for adminbar submenu */
 #wpadminbar .menupop .ab-sub-wrapper {
-  background: var(--glass-solid);
-  background: var(--glass-strong);
-  -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
-  border: 1px solid var(--glass-border);
+  background: var(--glass-solid); /* opaque — the text-below bleed ruined the flyout */
+  border: 1px solid var(--rule-2);
   border-radius: var(--r-md);
   box-shadow: var(--shadow-float);
   padding: 0;
