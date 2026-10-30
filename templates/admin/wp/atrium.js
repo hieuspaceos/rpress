@@ -57,6 +57,29 @@
   applyMore();
   if (mobileQ.addEventListener) mobileQ.addEventListener('change', applyMore);
 
+  /* "← back to section" chip on every admin screen (edit/new pages have
+     their own; everywhere else mirror the dock tile's list URL) */
+  (function () {
+    var h1 = document.querySelector('.wrap > h1.wp-heading-inline, .wrap > h1');
+    if (!h1 || h1.parentNode.querySelector('.page-title-action')) return;
+    var curTile = document.querySelector('#adminmenu li.current > a.menu-top, #adminmenu li.wp-has-current-submenu > a.menu-top');
+    var label = curTile && (curTile.querySelector('.wp-menu-name') || {}).textContent;
+    if (!curTile || !label) return;
+    var href = curTile.getAttribute('href');
+    if (!href || href === location.pathname) {
+      /* Sitting on the section's landing screen (Settings → General IS
+         the section index) — a "← Settings" chip here just reloads the
+         same page, so point back at the dashboard instead. */
+      href = '/admin';
+      label = 'Dashboard';
+    }
+    var a = document.createElement('a');
+    a.className = 'page-title-action';
+    a.href = href;
+    a.textContent = '← ' + label.trim();
+    h1.parentNode.insertBefore(a, h1.nextSibling);
+  })();
+
   /* current submenu link: the server only marks the top-level tile, so
      mirror WP and pin `li.current` on the flyout item matching the path */
   if (menu) {

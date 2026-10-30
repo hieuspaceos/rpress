@@ -542,6 +542,12 @@ a.page-title-action { margin-left: 8px; }
   box-shadow: none;
   transition: border-color var(--dur-micro) var(--ease-out), box-shadow var(--dur-micro) var(--ease-out);
 }
+.wp-admin select {
+  background: var(--paper) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20'%3E%3Cpath d='M5 6l5 5 5-5 2 1-7 7-7-7 2-1z' fill='%23555049'/%3E%3C/svg%3E") no-repeat right 8px top 55%;
+  background-size: 16px 16px;
+  padding-right: 28px;
+  cursor: pointer;
+}
 .wp-admin input:focus, .wp-admin textarea:focus, .wp-admin select:focus {
   border-color: var(--accent);
   outline: var(--focus-ring);
@@ -648,7 +654,8 @@ ul.subsubsub .count { font-family: var(--font-num); font-size: 10px; font-weight
   height: 30px;
   padding: 4px 9px;
 }
-.tablenav-pages { font-family: var(--font-num); font-size: 12px; color: var(--muted); }
+.tablenav { display: flex; align-items: center; gap: 8px; }
+.tablenav-pages { font-family: var(--font-num); font-size: 12px; color: var(--muted); margin-left: auto; white-space: nowrap; }
 .tablenav-pages input.current-page { height: 30px; }
 .tablenav-pages .button { min-width: 28px; text-align: center; }
 .tablenav .view-switch a { color: var(--muted); }
@@ -725,6 +732,50 @@ ul.subsubsub .count { font-family: var(--font-num); font-size: 10px; font-weight
 .wp-list-table .row-actions a, .wp-list-table .row-actions span a { color: var(--ink-2); font-weight: 500; }
 .wp-list-table .row-actions a:hover { color: var(--accent); }
 .wp-list-table .row-actions .trash a, .wp-list-table .row-actions .delete a { color: oklch(58% 0.18 25); }
+/* ── inline edit (Quick Edit / Bulk Edit) — a card inside the table row ── */
+.wp-list-table tr.inline-edit-row td.colspanchange {
+  padding: 14px 16px 16px;
+  background: var(--paper-2);
+  border-top: 1px solid var(--rule);
+  box-shadow: inset 0 1px 0 var(--rule), inset 3px 0 0 var(--accent);
+}
+.inline-edit-row fieldset { border: 0; margin: 0; padding: 0; }
+.inline-edit-legend, .inline-edit-row .inline-edit-legend {
+  font-family: var(--font-text);
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--ink);
+  padding: 0 0 10px;
+  text-transform: none;
+  letter-spacing: -0.01em;
+}
+.inline-edit-row .inline-edit-group { display: block; margin: 0 0 10px; }
+.inline-edit-row .inline-edit-group .title,
+.inline-edit-row .inline-edit-categories-label, .inline-edit-row .title {
+  display: block;
+  margin: 0 0 4px;
+  font-family: var(--font-ui);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: .02em;
+  color: var(--ink-2);
+  width: auto;
+  float: none;
+}
+.inline-edit-row input[type="text"], .inline-edit-row select, .inline-edit-row textarea {
+  width: 100%;
+  max-width: 380px;
+}
+.inline-edit-row .categorychecklist {
+  background: var(--paper);
+  border: 1px solid var(--rule-2) !important;
+  border-radius: var(--r-sm);
+  list-style: none;
+}
+.inline-edit-row .categorychecklist li { padding: 2px 0; }
+.inline-edit-row .categorychecklist label { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--ink-2); }
+.inline-edit-row .submit { display: flex; gap: 8px; margin: 12px 0 0; }
+
 .wp-list-table td.column-date, .wp-list-table td.column-response,
 .wp-list-table .num, .wp-list-table td.column-comments,
 .wp-list-table td.column-posts, .wp-list-table td.column-submissions,
