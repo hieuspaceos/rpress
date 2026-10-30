@@ -226,6 +226,9 @@ pub(crate) async fn forms_page(State(app): State<App>, headers: HeaderMap) -> Re
     let counts = subdb::form_counts(&sc.db).unwrap_or_default();
     let forms = fdb::list(&sc.db).unwrap_or_default();
     let mut rows = String::new();
+    if forms.is_empty() {
+        rows.push_str(&list::empty_row(6, "No contact forms found."));
+    }
     for r in &forms {
         let slug = r.slug.as_str();
         let n = counts.get(slug).copied().unwrap_or(0);

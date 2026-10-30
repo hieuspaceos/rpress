@@ -155,7 +155,6 @@ pub(crate) fn render_list(
     let sub = format!(
         r#"<ul class="subsubsub">
 <li class="all"><a href="{}"{}>All <span class="count">({})</span></a> |</li>
-<li class="mine"><a href="{}"{}>Mine <span class="count">({})</span></a> |</li>
 <li class="publish"><a href="{}"{}>Published <span class="count">({})</span></a> |</li>
 <li class="pending"><a href="{}"{}>Pending <span class="count">({})</span></a> |</li>
 <li class="future"><a href="{}"{}>Scheduled <span class="count">({})</span></a> |</li>
@@ -167,9 +166,6 @@ pub(crate) fn render_list(
         qs("", "", tax, 1),
         on("", ""),
         counts.all,
-        qs("", "", tax, 1),
-        on("", ""),
-        0,
         qs("publish", "", tax, 1),
         on("publish", ""),
         counts.publish,

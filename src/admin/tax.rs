@@ -207,7 +207,7 @@ pub(crate) fn tax_page_html(db: &std::path::Path, s: &Sess, tax: &str, edit: Opt
             r##"<div class="form-field term-parent-wrap">
 <label for="parent">Parent {noun}</label>
 <select name="parent" id="parent">{parent_options}</select>
-<p>{noun}s can have a hierarchy. Totally optional.</p>
+<p>{title} can have a hierarchy. Totally optional.</p>
 </div>"##
         )
     } else {
@@ -319,7 +319,7 @@ pub(crate) fn tax_page_html(db: &std::path::Path, s: &Sess, tax: &str, edit: Opt
 <form method="get" action="/admin/tax/{tax}">
 <p class="search-box">
 <label class="screen-reader-text" for="tag-search-input">Search {title}:</label>
-<input type="search" id="tag-search-input" name="s" value="{search}">
+<input type="search" id="tag-search-input" name="s" value="{search}" placeholder="Search {title}">
 <input type="submit" id="search-submit" class="button" value="Search {title}">
 </p>
 </form>

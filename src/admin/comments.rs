@@ -422,6 +422,11 @@ pub(crate) async fn comments_page(
         let msg = if search.is_empty() { "No comments found." } else { "No comments found matching your search." };
         body_rows.push_str(&list::empty_row(5, msg));
     }
+    // Every data column can be hidden via Screen Options — without a hint the
+    // table collapses to a card of bare checkboxes and looks broken.
+    if !(cols.author || cols.comment || cols.response || cols.date) {
+        body_rows.push_str(&list::empty_row(5, "All columns are hidden — open Screen Options to show columns."));
+    }
 
     // Bulk actions by view (WP labels).
     let bulk: &[(&str, &str)] = match view {
