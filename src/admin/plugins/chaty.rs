@@ -150,7 +150,7 @@ fn settings<'a>(
                         1,
                     ));
                 }
-                html_page(s, "Chaty", &format!("{}{}", chrome("plugins", s), body), false).into_response()
+                html_page(s, "Chaty", &format!("{}<div class=\"wrap\">{}</div>", chrome("plugins", s), body), false).into_response()
             }
         }
     })

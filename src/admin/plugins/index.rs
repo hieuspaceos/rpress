@@ -170,10 +170,10 @@ fn plugins_index_html(_s: &Sess, sc: &SiteCtx) -> String {
     }
 
     format!(
-        r#"<h1 class="wp-heading-inline">Plugins.</h1>
+        r#"<div class="wrap"><h1 class="wp-heading-inline">Plugins.</h1>
 <hr class="wp-header-end">
 <p class="muted" style="margin:4px 0 14px">Native plugins run inside rpress; Bridge rows proxy to the vendored WP runtime. Settings screens write the same option keys the plugin used in wp_options.</p>
-<table class="wp-list-table widefat plugins striped"><thead><tr><th class="manage-column column-name column-primary">Plugin</th><th class="manage-column">Description</th><th class="manage-column">Backend</th></tr></thead><tbody>{rows}</tbody></table>
+<table class="wp-list-table widefat plugins striped"><thead><tr><th class="manage-column column-name column-primary">Plugin</th><th class="manage-column">Description</th><th class="manage-column">Backend</th></tr></thead><tbody>{rows}</tbody></table></div>
 <style>
 .badge{{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;background:var(--paper-2);color:var(--ink-2)}}
 .badge-native{{background:oklch(88% 0.1 155);color:oklch(30% 0.12 160)}}
@@ -314,7 +314,10 @@ pub(crate) fn settings_page_html(
         Ok(conn) => Html(format!(
             "{}{}{}",
             chrome(title, s),
-            settings_form_html(&conn, action, &s.csrf, title, spec),
+            format!(
+                "<div class=\"wrap\">{}</div>",
+                settings_form_html(&conn, action, &s.csrf, title, spec)
+            ),
             chrome_end(s)
         ))
         .into_response(),

@@ -48,7 +48,7 @@ pub(crate) async fn backup_page(State(app): State<App>, headers: HeaderMap) -> R
 {table}"#,
         esc(&sc.slug), esc(&sc.slug), esc(&s.csrf)
     );
-    html_page(&s, "Backup", &format!("{}{}", super::chrome("tools", &s), body), false).into_response()
+    html_page(&s, "Backup", &format!("{}<div class=\"wrap\">{}</div>", super::chrome("tools", &s), body), false).into_response()
 }
 
 #[derive(Deserialize)]
