@@ -90,7 +90,7 @@ fn symlink_dir(src: &Path, dst: &Path) -> Result<()> {
 
 /// Rendered `wp-config.php` — constants the playground passes via
 /// `--define`/consts.json plus sqlite + URL wiring.
-fn wp_config(token: &str, plugin_file: &str, theme: Option<&str>, plugins_json: Option<&str>, port: u16, db_dir: &Path) -> String {
+fn wp_config(token: &str, plugin_file: &str, theme: Option<&str>, plugins_json: Option<&str>, port: u16, db_dir: &Path, secret: &str) -> String {
     let theme = theme.map(|t| format!("define('RPRESS_BRIDGE_THEME', {});", php_str(t))).unwrap_or_default();
     let plugins = plugins_json.map(|p| format!("define('RPRESS_BRIDGE_PLUGINS', {});", php_str(p))).unwrap_or_default();
     format!(
@@ -125,6 +125,14 @@ define('DISALLOW_FILE_MODS', true);
 define('CONCATENATE_SCRIPTS', false);
 define('WP_ENVIRONMENT_TYPE', 'local');
 define('WP_SQLITE_AST_DRIVER', true);
+// One stable nonce pair for this site+slug — persisted OUTSIDE
+// bridge/<slug> (spawn wipes that dir). Without constants WP derives
+// the nonce salt from wp_options.secret_key inside the disposable
+// wp.db; every respawn regenerated it, so an open editor's nonces
+// (minted by the previous bridge) failed check_ajax_referer and the
+// next element click showed "An error occurs".
+define('NONCE_KEY', {secret});
+define('NONCE_SALT', {secret});
 $table_prefix = 'wp_';
 if (!defined('ABSPATH')) {{ define('ABSPATH', __DIR__ . '/'); }}
 require_once ABSPATH . 'wp-settings.php';
@@ -136,6 +144,7 @@ require_once ABSPATH . 'wp-settings.php';
         plugin = php_str(plugin_file),
         theme = theme,
         plugins = plugins,
+        secret = php_str(secret),
     )
 }
 
@@ -200,7 +209,11 @@ const SANDBOX_PROFILE: &str = r#"(version 1)
     (subpath "/private/etc")
     (subpath "/Library")
     (subpath "/private/tmp")
-    (subpath "/var/folders")
+    ;; macOS resolves /var -> /private/var before matching; TMPDIR
+    ;; (/var/folders/_x/.../T) is really /private/var/folders — without
+    ;; this every POST big enough to need a tempfile is discarded and
+    ;; admin-ajax dies 400 ("POST data can't be buffered").
+    (subpath "/private/var/folders")
     (subpath "/dev")
     (literal "/dev/null"))
 (allow file-write*
@@ -208,7 +221,7 @@ const SANDBOX_PROFILE: &str = r#"(version 1)
     (subpath "{uploads}")
     (subpath "{mu}")
     (subpath "/private/tmp")
-    (subpath "/var/folders")
+    (subpath "/private/var/folders")
     (subpath "/dev"))
 (allow process-exec*)
 (allow process-fork)
@@ -267,6 +280,18 @@ pub(crate) fn spawn(
     anyhow::ensure!(wp_core.join("wp-load.php").is_file(), "templates/wp-core missing — vendor WP core first");
 
     let dir = www.join("bridge").join(slug);
+    // Per-site+slug nonce secret persisted OUTSIDE <slug> — the dir below
+    // is wiped every spawn; wp.db salts must stay stable or an open
+    // editor's nonces fail check_ajax_referer on the next respawn.
+    let secret_file = www.join("bridge").join(format!(".secret-{slug}"));
+    let secret = match std::fs::read_to_string(&secret_file) {
+        Ok(s) if s.trim().len() >= 32 => s.trim().to_string(),
+        _ => {
+            let s = format!("{:x}{:x}", rand::random::<u128>(), rand::random::<u128>());
+            let _ = std::fs::write(&secret_file, &s);
+            s
+        }
+    };
     if dir.exists() {
         std::fs::remove_dir_all(&dir).with_context(|| format!("wipe {}", dir.display()))?;
     }
@@ -406,7 +431,7 @@ pub(crate) fn spawn(
         }
     }
 
-    let cfg = wp_config(&token, plugin_file, theme.as_deref(), plugins_json.as_deref(), port, &db_dir)
+    let cfg = wp_config(&token, plugin_file, theme.as_deref(), plugins_json.as_deref(), port, &db_dir, &secret)
         .replace("{DOCROOT}", &docroot.display().to_string());
     std::fs::write(docroot.join("wp-config.php"), cfg)?;
 
@@ -474,6 +499,50 @@ pub(crate) fn spawn(
          if (get_option('siteurl') !== WP_HOME || get_option('blogname') === '') {{ \
              require_once ABSPATH.'wp-admin/includes/upgrade.php'; \
              wp_install('rpress bridge','admin','admin@bridge.local',false,'',RPRESS_BRIDGE_TOKEN); \
+         }} \
+         /* Seed HERE, not on the first admin request: activation hooks + the \
+            post insert used to run inside the first admin-ajax call and made \
+            it die (400/redirect) — the editor's first element click after a \
+            spawn or idle-reap showed \"An error occurs\". */ \
+         require_once ABSPATH.'wp-admin/includes/plugin.php'; \
+         if (RPRESS_BRIDGE_PLUGIN !== '' && file_exists(WP_PLUGIN_DIR . '/' . RPRESS_BRIDGE_PLUGIN)) {{ \
+             activate_plugin(RPRESS_BRIDGE_PLUGIN); \
+         }} \
+         if (defined('RPRESS_BRIDGE_PLUGINS')) {{ \
+             foreach ((array) json_decode(RPRESS_BRIDGE_PLUGINS, true) as $rpress_p2) {{ \
+                 if (is_string($rpress_p2) && $rpress_p2 !== RPRESS_BRIDGE_PLUGIN && file_exists(WP_PLUGIN_DIR . '/' . $rpress_p2)) {{ \
+                     activate_plugin($rpress_p2); \
+                 }} \
+             }} \
+         }} \
+         $rpress_theme = defined('RPRESS_BRIDGE_THEME') ? RPRESS_BRIDGE_THEME : ''; \
+         if ($rpress_theme !== '' && get_option('stylesheet') !== $rpress_theme) {{ \
+             switch_theme($rpress_theme); \
+         }} \
+         $rpress_seed = WP_CONTENT_DIR . '/rpress-seed/post.json'; \
+         if (file_exists($rpress_seed) && !get_option('rpress_post_seeded')) {{ \
+             $rpress_j = json_decode(file_get_contents($rpress_seed), true); \
+             $rpress_p = is_array($rpress_j) ? ($rpress_j['post'] ?? null) : null; \
+             if (is_array($rpress_p) && (empty($rpress_p['ID']) || !get_post((int) $rpress_p['ID']))) {{ \
+                 $rpress_pid = wp_insert_post([ \
+                     'import_id'    => isset($rpress_p['ID']) ? (int) $rpress_p['ID'] : 0, \
+                     'post_title'   => $rpress_p['post_title'] ?? '', \
+                     'post_content' => $rpress_p['post_content'] ?? '', \
+                     'post_excerpt' => $rpress_p['post_excerpt'] ?? '', \
+                     'post_status'  => $rpress_p['post_status'] ?? 'draft', \
+                     'post_name'    => $rpress_p['post_name'] ?? '', \
+                     'post_type'    => $rpress_p['post_type'] ?? 'page', \
+                 ], true); \
+                 if (!is_wp_error($rpress_pid)) {{ \
+                     update_option('rpress_post_seeded', $rpress_pid, false); \
+                     if (!empty($rpress_j['meta']) && is_array($rpress_j['meta'])) {{ \
+                         foreach ($rpress_j['meta'] as $rpress_mk => $rpress_mv) {{ \
+                             update_post_meta($rpress_pid, $rpress_mk, $rpress_mv); \
+                         }} \
+                     }} \
+                 }} \
+             }} \
+         update_option('rpress_seed_done', 1, false); \
          }}",
         docroot = docroot.display(),
         theme = theme.as_deref().unwrap_or(""),
@@ -491,6 +560,24 @@ pub(crate) fn spawn(
     match sandboxed(&php, &docroot, www, templates, &db_dir) {
         Some(mut c) => { let o = c.args(&install_args).output().context("WP install")?; anyhow::ensure!(o.status.success(), "WP install exit {}", o.status); }
         None => { let o = Command::new(&php).args(&install_args).output().context("WP install")?; anyhow::ensure!(o.status.success(), "WP install exit {}", o.status); }
+    }
+
+    // Warm-up: the FIRST admin-ajax after a fresh install carries
+    // activation/install transients (traveltour theme_landing redirects
+    // and similar welcome hooks answer it with 302/400). Absorb it here
+    // — before `spawn()` returns — so a user's click is never that
+    // request. Without this the editor's first element click after every
+    // spawn or idle-reap saw "An error occurs".
+    {
+        let mut fwd: Vec<(String, String)> = Vec::new();
+        fwd.push(("X-Rpress-Bridge".to_string(), token.clone()));
+        let _ = http::request(
+            port,
+            "POST",
+            "/wp-admin/admin-ajax.php",
+            &fwd,
+            b"action=rpress_warmup",
+        );
     }
 
     Ok(BridgeState {
