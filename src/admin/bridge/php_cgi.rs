@@ -448,7 +448,10 @@ pub(crate) fn spawn(
         "-d".to_string(), "realpath_cache_ttl=600".to_string(),
         // FATAL/parse errors land in php.log (stderr above); keep them off
         // the wire too — a PHP warning mid-response corrupts ajax JSON.
-        "-d".to_string(), format!("error_log={}", dir.join("php.log").display()),
+        // error_log lives under {db} (sandbox write allowlist): pointing it
+        // at bridge/<slug>/php.log is denied by file-write* — the ini
+        // writer opens its own fd, the inherited stderr fd doesn't help.
+        "-d".to_string(), format!("error_log={}", db_dir.join("php-errors.log").display()),
         "-d".to_string(), "display_errors=0".to_string(),
         "-S".to_string(), format!("127.0.0.1:{port}"), "-t".to_string(), docroot.display().to_string(),
     ];
