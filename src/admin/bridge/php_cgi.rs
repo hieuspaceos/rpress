@@ -421,11 +421,21 @@ pub(crate) fn spawn(
         "-d".to_string(), "opcache.validate_timestamps=0".to_string(),
         "-d".to_string(), "realpath_cache_size=2M".to_string(),
         "-d".to_string(), "realpath_cache_ttl=600".to_string(),
+        // FATAL/parse errors land in php.log (stderr above); keep them off
+        // the wire too — a PHP warning mid-response corrupts ajax JSON.
+        "-d".to_string(), format!("error_log={}", dir.join("php.log").display()),
+        "-d".to_string(), "display_errors=0".to_string(),
         "-S".to_string(), format!("127.0.0.1:{port}"), "-t".to_string(), docroot.display().to_string(),
     ];
     let child = match sandboxed(&php, &docroot, www, templates, &db_dir) {
-        Some(mut c) => c.args(&php_args).stdout(Stdio::null()).stderr(Stdio::null()).spawn().context("spawn sandboxed php -S")?,
-        None => Command::new(&php).args(&php_args).stdout(Stdio::null()).stderr(Stdio::null()).spawn().context("spawn php -S")?,
+        Some(mut c) => {
+            let log = std::fs::File::create(dir.join("php.log")).with_context(|| "create bridge php.log")?;
+            c.args(&php_args).stdout(Stdio::null()).stderr(Stdio::from(log)).spawn().context("spawn sandboxed php -S")?
+        }
+        None => {
+            let log = std::fs::File::create(dir.join("php.log")).with_context(|| "create bridge php.log")?;
+            Command::new(&php).args(&php_args).stdout(Stdio::null()).stderr(Stdio::from(log)).spawn().context("spawn php -S")?
+        }
     };
 
     // php -S boots near-instantly vs the WASM cold start; still probe with
