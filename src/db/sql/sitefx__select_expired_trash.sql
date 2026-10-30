@@ -1,0 +1,1 @@
+SELECT id FROM posts WHERE status='trash' AND modified_at < datetime('now','-30 days')

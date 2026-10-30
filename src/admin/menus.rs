@@ -180,8 +180,8 @@ fn frame_html(sc: &SiteCtx, s: &Sess, m: &crud::Menu, ms: &crud::MenuScreen) -> 
     push_box("page", object_box("page", "Pages", sc, &m.lang));
     push_box("post", object_box("post", "Posts", sc, &m.lang));
     // Non-core kinds contribute one object metabox each (registry-driven).
-    for def in crate::admin::plugins::kind_defs() {
-        if crate::admin::plugins::adapter_for_kind(def.kind).is_some() {
+    for def in crate::plugins::kind_defs() {
+        if crate::plugins::adapter_for_kind(def.kind).is_some() {
             push_box(def.kind, object_box(def.kind, def.list_title, sc, &m.lang));
         }
     }
@@ -367,8 +367,8 @@ fn section_keys(sc: &SiteCtx) -> Vec<(String, String)> {
         ("page".into(), "Pages".into()),
         ("post".into(), "Posts".into()),
     ];
-    for def in crate::admin::plugins::kind_defs() {
-        if crate::admin::plugins::adapter_for_kind(def.kind).is_some() {
+    for def in crate::plugins::kind_defs() {
+        if crate::plugins::adapter_for_kind(def.kind).is_some() {
             v.push((def.kind.into(), def.list_title.into()));
         }
     }

@@ -1,0 +1,1 @@
+UPDATE sessions SET expires_at=unixepoch(last_seen)+43200 WHERE expires_at=0

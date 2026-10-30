@@ -1,0 +1,1 @@
+UPDATE sidebars SET id=?2 WHERE id=?1 AND NOT EXISTS(SELECT 1 FROM sidebars WHERE id=?2)

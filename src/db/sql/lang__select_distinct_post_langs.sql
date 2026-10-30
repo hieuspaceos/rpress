@@ -1,0 +1,1 @@
+SELECT DISTINCT lang FROM posts WHERE lang<>'' ORDER BY CASE WHEN lang='fr' THEN 0 ELSE 1 END, lang

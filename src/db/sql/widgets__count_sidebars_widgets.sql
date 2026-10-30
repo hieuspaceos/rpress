@@ -1,0 +1,1 @@
+SELECT (SELECT COUNT(*) FROM sidebars), (SELECT COUNT(*) FROM widgets)

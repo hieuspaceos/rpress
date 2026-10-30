@@ -1,0 +1,1 @@
+SELECT slug, lang, kind FROM posts WHERE id=?1

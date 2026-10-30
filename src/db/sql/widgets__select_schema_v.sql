@@ -1,0 +1,1 @@
+SELECT value FROM settings WHERE key='widgets_schema_v'

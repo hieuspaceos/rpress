@@ -55,6 +55,9 @@ enum Cmd {
         /// URL base for the tour plugin (e.g. "voyage").
         #[arg(long, default_value = "voyage")]
         tour_base: String,
+        /// Re-import into a database that already has content.
+        #[arg(long)]
+        force: bool,
     },
     User {
         #[command(subcommand)]
@@ -110,6 +113,10 @@ enum ImportStep {
         db: PathBuf,
         #[arg(long, default_value = "import-report.txt")]
         report: PathBuf,
+        /// Re-import into a database that already has content (import
+        /// otherwise refuses — it deletes the file).
+        #[arg(long)]
+        force: bool,
     },
     /// Run audit-count checklist against rpress.db
     Verify {
@@ -156,7 +163,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
         Cmd::Import { step } => match step {
-            ImportStep::Parse { dump, db, report } => import::run(&dump, &db, &report),
+            ImportStep::Parse { dump, db, report, force } => import::run(&dump, &db, &report, force),
             ImportStep::Verify { db } => verify::run(&db),
         },
         Cmd::Render { step } => match step {
@@ -175,10 +182,10 @@ fn main() -> Result<()> {
             UserStep::Add { email, password, role, db } => auth::add_user(&db, &email, &password, &role),
             UserStep::Passwd { email, password, db } => auth::set_password(&db, &email, &password),
         },
-        Cmd::Migrate { dump, db, templates, out, site_url, www, tour_base } => {
+        Cmd::Migrate { dump, db, templates, out, site_url, www, tour_base, force } => {
             let _ = www; // uploads land in www via admin; migrate only needs db+out
             println!("== import ==");
-            import::run(&dump, &db, &db.with_extension("import-report.txt"))?;
+            import::run(&dump, &db, &db.with_extension("import-report.txt"), force)?;
             let password = rand::random::<u128>().to_string();
             let (password, _) = password.split_at(24.min(password.len()));
             auth::add_user(&db, "admin@localhost", password, "admin")?;

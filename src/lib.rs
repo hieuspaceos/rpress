@@ -17,6 +17,7 @@ pub mod render_archive;
 pub mod render_post;
 pub mod schema;
 pub mod widgets;
+pub mod plugins;
 pub mod admin;
 pub mod site;
 pub mod site_build;

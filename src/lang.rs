@@ -14,7 +14,7 @@ pub fn config(conn: &Connection) -> LangConfig {
         .map(ToOwned::to_owned)
         .collect();
     if langs.is_empty() {
-        if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT lang FROM posts WHERE lang<>'' ORDER BY CASE WHEN lang='fr' THEN 0 ELSE 1 END, lang") {
+        if let Ok(mut stmt) = conn.prepare(sql!("lang__select_distinct_post_langs")) {
             if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
                 langs = rows.filter_map(Result::ok).collect();
             }
@@ -29,7 +29,7 @@ pub fn config(conn: &Connection) -> LangConfig {
 }
 
 pub fn setting(conn: &Connection, key: &str) -> String {
-    conn.query_row("SELECT value FROM settings WHERE key=?1", [key], |r| r.get::<_, String>(0))
+    conn.query_row(sql!("intake__select_setting"), [key], |r| r.get::<_, String>(0))
         .unwrap_or_default()
 }
 

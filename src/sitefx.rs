@@ -28,18 +28,18 @@ fn collect_urls(conn: &Connection, site: &str, tour_base: &str) -> Result<Vec<(S
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
         .flatten()
         .collect();
-    let mut mod_stmt = conn.prepare("SELECT modified_at FROM posts WHERE id=?1")?;
+    let mut mod_stmt = conn.prepare(crate::sql!("generate__select_modified_at"))?;
     for (id, slug, lang, kind) in &rows {
         // Adapter-owned kinds canonicalize their slug (display_slug).
-        let wslug = crate::admin::plugins::adapter_for_kind(kind)
+        let wslug = crate::plugins::adapter_for_kind(kind)
             .and_then(|a| {
                 let title: String = conn
-                    .query_row("SELECT title FROM posts WHERE id=?1", [id], |r| r.get(0))
+                    .query_row(crate::sql!("generate__select_post_title"), [id], |r| r.get(0))
                     .unwrap_or_default();
                 a.display_slug(conn, *id, slug, &title)
             })
             .unwrap_or_else(|| slug.clone());
-        let rel = crate::generate::rel_path_with_cfg(&lang_cfg, *id, front, lang, &wslug, crate::admin::plugins::kind_url_base(tour_base, kind).as_deref());
+        let rel = crate::generate::rel_path_with_cfg(&lang_cfg, *id, front, lang, &wslug, crate::plugins::kind_url_base(tour_base, kind).as_deref());
         let loc_path = rel.to_string_lossy().replace("index.html", "");
         let loc = format!(
             "{}{}",
@@ -53,7 +53,7 @@ fn collect_urls(conn: &Connection, site: &str, tour_base: &str) -> Result<Vec<(S
     // Localized front pages for every non-primary language.
     for lang in lang_cfg.langs.iter().filter(|l| *l != &lang_cfg.primary) {
         let lastmod: Option<String> = conn
-            .query_row("SELECT MAX(modified_at) FROM posts WHERE lang=?1 AND kind='page'", [lang], |r| r.get(0))
+            .query_row(crate::sql!("generate__select_max_modified_page_lang"), [lang], |r| r.get(0))
             .ok();
         urls.push((format!("{}{}", site, crate::lang::page_path(&lang_cfg, lang, "page", "", None)), "page".into(), lastmod));
     }
@@ -67,7 +67,7 @@ fn collect_urls(conn: &Connection, site: &str, tour_base: &str) -> Result<Vec<(S
             .collect();
         let archive_lastmod: Option<String> = conn
             .query_row(
-                "SELECT MAX(modified_at) FROM posts WHERE status='publish'",
+                crate::sql!("generate__select_max_modified_published"),
                 [],
                 |r| r.get(0),
             )
@@ -96,9 +96,9 @@ fn collect_raw_redirects(conn: &Connection, site: &str, tour_base: &str) -> Resu
     let mut raw = Vec::new();
     // Plugin kinds with a display_slug hook: only those can diverge from
     // the stored slug.
-    let owned: Vec<&'static str> = crate::admin::plugins::kind_defs()
+    let owned: Vec<&'static str> = crate::plugins::kind_defs()
         .iter()
-        .filter(|d| crate::admin::plugins::adapter_for_kind(d.kind).is_some())
+        .filter(|d| crate::plugins::adapter_for_kind(d.kind).is_some())
         .map(|d| d.kind)
         .collect();
     if owned.is_empty() {
@@ -106,7 +106,7 @@ fn collect_raw_redirects(conn: &Connection, site: &str, tour_base: &str) -> Resu
     }
     let qs = owned.iter().map(|_| "?").collect::<Vec<_>>().join(",");
     let mut stmt = conn.prepare(&format!(
-        "SELECT id, slug, lang, title, kind FROM posts WHERE status='publish' AND kind IN ({qs})"
+        "{}{qs})", crate::sql!("sitefx__select_published_kinds")
     ))?;
     let rows: Vec<(i64, String, String, String, String)> = stmt
         .query_map(rusqlite::params_from_iter(owned.iter()), |r| {
@@ -115,12 +115,12 @@ fn collect_raw_redirects(conn: &Connection, site: &str, tour_base: &str) -> Resu
         .flatten()
         .collect();
     for (id, slug, lang, title, kind) in &rows {
-        let display = crate::admin::plugins::adapter_for_kind(kind)
+        let display = crate::plugins::adapter_for_kind(kind)
             .and_then(|a| a.display_slug(conn, *id, slug, title))
             .unwrap_or_else(|| slug.clone());
         if &display != slug {
             let prefix = crate::lang::url_prefix(&lang_cfg, lang);
-            let base = crate::admin::plugins::kind_url_base(tour_base, kind).unwrap_or_default();
+            let base = crate::plugins::kind_url_base(tour_base, kind).unwrap_or_default();
             raw.push((
                 format!("{prefix}/{base}/{slug}/"),
                 format!("{site}{prefix}/{base}/{display}/"),
@@ -136,7 +136,7 @@ fn collect_raw_redirects(conn: &Connection, site: &str, tour_base: &str) -> Resu
 /// feeds, robots, redirects and the search page from minute zero.
 pub fn emit_site_files(db: &Path, templates: &Path, out: &Path, site: &str, tour_base: &str) -> Result<()> {
     let conn = crate::db::conn(db)?;
-    let bases = crate::admin::plugins::resolve_bases(tour_base);
+    let bases = crate::plugins::resolve_bases(tour_base);
     crate::generate::write_404(out, templates, &conn, site, &bases)?;
     crate::generate::write_search(out, templates, &conn, site, &bases)?;
     crate::generate::write_feeds(out, &conn, site, &bases)?;
@@ -156,7 +156,7 @@ pub fn emit_site_files(db: &Path, templates: &Path, out: &Path, site: &str, tour
 pub fn purge_duties(db: &Path, out: &Path, tour_base: &str) {
     if let Ok(ids) = crate::db::ids_matching(
         db,
-        "SELECT id FROM posts WHERE status='trash' AND modified_at < datetime('now','-30 days')",
+        crate::sql!("sitefx__select_expired_trash"),
         [],
     ) {
         for id in ids {
@@ -172,26 +172,20 @@ pub fn purge_duties(db: &Path, out: &Path, tour_base: &str) {
     if let Ok(c) = crate::db::conn(db) {
         // Revisions: latest 50 per post survive (body_json snapshots are the
         // top growth vector on builder pages — hundreds of KB per save).
-        let _ = c.execute_batch(
-            "DELETE FROM revisions WHERE id IN (\
-               SELECT id FROM (\
-                 SELECT id, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY saved_at DESC, id DESC) rn\
-                 FROM revisions\
-               ) WHERE rn > 50);",
-        );
+        let _ = c.execute_batch(crate::sql!("sitefx__delete_old_revisions"));
         // Expired admin sessions — dead rows linger forever otherwise.
         let _ = c.execute(
-            "DELETE FROM sessions WHERE expires_at > 0 AND expires_at < unixepoch()",
+            crate::sql!("sitefx__delete_expired_sessions"),
             [],
         );
         // Spam comments + spam/trash submissions past 30 days (same horizon
         // as post/comment trash above).
         let _ = c.execute(
-            "DELETE FROM comments WHERE status='spam' AND created_at < datetime('now','-30 days')",
+            crate::sql!("sitefx__delete_old_spam_comments"),
             [],
         );
         let _ = c.execute(
-            "DELETE FROM submissions WHERE status IN ('spam','trash') AND created_at < datetime('now','-30 days')",
+            crate::sql!("sitefx__delete_old_spam_submissions"),
             [],
         );
     }

@@ -1,0 +1,1 @@
+SELECT post_id, meta_key, meta_value FROM post_meta ORDER BY post_id, meta_key

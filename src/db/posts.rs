@@ -166,7 +166,7 @@ pub fn load_post(db: &Path, id: i64) -> Result<Option<PostForm>> {
             .collect::<Vec<_>>()
             .join("\n");
     }
-    if let Some(e) = crate::admin::plugins::editor_for(&p.kind) {
+    if let Some(e) = crate::plugins::editor_for(&p.kind) {
         (e.load)(&c, id, &mut p)?;
     }
     // body_json stays builder/layout data — the editor's `#content` is the
@@ -444,7 +444,7 @@ pub fn clone_post(db: &Path, id: i64, as_draft: bool) -> Result<i64> {
         .map_err(|e| anyhow::anyhow!("clone post_meta {new_id}<={id}: {e}"))?;
     let kind: String = tx
         .query_row(sql!("verify__select_kind_from"), [new_id], |r| r.get(0))?;
-    if let Some(a) = crate::admin::plugins::adapter_for_kind(&kind) {
+    if let Some(a) = crate::plugins::adapter_for_kind(&kind) {
         a.clone_post(&tx, new_id, id)?;
     }
     tx.commit()?;
@@ -1125,7 +1125,7 @@ fn save_post_on(db: &Path, c: &Connection, f: &PostForm) -> Result<i64> {
         )?;
         c.last_insert_rowid()
     };
-    if let Some(e) = crate::admin::plugins::editor_for(&f.kind) {
+    if let Some(e) = crate::plugins::editor_for(&f.kind) {
         (e.save)(c, id, f)?;
     }
     let es: Option<i64> = f.es_post_id.trim().parse().ok();

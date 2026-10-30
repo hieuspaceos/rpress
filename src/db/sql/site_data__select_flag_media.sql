@@ -1,0 +1,1 @@
+SELECT path FROM media WHERE LOWER(alt)=LOWER(?1) OR LOWER(title)=LOWER(?1) LIMIT 1

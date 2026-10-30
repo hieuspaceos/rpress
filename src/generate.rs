@@ -2,7 +2,7 @@
 
 #[allow(unused_imports)]
 use crate::sql;
-use crate::admin::plugins::{self, KindBases};
+use crate::plugins::{self, KindBases};
 use crate::render;
 use anyhow::{Context, Result};
 use rusqlite::Connection;
@@ -53,7 +53,7 @@ pub fn run(db: &Path, templates: &Path, out: &Path, site_url: &str, tour_base: &
     let mut failed = 0u64;
     let mut urls: Vec<(String, String, Option<String>)> = Vec::new(); // loc, kind, lastmod
     let mut mod_stmt = conn
-        .prepare("SELECT modified_at FROM posts WHERE id=?1")?;
+        .prepare(sql!("generate__select_modified_at"))?;
 
     let lang_cfg = crate::lang::config(&conn);
 
@@ -64,16 +64,16 @@ pub fn run(db: &Path, templates: &Path, out: &Path, site_url: &str, tour_base: &
     // HTML instead of re-rendering — fidelity by construction. Table is
     // written by import; absent on dbs imported before this feature.
     let mut harvested_html: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
-    if let Ok(mut s) = conn.prepare("SELECT post_id, html FROM harvested_pages") {
+    if let Ok(mut s) = conn.prepare(sql!("generate__select_harvested_pages")) {
         if let Ok(rows) = s.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))) {
             harvested_html = rows.flatten().collect();
         }
     }
     let mut harvest: std::collections::HashSet<i64> = std::collections::HashSet::new();
     let legacy_origin: String = conn
-        .query_row("SELECT value FROM settings WHERE key='legacy_origin'", [], |r| r.get(0))
+        .query_row(sql!("generate__select_legacy_origin"), [], |r| r.get(0))
         .unwrap_or_default();
-    if let Ok(mut s) = conn.prepare("SELECT post_id FROM harvest_posts") {
+    if let Ok(mut s) = conn.prepare(sql!("generate__select_harvest_posts")) {
         if let Ok(rows) = s.query_map([], |r| r.get(0)) {
             harvest = rows.flatten().collect();
         }
@@ -91,7 +91,7 @@ pub fn run(db: &Path, templates: &Path, out: &Path, site_url: &str, tour_base: &
         let kind_base = plugins::base_for(&kind_bases, kind);
         if let (Some(b), Some(adapter)) = (kind_base, plugins::adapter_for_kind(kind)) {
             let title: String = conn
-                .query_row("SELECT title FROM posts WHERE id=?1", [id], |r| r.get(0))
+                .query_row(sql!("generate__select_post_title"), [id], |r| r.get(0))
                 .unwrap_or_default();
             if let Some(display) = adapter.display_slug(&conn, *id, slug, &title) {
                 if display != *slug {
@@ -146,7 +146,7 @@ pub fn run(db: &Path, templates: &Path, out: &Path, site_url: &str, tour_base: &
         } else {
             None
         };
-        match rendered.unwrap_or_else(|| render::render_slug(db, templates, slug, lang, kind, site_url, tour_base)) {
+        match rendered.unwrap_or_else(|| render::render_slug_conn(&conn, templates, slug, lang, kind, site_url, tour_base)) {
             Ok((html, _status, _canonical)) => {
                 atomic_write(&dest, html)?;
                 // sibling index.md — the markdown content-negotiation target
@@ -178,12 +178,12 @@ pub fn run(db: &Path, templates: &Path, out: &Path, site_url: &str, tour_base: &
     // front is emitted by the posts loop as index.html.
     for lang in lang_cfg.langs.iter().filter(|l| *l != &lang_cfg.primary) {
         let rel = PathBuf::from(crate::lang::rel_prefix(&lang_cfg, lang)).join("index.html");
-        match render::render_slug(db, templates, lang, lang, "", site_url, tour_base) {
+        match render::render_slug_conn(&conn, templates, lang, lang, "", site_url, tour_base) {
             Ok((html, _status, _canonical)) => {
                 atomic_write(&out.join(&rel), html)?;
                 written += 1;
                 let lastmod: Option<String> = conn
-                    .query_row("SELECT MAX(modified_at) FROM posts WHERE lang=?1 AND kind='page'", [lang], |r| r.get(0))
+                    .query_row(sql!("generate__select_max_modified_page_lang"), [lang], |r| r.get(0))
                     .ok();
                 urls.push((format!("{}{}", site_url.trim_end_matches('/'), crate::lang::page_path(&lang_cfg, lang, "page", "", None)), "page".into(), lastmod));
             }
@@ -219,7 +219,7 @@ pub fn run(db: &Path, templates: &Path, out: &Path, site_url: &str, tour_base: &
             .collect();
         let archive_lastmod: Option<String> = conn
             .query_row(
-                "SELECT MAX(modified_at) FROM posts WHERE status='publish'",
+                sql!("generate__select_max_modified_published"),
                 [],
                 |r| r.get(0),
             )
@@ -229,7 +229,7 @@ pub fn run(db: &Path, templates: &Path, out: &Path, site_url: &str, tour_base: &
             let rel = PathBuf::from(format!("{path}/index.html"));
             let dest = out.join(&rel);
             let render_slug_arg = path.trim_matches('/');
-            match render::render_slug(db, templates, render_slug_arg, lang, "archive", site_url, tour_base) {
+            match render::render_slug_conn(&conn, templates, render_slug_arg, lang, "archive", site_url, tour_base) {
                 Ok((html, _status, _canonical)) => {
                     atomic_write(&dest, html)?;
                     written += 1;
@@ -277,7 +277,7 @@ pub fn run(db: &Path, templates: &Path, out: &Path, site_url: &str, tour_base: &
     }
     // Full clean build ⇒ every pending widget edit is now published.
     conn.execute(
-        "INSERT OR REPLACE INTO settings(key, value) VALUES('widgets_dirty', '0')",
+        sql!("generate__upsert_widgets_dirty"),
         [],
     )?;
     Ok(())
@@ -302,7 +302,7 @@ pub(crate) fn rel_path_with_cfg(cfg: &crate::lang::LangConfig, id: i64, front: i
 fn post_out_rel(conn: &Connection, post_id: i64, kind_bases: &KindBases) -> Result<PathBuf> {
     let (slug, lang, kind): (String, String, String) = conn
         .query_row(
-            "SELECT slug, lang, kind FROM posts WHERE id=?1",
+            sql!("generate__select_slug_lang_kind"),
             [post_id],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
@@ -315,7 +315,7 @@ fn post_out_rel(conn: &Connection, post_id: i64, kind_bases: &KindBases) -> Resu
     let wslug = plugins::adapter_for_kind(&kind)
         .and_then(|a| {
             let title: String = conn
-                .query_row("SELECT title FROM posts WHERE id=?1", [post_id], |r| r.get(0))
+                .query_row(sql!("generate__select_post_title"), [post_id], |r| r.get(0))
                 .unwrap_or_default();
             a.display_slug(conn, post_id, &slug, &title)
         })
@@ -344,11 +344,7 @@ pub(crate) fn term_out_paths(
     // term → languages of the published posts carrying it (shared
     // taxonomies like category/post_tag serve both).
     let term_langs = |tax: &str, slug: &str| -> Vec<String> {
-        conn.prepare(
-            "SELECT DISTINCT p.lang FROM posts p JOIN post_terms pt \
-             ON pt.post_id=p.id WHERE pt.taxonomy=?1 COLLATE NOCASE \
-             AND pt.slug=?2 AND p.status='publish'",
-        )
+        conn.prepare(sql!("generate__select_term_post_langs"))
         .and_then(|mut s| {
             let langs = s
                 .query_map(rusqlite::params![tax, slug], |r| r.get::<_, String>(0))?
@@ -363,18 +359,18 @@ pub(crate) fn term_out_paths(
     if tax_l == "category" || tax_l == "post_tag" {
         let mut langs = term_langs(tax, slug);
         if langs.is_empty() {
-            langs.push(if crate::admin::plugins::theme_traveltour::cat_path_is_es(conn, slug) {
+            langs.push(if crate::plugins::theme_traveltour::cat_path_is_es(conn, slug) {
                 "es".into()
             } else {
                 "fr".into()
             });
         }
-        let tag_base = crate::admin::plugins::theme_traveltour::tag_base(conn);
+        let tag_base = crate::plugins::theme_traveltour::tag_base(conn);
         for lang in langs {
             let prefix = crate::lang::rel_prefix(lang_cfg, &lang);
             let prefix = if prefix.is_empty() { String::new() } else { format!("{prefix}/") };
             let path = if tax_l == "category" {
-                format!("{prefix}{}", crate::admin::plugins::theme_traveltour::cat_path(conn, slug))
+                format!("{prefix}{}", crate::plugins::theme_traveltour::cat_path(conn, slug))
             } else {
                 format!("{prefix}{tag_base}/{slug}")
             };
@@ -476,7 +472,7 @@ pub fn invalidate_dependents(
     // The post's own variants (canonical + alias copies).
     if let Ok(rel) = post_out_rel(conn, post_id, &kind_bases) {
         let post_lang: String = conn
-            .query_row("SELECT lang FROM posts WHERE id=?1", [post_id], |r| r.get(0))
+            .query_row(sql!("generate__select_post_lang"), [post_id], |r| r.get(0))
             .unwrap_or_default();
         for v in post_file_variants(&lang_cfg, &rel, &post_lang) {
             del(out.join(&v));
@@ -485,7 +481,7 @@ pub fn invalidate_dependents(
     // Term archives for every term the post carries now + carried before.
     let mut terms: Vec<(String, String)> = extra_terms.to_vec();
     if let Ok(mut s) = conn.prepare(
-        "SELECT DISTINCT taxonomy, slug FROM post_terms WHERE post_id=?1",
+        sql!("generate__select_taxonomy_slug_by_post"),
     ) {
         if let Ok(rows) = s.query_map([post_id], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
@@ -541,7 +537,7 @@ pub fn file_variants_for(conn: &Connection, post_id: i64, tour_base: &str) -> Re
     let rel = post_out_rel(conn, post_id, &plugins::resolve_bases(tour_base))?;
     let lang_cfg = crate::lang::config(conn);
     let post_lang: String = conn
-        .query_row("SELECT lang FROM posts WHERE id=?1", [post_id], |r| r.get(0))
+        .query_row(sql!("generate__select_post_lang"), [post_id], |r| r.get(0))
         .unwrap_or_default();
     Ok(post_file_variants(&lang_cfg, &rel, &post_lang))
 }
@@ -597,7 +593,7 @@ pub fn regen_post(db: &Path, templates: &Path, out: &Path, post_id: i64, tour_ba
     let conn = crate::db::conn(db)?;
     let kind_bases = plugins::resolve_bases(tour_base);
     let status: String = conn
-        .query_row("SELECT status FROM posts WHERE id=?1", [post_id], |r| r.get(0))
+        .query_row(sql!("generate__select_post_status"), [post_id], |r| r.get(0))
         .with_context(|| format!("regen_post: post {post_id} not found"))?;
     let rel = post_out_rel(&conn, post_id, &kind_bases)?;
     let dest = out.join(&rel);
@@ -610,7 +606,7 @@ pub fn regen_post(db: &Path, templates: &Path, out: &Path, post_id: i64, tour_ba
         .query_row(sql!("admin__select_value_from"), [], |r| r.get(0))
         .unwrap_or_else(|_| "/".to_string());
     let (slug, lang, kind): (String, String, String) = conn
-        .query_row("SELECT slug, lang, kind FROM posts WHERE id=?1", [post_id], |r| {
+        .query_row(sql!("generate__select_slug_lang_kind"), [post_id], |r| {
             Ok((r.get(0)?, r.get(1)?, r.get(2)?))
         })?;
     let (html, _status, _canonical) = render::render_slug(db, templates, &slug, &lang, &kind, &site_url, tour_base)?;
@@ -782,7 +778,7 @@ pub(crate) fn write_feeds(out: &Path, conn: &Connection, site: &str, _kind_bases
     // Reading). 0 = full text in <content:encoded>, 1 = excerpt only.
     let use_excerpt: i64 = conn
         .query_row(
-            "SELECT CAST(value AS INT) FROM settings WHERE key='rss_use_excerpt'",
+            sql!("generate__select_rss_use_excerpt"),
             [],
             |r| r.get(0),
         )
@@ -797,11 +793,9 @@ pub(crate) fn write_feeds(out: &Path, conn: &Connection, site: &str, _kind_bases
         }
         let mut items = String::new();
         // Same row set as generate__select_title_slug plus body_html for the
-        // full-text feed variant (inline SQL: src/db/sql is owned elsewhere).
+        // full-text feed variant.
         let mut stmt = conn.prepare(
-            "SELECT title, slug, published_at, excerpt, body_html FROM posts
-             WHERE status='publish' AND kind='post' AND lang=?1
-             ORDER BY published_at DESC LIMIT 20",
+            sql!("generate__select_feed_posts"),
         )?;
         let rows = stmt.query_map([lang.as_str()], |r| {
             Ok((
@@ -834,7 +828,7 @@ pub(crate) fn write_feeds(out: &Path, conn: &Connection, site: &str, _kind_bases
         let channel_link = xml_esc(&format!("{}{}", site, crate::lang::page_path(&lang_cfg, lang, "page", "", None).trim_end_matches('/')));
         let channel_title = conn
             .query_row(
-                "SELECT value FROM settings WHERE key='site_name' LIMIT 1",
+                sql!("generate__select_site_name"),
                 [],
                 |r| r.get::<_, String>(0),
             )
@@ -944,7 +938,7 @@ pub(crate) fn write_robots(out: &Path, site: &str) -> Result<()> {
 pub(crate) fn write_llms_txt(out: &Path, conn: &Connection, site: &str, kind_bases: &KindBases) -> Result<()> {
     let site = site.trim_end_matches('/');
     let mut stmt = conn.prepare(
-        "SELECT title, slug, lang, kind FROM posts WHERE status='publish' ORDER BY kind, lang, slug",
+        sql!("generate__select_llms_pages"),
     )?;
     let rows = stmt
         .query_map([], |r| {
@@ -959,7 +953,7 @@ pub(crate) fn write_llms_txt(out: &Path, conn: &Connection, site: &str, kind_bas
         .collect::<Vec<_>>();
     let site_name = conn
         .query_row(
-            "SELECT value FROM settings WHERE key='site_name' LIMIT 1",
+            sql!("generate__select_site_name"),
             [],
             |r| r.get::<_, String>(0),
         )

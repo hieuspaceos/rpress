@@ -12,9 +12,15 @@ use std::path::{Path, PathBuf};
 /// Create a backup archive for the site whose workdir is `work/<site>`.
 /// Returns the archive path. `env_file` may be empty → env skipped.
 pub fn run_backup(work: &Path, env_file: &Path, keep: usize) -> Result<PathBuf> {
+    run_backup_db(work, &work.join("rpress.db"), env_file, keep)
+}
+
+/// `run_backup` with the DB path explicit — `serve --db` accepts any
+/// filename, so callers that know the real path pass it instead of
+/// assuming `rpress.db`.
+pub fn run_backup_db(work: &Path, db: &Path, env_file: &Path, keep: usize) -> Result<PathBuf> {
     let keep = keep.max(1); // keep=0 would delete the archive just made
-    let db = work.join("rpress.db");
-    anyhow::ensure!(db.is_file(), "no rpress.db at {}", db.display());
+    anyhow::ensure!(db.is_file(), "no database at {}", db.display());
     let dir = work.join("backups");
     std::fs::create_dir_all(&dir)?;
 
@@ -46,6 +52,10 @@ pub fn run_backup(work: &Path, env_file: &Path, keep: usize) -> Result<PathBuf> 
     let archive = dir.join(&name);
     let out = std::process::Command::new("tar")
         .args(["-chzf"]).arg(&archive)
+        // www/bridge/ is disposable spawn state (wp-config.php with nonce
+        // salts, bridge-token, .secret-*) — never a backup artifact, and
+        // dereferencing it would embed a whole WP tree per archive.
+        .arg("--exclude=./www/bridge")
         .arg("-C").arg(&stage)
         .arg(".")
         .output().context("spawn tar")?;

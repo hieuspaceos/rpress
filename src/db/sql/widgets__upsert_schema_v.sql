@@ -1,0 +1,1 @@
+INSERT OR REPLACE INTO settings(key, value) VALUES('widgets_schema_v', ?1)

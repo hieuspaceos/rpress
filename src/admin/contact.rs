@@ -675,7 +675,7 @@ pub(crate) async fn inbox_export(
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
     let day: String = crate::db::conn(&sc.db).ok()
-        .and_then(|c| c.query_row("SELECT strftime('%Y%m%d','now','localtime')", [], |r| r.get(0)).ok())
+        .and_then(|c| c.query_row(sql!("admin__select_today_ymd"), [], |r| r.get(0)).ok())
         .unwrap_or_default();
     let base = if f.kind == "review" { "reviews" } else { "inbound-messages" };
     (

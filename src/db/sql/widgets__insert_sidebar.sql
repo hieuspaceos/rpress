@@ -1,0 +1,1 @@
+INSERT INTO sidebars(id, name, lang) VALUES(?1, ?2, ?3)

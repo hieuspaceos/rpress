@@ -1,0 +1,1 @@
+SELECT title, slug, lang, kind FROM posts WHERE status='publish' ORDER BY kind, lang, slug

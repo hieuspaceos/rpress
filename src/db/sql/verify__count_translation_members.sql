@@ -1,0 +1,1 @@
+SELECT COUNT(*) FROM post_translation_members

@@ -1,0 +1,1 @@
+INSERT INTO post_meta VALUES(7,'a','third')

@@ -1,0 +1,1 @@
+SELECT id, name FROM sidebars ORDER BY rowid

@@ -1,0 +1,1 @@
+SELECT lang FROM widgets LIMIT 0

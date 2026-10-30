@@ -48,7 +48,8 @@ pub fn run(db: &Path, templates: &Path, slug: &str, out: &Path, site_url: &str, 
 /// import keeps FR+ES rows sharing a slug, e.g. `bun-bo-hue`): `lang` is the
 /// resolved request language — matched exactly, publish-only; `kind=""`
 /// leaves the kind axis open. Archive dispatches go through the term rules
-/// below.
+/// below. `render_slug` opens its own connection; bulk callers
+/// (generate/verify) use `render_slug_conn` on a shared one.
 pub fn render_slug(
     db: &Path,
     templates: &Path,
@@ -59,7 +60,19 @@ pub fn render_slug(
     tour_base: &str,
 ) -> Result<(String, String, String)> {
     let conn = crate::db::conn(db)?;
-    let lang_cfg = crate::lang::config(&conn);
+    render_slug_conn(&conn, templates, slug, lang, kind, site_url, tour_base)
+}
+
+pub fn render_slug_conn(
+    conn: &rusqlite::Connection,
+    templates: &Path,
+    slug: &str,
+    lang: &str,
+    kind: &str,
+    site_url: &str,
+    tour_base: &str,
+) -> Result<(String, String, String)> {
+    let lang_cfg = crate::lang::config(conn);
     let row: Option<(
         i64,
         String,
@@ -89,7 +102,7 @@ pub fn render_slug(
         .optional()?;
 
     // post lookup missed → term archives + ES-front aliases.
-    let Some((id, lang, title, body_json, seo_title, seo_desc, kind, status)) = row else {
+    let Some((id, lang, title, body_json, seo_title, seo_desc, row_kind, status)) = row else {
         let clean = slug.trim_matches('/');
         // "{lang}" / "{lang}/" → that language's front page.
         let (alang_s, path) = if clean.is_empty() { (lang.to_string(), "") } else { crate::lang::split_path(&lang_cfg, clean) };
@@ -110,7 +123,7 @@ pub fn render_slug(
         let alang = alang_s.as_str();
         let first = path.split('/').next().unwrap_or("");
         let leaf = path.rsplit('/').next().unwrap_or("");
-        let tag_base = crate::admin::plugins::theme_traveltour::tag_base(&conn);
+        let tag_base = crate::plugins::theme_traveltour::tag_base(&conn);
         let term = match first {
             f if f == tag_base => crate::render_archive::term_by_path(&conn, "post_tag", leaf),
             "category" => crate::render_archive::term_by_path(&conn, "category", leaf),
@@ -121,7 +134,7 @@ pub fn render_slug(
         };
         if let Some(term) = term {
             let canonical = term_canonical_path(&conn, &lang_cfg, &term, alang);
-            let ctx = crate::admin::plugins::RenderCtx {
+            let ctx = crate::plugins::RenderCtx {
                 slug: slug.to_string(),
                 lang: alang.to_string(),
                 title: term.name.clone(),
@@ -140,7 +153,7 @@ pub fn render_slug(
         if !leaf.is_empty() {
             if let Some(term) = crate::render_archive::term_by_path(&conn, "category", leaf) {
                 let canonical = term_canonical_path(&conn, &lang_cfg, &term, alang);
-                let ctx = crate::admin::plugins::RenderCtx {
+                let ctx = crate::plugins::RenderCtx {
                     slug: slug.to_string(),
                     lang: alang.to_string(),
                     title: term.name.clone(),
@@ -194,7 +207,13 @@ pub fn render_slug(
         }
         anyhow::bail!("slug not found: {slug}");
     };
-    let h = render_row(&conn, templates, id, slug, lang, title, body_json, seo_title, seo_desc, kind, site_url, tour_base)?;
+    // kind="" on the miss path means "any kind" — but only kinds with a
+    // registered KindDef are publicly routable; data-only kinds
+    // (site-review, ml-slider/ml-slide) must not become pages.
+    if kind.is_empty() && crate::plugins::kind_def(&row_kind).is_none() {
+        anyhow::bail!("kind not publicly routable: {row_kind}");
+    }
+    let h = render_row(&conn, templates, id, slug, lang, title, body_json, seo_title, seo_desc, row_kind, site_url, tour_base)?;
     // Final-stage origin rewrite: element option values, menus, chrome and
     // any other imported markup may carry the source domain — normalize it
     // here so no render path can leak it (filter_content alone missed them).
@@ -212,7 +231,7 @@ pub fn render_slug(
 pub(crate) fn post_canonical_path(conn: &Connection, id: i64, tour_base: &str) -> Option<String> {
     let (slug, lang, kind, title): (String, String, String, String) = conn
         .query_row(
-            "SELECT slug, lang, kind, title FROM posts WHERE id=?1",
+            sql!("render__select_slug_lang_kind_title"),
             [id],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
@@ -223,10 +242,10 @@ pub(crate) fn post_canonical_path(conn: &Connection, id: i64, tour_base: &str) -
     }
     // Adapter-owned kinds canonicalize their slug (display_slug); core
     // kinds use the stored slug verbatim.
-    let wslug = crate::admin::plugins::adapter_for_kind(&kind)
+    let wslug = crate::plugins::adapter_for_kind(&kind)
         .and_then(|a| a.display_slug(conn, id, &slug, &title))
         .unwrap_or(slug);
-    let base = crate::admin::plugins::kind_url_base(tour_base, &kind);
+    let base = crate::plugins::kind_url_base(tour_base, &kind);
     Some(crate::lang::page_path(&cfg, &lang, &kind, &wslug, base.as_deref()))
 }
 
@@ -243,9 +262,9 @@ fn term_canonical_path(
 ) -> String {
     let t = term.taxonomy.to_lowercase();
     let base = if t == "category" {
-        crate::admin::plugins::theme_traveltour::cat_path(conn, &term.slug)
+        crate::plugins::theme_traveltour::cat_path(conn, &term.slug)
     } else if t == "post_tag" {
-        format!("{}/{}", crate::admin::plugins::theme_traveltour::tag_base(conn), term.slug)
+        format!("{}/{}", crate::plugins::theme_traveltour::tag_base(conn), term.slug)
     } else {
         format!("{t}/{}", term.slug)
     };
@@ -289,9 +308,9 @@ pub(crate) fn apply_navx(
                        taxonomies stay {tax}/{slug}). */
                     let t = tax.to_lowercase();
                     let base = if t == "category" {
-                        crate::admin::plugins::theme_traveltour::cat_path(conn, s)
+                        crate::plugins::theme_traveltour::cat_path(conn, s)
                     } else if t == "post_tag" {
-                        format!("{}/{}", crate::admin::plugins::theme_traveltour::tag_base(conn), s)
+                        format!("{}/{}", crate::plugins::theme_traveltour::tag_base(conn), s)
                     } else {
                         format!("{t}/{s}")
                     };
@@ -473,15 +492,13 @@ fn render_row(
     post.insert("id".into(), json!(id));
     post.insert("title".into(), json!(title));
     let body_html: String = conn
-        .query_row("SELECT COALESCE(body_html,'') FROM posts WHERE id=?1", [id], |r| {
+        .query_row(sql!("render__select_body_html"), [id], |r| {
             r.get(0)
         })
         .unwrap_or_default();
     post.insert("body_html".into(), json!(body_html));
     {
-        let mut mstmt = conn.prepare(
-            "SELECT DISTINCT meta_key, meta_value FROM post_meta WHERE post_id=?1 AND meta_key NOT LIKE '\\_%' ESCAPE '\\'",
-        )?;
+        let mut mstmt = conn.prepare(sql!("render__select_public_meta"))?;
         let mrows = mstmt.query_map([id], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
         })?;
@@ -500,8 +517,8 @@ fn render_row(
 
     // Adapter-owned kinds get their full single-page scaffolding from the
     // owning plugin; built-in kinds (post) keep dedicated core modules.
-    if let Some(adapter) = crate::admin::plugins::adapter_for_kind(&kind) {
-        let ctx = crate::admin::plugins::RenderCtx {
+    if let Some(adapter) = crate::plugins::adapter_for_kind(&kind) {
+        let ctx = crate::plugins::RenderCtx {
             slug: slug.to_string(),
             lang: lang.clone(),
             title: title.clone(),
@@ -544,7 +561,7 @@ fn render_row(
     if kind == "page" {
         let page_opts_raw: String = conn
             .query_row(
-                "SELECT COALESCE(meta_value,'') FROM post_meta WHERE post_id=?1 AND meta_key='gdlr-core-page-option'",
+                sql!("render__select_page_option"),
                 [id],
                 |r| r.get(0),
             )
@@ -585,7 +602,7 @@ fn render_row(
 
     let lang_cfg = crate::lang::config(conn);
     let mut alternates = translation_urls(conn, id, site_url, tour_base)?;
-    let mut canonical = crate::lang::page_url(&lang_cfg, site_url, &lang, kind.as_str(), slug, crate::admin::plugins::kind_url_base(tour_base, &kind).as_deref());
+    let mut canonical = crate::lang::page_url(&lang_cfg, site_url, &lang, kind.as_str(), slug, crate::plugins::kind_url_base(tour_base, &kind).as_deref());
     // Front pages: WP permalinks them at the language root regardless of
     // stored slug; generate one alternate root per configured language.
     if lang_cfg.langs.iter().any(|l| front_id_for_lang(conn, l) == Some(id)) {
@@ -600,7 +617,7 @@ fn render_row(
     // page templates just wrap body; we inject into base content block directly
     let site_name = conn
         .query_row(
-            "SELECT value FROM settings WHERE key='site_name' LIMIT 1",
+            sql!("render__select_site_name"),
             [],
             |r| r.get::<_, String>(0),
         )
@@ -682,10 +699,7 @@ fn front_id_for_lang(conn: &Connection, lang: &str) -> Option<i64> {
         // Translation-group member of the primary front in the target lang.
         let grouped: Option<i64> = conn
             .query_row(
-                "SELECT m2.post_id FROM post_translation_members m \
-                 JOIN post_translation_members m2 ON m2.group_id=m.group_id \
-                 JOIN posts p ON p.id=m2.post_id AND p.status='publish' \
-                 WHERE m.post_id=?1 AND m2.lang=?2 LIMIT 1",
+                sql!("render__select_front_group_member"),
                 rusqlite::params![front, lang],
                 |r| r.get(0),
             )
@@ -698,10 +712,7 @@ fn front_id_for_lang(conn: &Connection, lang: &str) -> Option<i64> {
         // Legacy fr/es pair table — admin translation links land here too.
         let paired: Option<i64> = conn
             .query_row(
-                "SELECT p.id FROM post_translations t \
-                 JOIN posts p ON p.id=CASE WHEN t.fr_post_id=?1 THEN t.es_post_id ELSE t.fr_post_id END \
-                 WHERE p.lang=?2 AND p.status='publish' \
-                   AND (t.fr_post_id=?1 OR t.es_post_id=?1) LIMIT 1",
+                sql!("render__select_front_pair"),
                 rusqlite::params![front, lang],
                 |r| r.get(0),
             )
@@ -715,7 +726,7 @@ fn front_id_for_lang(conn: &Connection, lang: &str) -> Option<i64> {
     // Generic fallback: Polylang often keeps the localized static front as
     // a publish page whose slug is a trashed artifact.
     conn.query_row(
-        "SELECT id FROM posts WHERE lang=?1 AND kind='page' AND slug LIKE '%__trashed%' AND status='publish' ORDER BY id LIMIT 1",
+        sql!("render__select_trashed_front"),
         [lang],
         |r| r.get::<_, i64>(0),
     )
@@ -770,7 +781,7 @@ fn render_by_id(
     // trashed artifact; pass it through for the old-slug machinery and let
     // render_row's front-page special-case fix the canonical.
     let slug: String = conn
-        .query_row("SELECT slug FROM posts WHERE id=?1", [id], |r| r.get(0))
+        .query_row(sql!("render__select_slug"), [id], |r| r.get(0))
         .unwrap_or_default();
     let h = render_row(conn, templates, id, &slug, lang, title, body_json, seo_title, seo_desc, kind, site_url, tour_base)?;
     Ok((crate::render_post::rewrite_origin(&h, site_url, conn), status))
@@ -808,9 +819,7 @@ pub(crate) fn translation_canonical(
     // A published sibling in another language holding this exact slug.
     let (id, plang, pkind, pslug): (i64, String, String, String) = conn
         .query_row(
-            "SELECT id, lang, kind, slug FROM posts \
-             WHERE slug=?1 AND lang<>?2 AND (?3='' OR kind=?3) \
-             AND status='publish' LIMIT 1",
+            sql!("render__select_sibling_slug"),
             rusqlite::params![slug, lang, kind],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
@@ -822,10 +831,7 @@ pub(crate) fn translation_canonical(
     // under their display slug (meta-derived), not the stored slug.
     let target = conn
         .query_row(
-            "SELECT m2.post_id, p.lang, p.kind, p.slug FROM post_translation_members m \
-             JOIN post_translation_members m2 ON m2.group_id=m.group_id AND m2.lang=?2 \
-             JOIN posts p ON p.id=m2.post_id AND p.status='publish' \
-             WHERE m.post_id=?1 LIMIT 1",
+            sql!("render__select_group_member"),
             rusqlite::params![id, cfg.primary],
             |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?)),
         )
@@ -835,22 +841,22 @@ pub(crate) fn translation_canonical(
         .map(|(_pid, l, k, s)| (l, k, s))
         .unwrap_or((plang, pkind, pslug));
     let (tlang, tkind, tslug) = target;
-    let url_slug = match crate::admin::plugins::adapter_for_kind(&tkind) {
+    let url_slug = match crate::plugins::adapter_for_kind(&tkind) {
         Some(adapter) => {
             // Adapter-owned kinds permalink under a canonical display slug,
             // not the stored slug — resolve the row first.
             let tid: i64 = conn
-                .query_row("SELECT id FROM posts WHERE slug=?1 AND lang=?2 AND kind=?3 AND status='publish' LIMIT 1",
+                .query_row(sql!("render__select_id_by_slug_lang_kind"),
                     rusqlite::params![tslug, tlang, tkind], |r| r.get(0))
                 .unwrap_or(id);
             let title: String = conn
-                .query_row("SELECT title FROM posts WHERE id=?1", [tid], |r| r.get(0))
+                .query_row(sql!("render__select_title"), [tid], |r| r.get(0))
                 .unwrap_or_default();
             adapter.display_slug(conn, tid, &tslug, &title).unwrap_or(tslug)
         }
         None => tslug,
     };
-    Some(crate::lang::page_url(cfg, "", &tlang, &tkind, &url_slug, crate::admin::plugins::kind_url_base(tour_base, &tkind).as_deref()))
+    Some(crate::lang::page_url(cfg, "", &tlang, &tkind, &url_slug, crate::plugins::kind_url_base(tour_base, &tkind).as_deref()))
 }
 
 /// Admin draft preview (phase 6.1): render any post — including drafts,
@@ -958,11 +964,11 @@ pub(crate) fn env_cache_bust() {
 /// otherwise (or no adapter match — falls back to shared only).
 pub(crate) fn theme_template_dir(conn: &Connection, templates: &Path) -> Option<std::path::PathBuf> {
     let stylesheet = conn
-        .query_row("SELECT value FROM settings WHERE key='stylesheet'", [], |r| {
+        .query_row(sql!("render__select_stylesheet"), [], |r| {
             r.get::<_, String>(0)
         })
         .unwrap_or_default();
-    let def = crate::admin::plugins::theme_for_stylesheet(&stylesheet)?;
+    let def = crate::plugins::theme_for_stylesheet(&stylesheet)?;
     // The matched theme's dir only wins when it actually ships base
     // templates — an empty dir (tevily stub until phase 06) falls back
     // to the default theme's bases (traveltour), matching the interim
@@ -1043,7 +1049,7 @@ pub(crate) fn media_map_for(conn: &Connection, ids: &std::collections::HashSet<i
     // Chunk under SQLite's SQLITE_MAX_VARIABLE_NUMBER.
     for chunk in ids.iter().copied().collect::<Vec<_>>().chunks(400) {
         let qs = std::iter::repeat_n("?", chunk.len()).collect::<Vec<_>>().join(",");
-        let q = format!("SELECT id, path, COALESCE(alt,'') FROM media WHERE id IN ({qs})");
+        let q = format!("{}WHERE id IN ({qs})", sql!("render__select_id_path_2"));
         let mut stmt = conn.prepare(&q)?;
         let rows = stmt.query_map(
             rusqlite::params_from_iter(chunk.iter()),
@@ -1061,7 +1067,7 @@ pub(crate) fn media_map_for(conn: &Connection, ids: &std::collections::HashSet<i
 /// the id and would otherwise materialize a whole map (lazy media_map).
 pub(crate) fn media_lookup(conn: &Connection, id: i64) -> Option<(String, String)> {
     conn.query_row(
-        "SELECT path, COALESCE(alt,'') FROM media WHERE id=?1",
+        sql!("render__select_media_path_alt"),
         [id],
         |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
     )
@@ -1277,7 +1283,7 @@ mod exposure_tests {
 
     fn post(c: &Connection, id: i64, slug: &str, lang: &str, status: &str, kind: &str) {
         c.execute(
-            "INSERT INTO posts(id, slug, lang, title, body_json, status, kind) VALUES(?1,?2,?3,'t','[]',?4,?5)",
+            sql!("render__test_insert_post"),
             rusqlite::params![id, slug, lang, status, kind],
         )
         .unwrap();
@@ -1287,25 +1293,23 @@ mod exposure_tests {
     fn front_id_prefers_group_member_and_is_deterministic() {
         let c = memdb();
         c.execute_batch(
-            "INSERT INTO settings(key,value) VALUES
-             ('languages','fr,es'),('primary_lang','fr'),('page_on_front','10');",
+            sql!("render__test_seed_settings"),
         )
         .unwrap();
         post(&c, 10, "accueil", "fr", "publish", "page");
         post(&c, 11, "inicio", "es", "publish", "page");
         // Translation group → ES member wins over the __trashed fallback.
         c.execute_batch(
-            "INSERT INTO post_translation_members(group_id,lang,post_id) VALUES('g','fr',10),('g','es',11);
-             INSERT INTO posts(id,slug,lang,title,body_json,status,kind) VALUES(12,'x__trashed','es','t','[]','publish','page'),(13,'y__trashed','es','t','[]','publish','page');",
+            sql!("render__test_seed_group_trashed"),
         )
         .unwrap();
         assert_eq!(front_id_for_lang(&c, "es"), Some(11));
         assert_eq!(front_id_for_lang(&c, "fr"), Some(10));
         // Group gone → legacy pair table → 11.
-        c.execute_batch("DELETE FROM post_translation_members; INSERT INTO post_translations(fr_post_id,es_post_id) VALUES(10,11);").unwrap();
+        c.execute_batch(sql!("render__test_seed_pair")).unwrap();
         assert_eq!(front_id_for_lang(&c, "es"), Some(11));
         // Neither → lowest-id published __trashed page, deterministic.
-        c.execute("DELETE FROM post_translations", []).unwrap();
+        c.execute(sql!("render__test_delete_translations"), []).unwrap();
         assert_eq!(front_id_for_lang(&c, "es"), Some(12));
     }
 
@@ -1313,13 +1317,12 @@ mod exposure_tests {
     fn front_id_skips_unpublished() {
         let c = memdb();
         c.execute_batch(
-            "INSERT INTO settings(key,value) VALUES
-             ('languages','fr,es'),('primary_lang','fr'),('page_on_front','10');",
+            sql!("render__test_seed_settings"),
         )
         .unwrap();
         post(&c, 10, "accueil", "fr", "draft", "page");
         post(&c, 11, "inicio", "es", "draft", "page");
-        c.execute("INSERT INTO post_translation_members(group_id,lang,post_id) VALUES('g','fr',10),('g','es',11)", []).unwrap();
+        c.execute(sql!("render__test_insert_group"), []).unwrap();
         assert_eq!(front_id_for_lang(&c, "fr"), None);
         // Draft group member must not leak; no publish __trashed page → None.
         assert_eq!(front_id_for_lang(&c, "es"), None);

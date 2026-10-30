@@ -126,6 +126,12 @@ pub(crate) async fn api_posts(State(app): State<App>, headers: HeaderMap) -> Res
 /// s=search, sort=date|date_asc|title, paged=N.
 /// Persists: `settings.media_view_{user_id}` (list|grid) and
 /// `settings.media_screen_{user_id}` ({"hide":[cols],"per_page":n}).
+/// Media columns the Screen Options checkboxes can hide; per-user prefs
+/// persist under `settings.media_screen_{user_id}` — written only by the
+/// POST handler (a mutating preference must not ride GET or carry the
+/// CSRF token in a URL).
+const MEDIA_COLS: [&str; 5] = ["author", "parent", "date", "size", "dimensions"];
+
 pub(crate) async fn media_page(State(app): State<App>, headers: HeaderMap, Query(q): Query<HashMap<String, String>>) -> Response {
     let Ok((s, sc)) = need_auth(&app, &headers) else {
         return Redirect::to("/admin/login").into_response();
@@ -184,22 +190,7 @@ pub(crate) async fn media_page(State(app): State<App>, headers: HeaderMap, Query
             .join("&")
     };
 
-    // Screen Options (GET form like edit-tags.php): `screen_options=1` marks a
-    // submit so absent `hide_*` checkboxes mean "hidden". Columns default
-    // visible; per_page clamps to a sane WP range.
-    const MEDIA_COLS: [&str; 5] = ["author", "parent", "date", "size", "dimensions"];
     let screen_key = format!("media_screen_{}", s.user_id);
-    if q.get("screen_options").is_some() {
-        let hide: Vec<String> = MEDIA_COLS
-            .iter()
-            .filter(|c| !q.contains_key(&format!("hide_{c}")))
-            .map(|c| c.to_string())
-            .collect();
-        let per = q.get("per_page").and_then(|v| v.parse::<i64>().ok()).unwrap_or(20).clamp(1, 500);
-        let json = serde_json::json!({"hide": hide, "per_page": per}).to_string();
-        let _ = crud::comments::setting_set(&sc.db, &screen_key, &json);
-        return Redirect::to(&format!("/admin/media?{}", mqs(&[]))).into_response();
-    }
     let (hide_cols, per_page): (Vec<String>, i64) = crud::comments::setting_get(&sc.db, &screen_key)
         .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
         .map(|v| {
@@ -391,7 +382,7 @@ pub(crate) async fn media_page(State(app): State<App>, headers: HeaderMap, Query
     // row Edit links can open it via `att_open(id)`.
     let modal = grid_modal(&rows, &s.csrf);
     let list_markup = format!(
-        r##"<form method="get" action="/admin/media">
+        r##"<form method="post" action="/admin/media">
 <input type="hidden" name="mode" value="list">
 <div class="tablenav top">
 <div class="alignleft actions bulkactions">
@@ -435,7 +426,7 @@ pub(crate) async fn media_page(State(app): State<App>, headers: HeaderMap, Query
 
     let content = if mode == "grid" {
         format!(
-            r##"<form method="get" action="/admin/media">
+            r##"<form method="post" action="/admin/media">
 <input type="hidden" name="mode" value="grid">
 <div class="tablenav top">
 {view_switch}
@@ -554,10 +545,11 @@ fn media_screen_meta(hide: &[String], per_page: i64, csrf: &str, mime: &str, mon
             if on { " checked" } else { "" }
         )
     };
+
     format!(
         r#"<div id="screen-meta" class="metabox-prefs">
 <div id="screen-options-wrap" class="hidden" tabindex="-1" aria-label="Screen Options Tab">
-<form id="adv-settings" method="get" action="/admin/media">
+<form id="adv-settings" method="post" action="/admin/media">
 <input type="hidden" name="screen_options" value="1">
 <input type="hidden" name="csrf" value="{csrf}">
 <input type="hidden" name="type" value="{mime}">
@@ -599,6 +591,35 @@ fn media_screen_meta(hide: &[String], per_page: i64, csrf: &str, mime: &str, mon
         cb_dimensions = cb("dimensions", "Dimensions"),
         per_page = per_page,
     )
+}
+
+/// `POST /admin/media` — Screen Options persist (hide_* + per_page). Moved
+/// off GET: a mutating preference must not ride the CSRF-exempt GET path
+/// or carry the token in a URL. `hide_<col>` checkbox names are dynamic so
+/// the form decodes as a raw map.
+pub(crate) async fn media_screen_options(
+    State(app): State<App>,
+    headers: HeaderMap,
+    axum::extract::Form(f): axum::extract::Form<HashMap<String, String>>,
+) -> Response {
+    let Ok((s, sc)) = need_auth(&app, &headers) else {
+        return Redirect::to("/admin/login").into_response();
+    };
+    if let Err(r) = check_csrf(&s, f.get("csrf").map(String::as_str).unwrap_or("")) {
+        return r;
+    }
+    if f.get("screen_options").map(String::as_str) != Some("1") {
+        return Redirect::to("/admin/media").into_response();
+    }
+    let hide: Vec<String> = MEDIA_COLS
+        .iter()
+        .filter(|c| !f.contains_key(&format!("hide_{c}")))
+        .map(|c| c.to_string())
+        .collect();
+    let per = f.get("per_page").and_then(|v| v.parse::<i64>().ok()).unwrap_or(20).clamp(1, 500);
+    let json = serde_json::json!({"hide": hide, "per_page": per}).to_string();
+    let _ = crud::comments::setting_set(&sc.db, &format!("media_screen_{}", s.user_id), &json);
+    Redirect::to("/admin/media").into_response()
 }
 
 /// WP `/wp-admin/media-new.php` — multi-file drop zone page.

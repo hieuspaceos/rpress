@@ -185,6 +185,18 @@ pub(crate) fn setting(c: &Connection, key: &str, default: &str) -> String {
         .unwrap_or_else(|_| default.to_string())
 }
 
+/// Link count for the `comment_max_links` moderation check — a
+/// deterministic detector, not the old `matches("http")` substring (which
+/// also counted "httpsource" and missed protocol-relative / bare-www
+/// links). Counts `http://`, `https://`, `//` starting a token (not inside
+/// a scheme or mid-word), and `www.` bounded by whitespace/punctuation.
+fn count_links(body: &str) -> usize {
+    static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(?i)https?://|(?:^|[^\w:/])//|(?:^|[^\w.])www\.").unwrap()
+    });
+    RE.find_iter(body).count()
+}
+
 /// Public comment intake (`POST /comment`). Discussion settings are
 /// enforced here — the same order WP runs them in `wp_new_comment` /
 /// `wp_allow_comment`: disallowed → trash, moderation keys / max links →
@@ -306,7 +318,7 @@ pub fn submit_comment(db: &Path, fields: &HashMap<String, String>, ip: &str) -> 
     let max_links: usize = setting(&c, "comment_max_links", "2")
         .parse()
         .unwrap_or(2);
-    let link_count = body.matches("http").count();
+    let link_count = count_links(&body);
 
     let status = if hits(&setting(&c, "disallowed_keys", "")) {
         "trash"
@@ -470,7 +482,7 @@ pub fn moderate(db: &Path, id: i64, action: &str) -> Result<i64> {
                         )?;
                         let next = tx.last_insert_rowid();
                         tx.execute(
-                            "UPDATE posts SET slug=?1 WHERE id=?2",
+                            sql!("intake__update_post_slug"),
                             params![format!("review-{next}"), next],
                         )?;
                         if post_id > 0 {
@@ -507,9 +519,23 @@ fn resolve_page(c: &Connection, page: &str) -> Result<i64> {
     scoped.or_else(|_| {
         // forms that post a bare slug (no /es prefix) still resolve — fall
         // back to the unscoped lookup only when the scoped one missed.
-        c.query_row("SELECT id FROM posts WHERE slug=?1 AND status='publish' LIMIT 1", [slug], |r| {
+        c.query_row(sql!("intake__select_id_published_slug"), [slug], |r| {
             r.get(0)
         })
     })
     .map_err(|_| anyhow::anyhow!("unknown page"))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn counts_real_links() {
+        assert_eq!(super::count_links("//evil.com/x"), 1);
+        assert_eq!(super::count_links("www.evil.com"), 1);
+        assert_eq!(super::count_links("see https://a.com and http://b.com"), 2);
+        // no false positives: prose mentions of "http" are not links
+        assert_eq!(super::count_links("read httpsource docs"), 0);
+        assert_eq!(super::count_links("a//b sub.www.com"), 0);
+        assert_eq!(super::count_links("no links here"), 0);
+    }
 }

@@ -1182,8 +1182,6 @@ pub(crate) async fn reply_save(
 
 /// POST /admin/comments/screen — Screen Options "Apply": per-user column
 /// visibility as JSON in `settings.comment_screen_{user_id}`.
-/// Route pending: `post("/admin/comments/screen")` registered by the router owner.
-#[allow(dead_code)]
 pub(crate) async fn screen_options(
     State(app): State<App>,
     headers: HeaderMap,

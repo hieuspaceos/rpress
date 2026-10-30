@@ -1,0 +1,1 @@
+SELECT value FROM settings WHERE key='legacy_origin'

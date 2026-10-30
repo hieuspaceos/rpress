@@ -76,7 +76,7 @@ pub(crate) const SIDEBARS: &[Sidebar] = &[];
 /// `after` wrappers and are treated as const by the admin screen.
 pub(crate) fn all_sidebars() -> Vec<Sidebar> {
     let mut out: Vec<Sidebar> = SIDEBARS.to_vec();
-    for a in crate::admin::plugins::adapters() {
+    for a in crate::plugins::adapters() {
         out.extend_from_slice(a.sidebars());
     }
     out
@@ -114,7 +114,7 @@ impl WidgetTypes {
         static MERGED: std::sync::LazyLock<Vec<(&'static str, &'static str)>> =
             std::sync::LazyLock::new(|| {
                 let mut v = CORE_WIDGET_TYPES.to_vec();
-                for a in crate::admin::plugins::adapters() {
+                for a in crate::plugins::adapters() {
                     v.extend_from_slice(a.widget_types());
                 }
                 v
@@ -185,7 +185,7 @@ pub(crate) fn widget_fields(typ: &str) -> &'static [FieldSpec] {
         "media_image" => MEDIA_IMAGE,
         "text" | "custom_html" | "html_embed" => HTML_FIELD,
         other => {
-            for a in crate::admin::plugins::adapters() {
+            for a in crate::plugins::adapters() {
                 if let Some(fields) = a.widget_fields(other) {
                     return fields;
                 }
@@ -201,12 +201,7 @@ pub(crate) fn widget_fields(typ: &str) -> &'static [FieldSpec] {
 /// type's counter — `wpcategorieswidget` ≠ `categories`, so a new
 /// categories widget starts at `categories-2`.
 pub(crate) fn next_instance_id(conn: &Connection, typ: &str) -> Result<String> {
-    let mut st = conn.prepare(
-        "SELECT CAST(substr(id, length(?1) + 2) AS INTEGER) FROM widgets
-         WHERE id LIKE (?1 || '-%')
-           AND substr(id, length(?1) + 2) GLOB '[0-9]*'
-           AND CAST(substr(id, length(?1) + 2) AS TEXT) = substr(id, length(?1) + 2)",
-    )?;
+    let mut st = conn.prepare(crate::sql!("widgets__select_instance_nums"))?;
     let max: i64 = st
         .query_map([typ], |r| r.get::<_, i64>(0))?
         .flatten()
@@ -216,7 +211,7 @@ pub(crate) fn next_instance_id(conn: &Connection, typ: &str) -> Result<String> {
     loop {
         let id = format!("{typ}-{n}");
         let taken: bool = conn
-            .query_row("SELECT COUNT(*) FROM widgets WHERE id=?1", [&id], |r| {
+            .query_row(crate::sql!("widgets__count_widget_by_id"), [&id], |r| {
                 r.get::<_, i64>(0)
             })?
             > 0;
@@ -232,7 +227,7 @@ pub(crate) fn next_instance_id(conn: &Connection, typ: &str) -> Result<String> {
 /// /admin/widgets screen enumerate.
 pub(crate) fn list(conn: &Connection) -> Result<Vec<(String, String)>> {
     ensure(conn)?;
-    let mut st = conn.prepare("SELECT id, name FROM sidebars ORDER BY rowid")?;
+    let mut st = conn.prepare(crate::sql!("widgets__select_sidebars"))?;
     let out = st
         .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
         .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -280,7 +275,7 @@ pub(crate) fn ensure(conn: &Connection) -> Result<()> {
     // query per call (called per sidebar render — kept cheap on purpose).
     fn probe(conn: &Connection) -> std::result::Result<(i64, i64), rusqlite::Error> {
         conn.query_row(
-            "SELECT (SELECT COUNT(*) FROM sidebars), (SELECT COUNT(*) FROM widgets)",
+            crate::sql!("widgets__count_sidebars_widgets"),
             [],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
@@ -295,20 +290,20 @@ pub(crate) fn ensure(conn: &Connection) -> Result<()> {
     /* Schema drift: older DBs lack `widgets.lang` (mixed-lang regions
        filter on it). migrate_conn is idempotent — cheap PRAGMA probe,
        ALTER only when the column is missing. */
-    if conn.prepare("SELECT lang FROM widgets LIMIT 0").is_err() {
+    if conn.prepare(crate::sql!("widgets__probe_lang")).is_err() {
         crate::schema::migrate_conn(conn)?;
     }
     if n_sidebars == 0 && n_widgets == 0 {
         let tx = conn.unchecked_transaction()?;
         for s in all_sidebars() {
             tx.execute(
-                "INSERT INTO sidebars(id, name, lang) VALUES(?1, ?2, ?3)",
+                crate::sql!("widgets__insert_sidebar"),
                 rusqlite::params![s.id, s.name, s.lang],
             )?;
         }
         seed_widgets(&tx)?;
         tx.execute(
-            "INSERT OR REPLACE INTO settings(key, value) VALUES('widgets_schema_v', ?1)",
+            crate::sql!("widgets__upsert_schema_v"),
             [SEED_VERSION],
         )?;
         tx.commit()?;
@@ -323,7 +318,7 @@ pub(crate) fn ensure(conn: &Connection) -> Result<()> {
 /// so plugin rows land after core rows in the same sidebar.
 fn seed_widgets(conn: &Connection) -> Result<()> {
     let mut ords: HashMap<&'static str, i64> = HashMap::new();
-    let adapter_seeds = crate::admin::plugins::adapters()
+    let adapter_seeds = crate::plugins::adapters()
         .iter()
         .flat_map(|a| a.seeds().iter());
     for w in SEED_WIDGETS.iter().chain(adapter_seeds) {
@@ -339,8 +334,7 @@ fn seed_widgets(conn: &Connection) -> Result<()> {
             ""
         };
         conn.execute(
-            "INSERT OR IGNORE INTO widgets(id, sidebar_id, type, title, settings_json, ord, lang)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            crate::sql!("widgets__insert_widget"),
             rusqlite::params![w.id, w.sidebar, w.typ, w.title, w.settings, *ord, wlang],
         )?;
         *ord += 1;
@@ -360,7 +354,7 @@ fn seed_widgets(conn: &Connection) -> Result<()> {
 fn upgrade(conn: &Connection) -> Result<()> {
     let done: String = conn
         .query_row(
-            "SELECT value FROM settings WHERE key='widgets_schema_v'",
+            crate::sql!("widgets__select_schema_v"),
             [],
             |r| r.get(0),
         )
@@ -374,17 +368,17 @@ fn upgrade(conn: &Connection) -> Result<()> {
         ("sidebar-archive", "sidebar-archive-fr"),
     ] {
         tx.execute(
-            "UPDATE sidebars SET id=?2 WHERE id=?1 AND NOT EXISTS(SELECT 1 FROM sidebars WHERE id=?2)",
+            crate::sql!("widgets__rename_sidebar"),
             rusqlite::params![old, new],
         )?;
         tx.execute(
-            "UPDATE widgets SET sidebar_id=?2 WHERE sidebar_id=?1",
+            crate::sql!("widgets__move_sidebar_widgets"),
             rusqlite::params![old, new],
         )?;
     }
     for s in all_sidebars() {
         tx.execute(
-            "INSERT OR IGNORE INTO sidebars(id, name, lang) VALUES(?1, ?2, ?3)",
+            crate::sql!("widgets__insert_sidebar_ignore"),
             rusqlite::params![s.id, s.name, s.lang],
         )?;
     }
@@ -395,17 +389,15 @@ fn upgrade(conn: &Connection) -> Result<()> {
     // the stored payload is still byte-identical to the phase-2 seed (an
     // admin-edited fragment stays frozen — never silently overwritten).
     tx.execute(
-        "UPDATE widgets SET type='categories', title='Catégories', settings_json=?2
-         WHERE id='wpcategorieswidget-9' AND settings_json=?1",
+        crate::sql!("widgets__convert_categories"),
         rusqlite::params![LEGACY_CAT9, r#"{"taxonomy": "category", "title": "Catégories", "show_counts": true, "order": ["guide-de-voyage-vietnam", "le-vietnam", "sites-a-explorer"], "children": {"guide-de-voyage-vietnam": ["conseils-pratiques-vietnam", "idees-de-circuit", "ou-dormir", "quand-partir-au-vietnam", "tout-sur-le-visa-vietnam", "voyage-en-asie-du-sud-est"], "idees-de-circuit": ["circuit-au-vietnam", "croisiere", "randonnee-au-vietnam", "top-choses-a-faire-a-voir", "vietnam-en-famille", "voyage-de-luxe-vietnam", "voyage-en-couple-de-noce-vietnam"], "le-vietnam": ["actualites-du-tourisme", "cuisine-vietnamienne", "culture-histoire"], "cuisine-vietnamienne": ["boisson-vietnamienne", "plats-vietnamiens", "recettes-faciles"], "plats-vietnamiens": ["adresses-recommandees"], "sites-a-explorer": ["montagnes-du-nord", "station-balneaire-vietnam", "vietnam-du-centre", "vietnam-du-nord", "vietnam-du-sud", "voyages-au-cambodge"], "montagnes-du-nord": ["bac-ha", "ha-giang", "mai-chau", "mu-cang-chai", "sapa"], "station-balneaire-vietnam": ["ile-de-con-dao", "nha-trang", "phan-thiet", "phu-quoc", "vung-tau"], "vietnam-du-centre": ["da-nang", "hauts-plateaux-vietnam", "hoian", "hue", "quang-binh"], "vietnam-du-nord": ["baie-dhalong", "dien-bien-phu", "hanoi", "ninh-binh", "parc-national-de-cat-ba"], "vietnam-du-sud": ["can-tho", "chau-doc", "delta-du-mekong", "dong-nai", "saigon-ho-chi-minh"], "voyages-au-cambodge": ["angkor-siem-reap", "battambang", "kampot", "phnom-penh"]}}"#],
     )?;
     tx.execute(
-        "UPDATE widgets SET type='tour_list', title='Voyages suggérés', settings_json=?2
-         WHERE id='custom_html-13' AND settings_json=?1",
+        crate::sql!("widgets__convert_tour_list"),
         rusqlite::params![LEGACY_CH13, r#"{"mode": "manual", "manual_ids": [15585, 6416, 6598, 6797, 6607, 6603, 6775, 6624, 6618, 7363, 9280, 7370, 7364, 7007, 6853, 9253, 9285], "count": 17, "title": "Voyages suggérés", "wrapper": "custom_html-13", "inner": "tourmaster-tour-widget-2"}"#],
     )?;
     tx.execute(
-        "INSERT OR REPLACE INTO settings(key, value) VALUES('widgets_schema_v', ?1)",
+        crate::sql!("widgets__upsert_schema_v"),
         [SEED_VERSION],
     )?;
     tx.commit()?;
@@ -414,9 +406,9 @@ fn upgrade(conn: &Connection) -> Result<()> {
 
 /// Phase-2 frozen settings_json payloads (verbatim). The upgrade UPDATEs
 /// guard on these so admin-modified fragments are never rewritten.
-const LEGACY_CAT9: &str = include_str!("admin/plugins/theme_traveltour/seed/wpcategorieswidget_9_legacy.json");
+const LEGACY_CAT9: &str = include_str!("plugins/theme_traveltour/seed/wpcategorieswidget_9_legacy.json");
 
-const LEGACY_CH13: &str = include_str!("admin/plugins/theme_traveltour/seed/custom_html_13_legacy.json");
+const LEGACY_CH13: &str = include_str!("plugins/theme_traveltour/seed/custom_html_13_legacy.json");
 
 /// Rows of a sidebar in display order: (id, type, title, settings_json).
 /// `lang` filters the Polylang scope — a tagged row renders only on its
@@ -424,8 +416,7 @@ const LEGACY_CH13: &str = include_str!("admin/plugins/theme_traveltour/seed/cust
 /// single-tour share one region id across languages).
 fn rows(conn: &Connection, sidebar_id: &str, lang: &str) -> Result<Vec<(String, String, String, String)>> {
     let mut st = conn.prepare(
-        "SELECT id, type, title, settings_json FROM widgets \
-         WHERE sidebar_id=?1 AND (lang=?2 OR lang='') ORDER BY ord",
+        crate::sql!("widgets__select_sidebar_rows"),
     )?;
     let out = st
         .query_map([sidebar_id, lang], |r| {
@@ -534,9 +525,9 @@ pub(crate) type WidgetRender =
 /// that declared `typ` in `widget_types()` owns its renderer; core types
 /// return `None` (handled by the match in `render_widget`).
 fn plugin_widget_render(typ: &str) -> Option<WidgetRender> {
-    for a in crate::admin::plugins::adapters() {
+    for a in crate::plugins::adapters() {
         if a.widget_types().iter().any(|(t, _)| *t == typ) {
-            return crate::admin::plugins::tourmaster::widgets::plugin_render_for(typ);
+            return crate::plugins::tourmaster::widgets::plugin_render_for(typ);
         }
     }
     None
@@ -655,7 +646,7 @@ fn category_tree(
         } else {
             // Hierarchy of record: the theme adapter's taxonomy map
             // (terms.parent_id is NULL on every row).
-            crate::admin::plugins::theme_traveltour::cat_children(conn, slug)
+            crate::plugins::theme_traveltour::cat_children(conn, slug)
         }
     };
     let display = |slug: &str| -> Option<String> {
@@ -817,7 +808,7 @@ fn render_categories_widget(
         // The node slug slot carries the full link: for 'category' the
         // hierarchical cat_path, for other taxonomies /{tax}/{slug}/.
         let href = if taxonomy == "category" {
-            format!("{site_url}{prefix}/{}/", crate::admin::plugins::theme_traveltour::cat_path(conn, &n.slug))
+            format!("{site_url}{prefix}/{}/", crate::plugins::theme_traveltour::cat_path(conn, &n.slug))
         } else {
             format!("{site_url}{prefix}/{}/{}/", taxonomy.to_lowercase(), n.slug)
         };
@@ -879,7 +870,7 @@ fn emit_tree(
     out.push_str(&format!("{ul_indent}<ul class=\"children\">\n"));
     for c in &parent.children {
         let href = if taxonomy == "category" {
-            format!("{site_url}{prefix}/{}/", crate::admin::plugins::theme_traveltour::cat_path(conn, &c.slug))
+            format!("{site_url}{prefix}/{}/", crate::plugins::theme_traveltour::cat_path(conn, &c.slug))
         } else {
             format!("{site_url}{prefix}/{}/{}/", taxonomy.to_lowercase(), c.slug)
         };

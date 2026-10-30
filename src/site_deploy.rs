@@ -57,9 +57,10 @@ pub fn run(a: DeployArgs) -> Result<()> {
         None,
     )?;
     let domain = domain.trim_end_matches('/').to_string();
-    if !domain.starts_with("http") {
+    if !valid_origin(&domain) {
         bail!("--domain must be a full origin like https://example.com");
     }
+
     if domain == env.site_url.trim_end_matches('/') {
         bail!("--domain equals the source origin — deploying onto the clone is almost certainly wrong");
     }
@@ -122,8 +123,9 @@ fn parse_dest(dest: &str, root: &Path) -> Result<Dest> {
 }
 
 impl Dest {
-    /// rsync `src` (dir → trailing-slash copy) to `base/rel`.
-    fn push(&self, src: &Path, rel: &str) -> Result<()> {
+    /// rsync `src` (dir → trailing-slash copy) to `base/rel`, skipping
+    /// any path whose top-level name is in `excludes`.
+    fn push(&self, src: &Path, rel: &str, excludes: &[&str]) -> Result<()> {
         let from = if src.is_dir() {
             format!("{}/", src.display())
         } else {
@@ -134,6 +136,9 @@ impl Dest {
         // put there are never ours to remove.
         let mut c = Command::new("rsync");
         c.arg("-az").arg("--timeout=120");
+        for x in excludes {
+            c.arg(format!("--exclude={x}"));
+        }
         match self {
             Dest::Local { base } => {
                 let dst = base.join(rel);
@@ -179,6 +184,12 @@ fn join_remote(base: &str, rel: &str) -> String {
         format!("{}/{}", base.trim_end_matches('/'), rel)
     }
 }
+
+/// www/ entries that must never ship: `bridge/` is disposable spawn state
+/// (wp-config.php with NONCE_KEY, bridge-token, .secret-*) — every target
+/// either exposes www/ to the web (static/pages/vps nginx @assets) or can
+/// rebuild it on first bridge request.
+const WWW_EXCLUDES: &[&str] = &["bridge", ".secret-*"];
 
 fn ssh_mkdir(target: &str, dst: &str, is_dir: bool) -> Result<()> {
     let dir = if is_dir { dst.to_string() } else { dst.rsplit_once('/').map(|(d, _)| d.to_string()).unwrap_or_else(|| ".".into()) };
@@ -237,7 +248,7 @@ fn vps_addr(name: &str, root: &Path) -> Result<(String, String)> {
 fn stage_domain(root: &Path, work: &Path, domain: &str, env: &SiteEnv) -> Result<PathBuf> {
     let staging = work.join("deploy-cache");
     let stagedb = work.join("deploy.db");
-    std::fs::copy(work.join("rpress.db"), &stagedb)?;
+    snapshot_db(&work.join("rpress.db"), &stagedb)?;
     {
         let db = conn(&stagedb)?;
         db.execute(sql!("site__deploy_site_url"), params![domain])?;
@@ -248,6 +259,18 @@ fn stage_domain(root: &Path, work: &Path, domain: &str, env: &SiteEnv) -> Result
     Ok(staging)
 }
 
+/// Consistent copy of a live WAL database: `fs::copy` would lose pages
+/// still in `rpress.db-wal`; `VACUUM INTO` produces a complete single-file
+/// snapshot without touching the source.
+fn snapshot_db(src: &Path, dst: &Path) -> Result<()> {
+    if dst.exists() {
+        std::fs::remove_file(dst)?;
+    }
+    let c = rusqlite::Connection::open(src)?;
+    c.execute("VACUUM INTO ?1", [dst.to_string_lossy().as_ref()])?;
+    Ok(())
+}
+
 /// Point absolute-URL columns at the deployed domain. Keyed on every
 /// origin the data can carry: env.local_url, the previously-deployed
 /// domain (settings.deployed_domain, written at first deploy), and any
@@ -256,7 +279,7 @@ fn stage_domain(root: &Path, work: &Path, domain: &str, env: &SiteEnv) -> Result
 pub fn rewrite_deploy_urls(db: &rusqlite::Connection, local_url: &str, domain: &str) -> Result<()> {
     let prev: String = db
         .query_row(
-            "SELECT value FROM settings WHERE key='deployed_domain'",
+            sql!("site_deploy__select_deployed_domain"),
             [],
             |r| r.get(0),
         )
@@ -287,7 +310,7 @@ pub fn rewrite_deploy_urls(db: &rusqlite::Connection, local_url: &str, domain: &
         )?;
     }
     db.execute(
-        "INSERT OR REPLACE INTO settings(key, value) VALUES('deployed_domain', ?1)",
+        sql!("site_deploy__upsert_deployed_domain"),
         params![domain],
     )?;
     Ok(())
@@ -310,20 +333,28 @@ fn need_bin(name: &str, hint: &str) -> Result<()> {
 pub fn mark_deployed(work_db: &Path, domain: &str) -> Result<()> {
     let db = conn(work_db)?;
     db.execute(
-        "INSERT OR REPLACE INTO settings(key, value) VALUES('deployed_domain', ?1)",
+        sql!("site_deploy__upsert_deployed_domain"),
         params![domain],
     )?;
     Ok(())
 }
 
-/// `cp -a` equivalent without non-portable flags.
-fn copy_tree(src: &Path, dst: &Path) -> Result<()> {
+/// `cp -a` equivalent without non-portable flags. `skip` matches top-level
+/// entry names per recursion level (`.secret-*` style: trailing `*` = prefix).
+fn copy_tree(src: &Path, dst: &Path, skip: &[&str]) -> Result<()> {
     std::fs::create_dir_all(dst)?;
     for e in std::fs::read_dir(src)? {
         let e = e?;
+        let name = e.file_name().to_string_lossy().to_string();
+        if skip.iter().any(|p| match p.strip_suffix('*') {
+            Some(pre) => name.starts_with(pre),
+            None => name == *p,
+        }) {
+            continue;
+        }
         let to = dst.join(e.file_name());
         if e.file_type()?.is_dir() {
-            copy_tree(&e.path(), &to)?;
+            copy_tree(&e.path(), &to, skip)?;
         } else {
             std::fs::copy(e.path(), &to)?;
         }
@@ -341,8 +372,8 @@ fn deploy_static(a: &DeployArgs, root: &Path, env: &SiteEnv, work: &Path, domain
     }
     let dest = parse_dest(&dest, root)?;
     let staging = stage_domain(root, work, domain, env)?;
-    dest.push(&staging, "")?;
-    dest.push(&work.join("www"), "")?;
+    dest.push(&staging, "", &[])?;
+    dest.push(&work.join("www"), "", WWW_EXCLUDES)?;
     mark_deployed(&work.join("rpress.db"), domain)?;
     eprintln!("deployed static {} → {domain}", env.site);
     eprintln!("note: vhost docroot = the synced dir; dynamic routes are off");
@@ -361,8 +392,8 @@ fn deploy_pages(a: &DeployArgs, root: &Path, env: &SiteEnv, work: &Path, domain:
     if site_dir.exists() {
         std::fs::remove_dir_all(&site_dir)?;
     }
-    copy_tree(&staging, &site_dir)?;
-    copy_tree(&work.join("www"), &site_dir)?;
+    copy_tree(&staging, &site_dir, &[])?;
+    copy_tree(&work.join("www"), &site_dir, WWW_EXCLUDES)?;
     let o = site::run(Command::new("wrangler").args([
         "pages", "deploy",
         &site_dir.display().to_string(),
@@ -383,6 +414,20 @@ fn deploy_vps(a: &DeployArgs, root: &Path, env: &SiteEnv, work: &Path, domain: &
     if !bin.is_file() {
         bail!("no release binary — run `cargo build --release` first");
     }
+    // The pushed binary must be a Linux ELF — building on macOS leaves a
+    // Mach-O that fails at ExecStart with a cryptic error on the remote.
+    // Reject unless --yes/--dry-run already signaled intent? No: this is a
+    // hard mismatch, not a preference — bail always.
+    {
+        let mut magic = [0u8; 4];
+        let mut f = std::fs::File::open(&bin)?;
+        use std::io::Read;
+        let _ = f.read(&mut magic)?;
+        anyhow::ensure!(
+            magic == [0x7F, b'E', b'L', b'F'],
+            "target/release/rpress is not a Linux ELF (built on this host's OS) — cross-compile for linux (e.g. `cargo build --release --target x86_64-unknown-linux-gnu` or build on the VPS) before `site deploy --target vps`"
+        );
+    }
     if a.dry_run {
         eprintln!("dry-run: rsync binary+db+templates+www → {dest}, then print nginx+systemd runbook");
         return Ok(());
@@ -393,16 +438,16 @@ fn deploy_vps(a: &DeployArgs, root: &Path, env: &SiteEnv, work: &Path, domain: &
     // sandbox keeps local_url (menu_items.url/redirects.new_url would
     // otherwise ship localhost links).
     let stagedb = work.join("deploy.db");
-    std::fs::copy(work.join("rpress.db"), &stagedb)?;
+    snapshot_db(&work.join("rpress.db"), &stagedb)?;
     {
         let db = conn(&stagedb)?;
         db.execute(sql!("site__deploy_site_url"), params![domain])?;
         rewrite_deploy_urls(&db, &env.local_url, domain)?;
     }
-    dest.push(&bin, "bin/rpress")?;
-    dest.push(&stagedb, "rpress.db")?;
-    dest.push(&root.join("templates"), "templates")?;
-    dest.push(&work.join("www"), "www")?;
+    dest.push(&bin, "bin/rpress", &[])?;
+    dest.push(&stagedb, "rpress.db", &[])?;
+    dest.push(&root.join("templates"), "templates", &[])?;
+    dest.push(&work.join("www"), "www", WWW_EXCLUDES)?;
     eprintln!("app payload pushed — remote needs a first `generate` + the runbook below");
     mark_deployed(&work.join("rpress.db"), domain)?;
     print_runbook(env, domain, a.app_dir.as_deref());
@@ -433,7 +478,15 @@ fn print_runbook(env: &SiteEnv, domain: &str, app_dir: Option<&str>) {
      --www {app_dir}/www \
      --host {domain} --site {site} --name "{name}" --tour-base {tour_base}
    Restart=always
-
+   # Confinement — covers rpress AND any bridged php -S child (Linux has
+   # no sandbox-exec; this IS the sandbox layer there):
+   ProtectSystem=strict
+   ProtectHome=yes
+   PrivateTmp=yes
+   NoNewPrivileges=yes
+   ReadWritePaths={app_dir}
+   # Bridge children must never reach the network beyond loopback:
+   RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 3) nginx — dynamic routes to the process, static straight from disk
 
    location ~ ^/(admin|api|comment|review|form|intake) {{ proxy_pass http://127.0.0.1:8400; }}
@@ -446,4 +499,68 @@ fn print_runbook(env: &SiteEnv, domain: &str, app_dir: Option<&str>) {
         name = env.name,
         tour_base = env.tour_base,
     );
+}
+
+/// `https?://host[:port]` — host chars only, no path/query/creds.
+/// Deliberately small: deploy writes this verbatim into site_url.
+pub(crate) fn valid_origin(s: &str) -> bool {
+    let rest = s
+        .strip_prefix("https://")
+        .or_else(|| s.strip_prefix("http://"))
+        .unwrap_or("");
+    if rest.is_empty() || rest.contains(['/', '?', '#', '@', ' ']) {
+        return false;
+    }
+    let (host, port) = match rest.rsplit_once(':') {
+        Some((h, p)) if p.chars().all(|c| c.is_ascii_digit()) => (h, Some(p)),
+        Some(_) => return false,
+        None => (rest, None),
+    };
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    if host.is_empty()
+        || !host
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':'))
+    {
+        return false;
+    }
+    if let Some(p) = port {
+        if p.parse::<u16>().is_err() {
+            return false;
+        }
+    }
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::valid_origin;
+
+    #[test]
+    fn origins() {
+        for ok in [
+            "https://example.com",
+            "http://example.com",
+            "https://sub.example.co.uk",
+            "https://example.com:8443",
+            "http://127.0.0.1:8000",
+        ] {
+            assert!(valid_origin(ok), "{ok}");
+        }
+        for bad in [
+            "",
+            "http",
+            "httpfoo",
+            "https://",
+            "https://example.com/",
+            "https://example.com/path",
+            "https://user@example.com",
+            "https://example.com:abc",
+            "https://example.com:99999",
+            "ftp://example.com",
+            "https://exa mple.com",
+        ] {
+            assert!(!valid_origin(bad), "{bad}");
+        }
+    }
 }

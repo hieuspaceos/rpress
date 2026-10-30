@@ -1,0 +1,1 @@
+SELECT MAX(modified_at) FROM posts WHERE status='publish'

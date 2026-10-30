@@ -1,0 +1,1 @@
+SELECT COUNT(*) FROM settings WHERE key='page_on_front' AND value != '0'

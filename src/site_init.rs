@@ -378,7 +378,8 @@ fn run_my_cnf(remote: &site::Remote, cnf: &str, body: &str) -> Result<site::Out>
 fn probe_siteurl(remote: &site::Remote, c: &WpCreds) -> Option<String> {
     let cnf = remote_my_cnf(remote, c).ok()?;
     let sql = format!(
-        "SELECT option_value FROM {}options WHERE option_name='siteurl'",
+        "{} {}options WHERE option_name='siteurl'",
+        sql!("site_init__select_option_value"),
         c.prefix
     );
     let o = run_my_cnf(

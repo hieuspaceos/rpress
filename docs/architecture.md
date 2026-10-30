@@ -17,14 +17,17 @@ flowchart LR
 
 | Layer | Directory | Owns | May import |
 |---|---|---|---|
-| Admin (HTTP) | `src/admin/` | routes, HTML screens, auth guards, forms | `db`, `intake`, `sitefx`, `render` |
-| Data | `src/db/` | every SQL statement, term/post mutation helpers | nothing (rusqlite only) |
-| Site output | `src/render*.rs`, `src/generate.rs`, `src/intake.rs`, `src/sitefx.rs` | page render + cache write-back + public intake + utility-file emit | `db` |
-| Support | `src/schema.rs`, `src/auth.rs`, `src/import.rs`, `src/sqldump.rs`, `src/php_serialize.rs`, `src/verify.rs`, `src/widgets.rs` | schema DDL, password hash, WP-dump import, sidebar/widget store | `db` where needed |
+| Admin (HTTP) | `src/admin/` | routes, HTML screens, auth guards, forms, **public serving** (`serve.rs`: cache hit → `fs::read`, miss → render + write-back, uploads/wp-asset fronting) | `db`, `intake`, `sitefx`, `render`, `plugins` |
+| Data | `src/db/` | every SQL statement (`sql/*.sql` via `sql!()`), term/post/media mutation helpers | nothing (rusqlite only) |
+| Plugin kernel | `src/plugins/` | adapter registry: `KindDef`/`ScreenDef`/import+render hooks — the one sanctioned cross-layer import (admin screens AND render AND import all consult it) | `db`, `admin` (screen ctx) |
+| Site output | `src/render*.rs`, `src/generate.rs`, `src/intake.rs`, `src/sitefx.rs` | page render + cache write-back + public intake + utility-file emit | `db`, `plugins` |
 
-Rule: **SQL lives only in `src/db/`**. Admin handlers never write SQL; they
-call a `db::` function. Rendering helpers (`esc`, `chrome`, `html_admin`,
-`need_auth`) live in `src/admin/mod.rs` and are `pub(crate)` for siblings.
+Rule: **SQL statement text lives only in `src/db/sql/`** — loaded via the
+`sql!()` macro. Callers embed `sql!("name")`; no `.rs` file outside `db/`
+may hold a SQL literal (exceptions: `src/plugins/` adapter internals,
+`import.rs`/`sqldump.rs` dump-parsing — their statements are dynamic or
+plugin-owned). Rendering helpers (`esc`, `chrome`, `html_admin`, `need_auth`)
+live in `src/admin/mod.rs` and are `pub(crate)` for siblings.
 
 ## Sites — multisite by process
 
@@ -73,7 +76,8 @@ imported WP domain; empty = no rewrite).
 
 | File | WP analog | Contents |
 |---|---|---|
-| `mod.rs` | `wp-admin/admin.php` + `admin-header.php` | `serve()` router, `App`/`Sess`, sessions, `need_auth`, `chrome*` sidebar, `menu_li`/`menu_li_badge`, `esc`, `html_admin` |
+| `mod.rs` | `wp-admin/admin.php` + `admin-header.php` | `serve()` router, `App`/`Sess`, sessions, `need_auth`, `chrome*` sidebar, `menu_li`/`menu_li_badge`, `esc`, `html_admin` — the **kernel** only; public serving is in `serve.rs` |
+| `serve.rs` | the public `index.php` | `public_root`/`public_page` (cache-hit read → miss render+write-back, miss-rate limiter, canonical-301 gate), `write_cache` (tmp+rename), `.md` negotiation, `wp_asset`/`uploads`/`front_css` static fronting, `publish_due`, `purge_alias_caches` |
 | `auth.rs` | `wp-login.php` | login page/handler, logout, dashboard |
 | `list.rs` | `class-wp-list-table.php` | shared `subsubsub` views, `tablenav` bulk+pager, `row_actions`, `thead`, `empty_row`, `back_or` |
 | `posts.rs` | `edit.php`, `post.php`, `post-new.php` | list screen (`render_list`), row actions (trash/clone/quick-edit/bulk), post editor (`edit_html`), save |
@@ -83,8 +87,19 @@ imported WP domain; empty = no rewrite).
 | `menus.rs` | `nav-menus.php` | selector+create/delete, add-items metaboxes (Pages/Posts/Tours/Custom/Categories), item blocks (Original:, move links, Remove), save_tree tx |
 | `tax.rs` | `edit-tags.php` | Categories/Tags two-column screen, save/delete/bulk |
 | `admin.rs` | `upload.php`, APIs | media, static-generate + status, `api/v1/posts` JSON, intake handlers |
-| `plugins/` | plugin metaboxes (`add_meta_box`) | per-kind editor plugins: `EditorPlugin{kind, load, metabox, assets, save}` registry (`PLUGINS`), `tourmaster/` — ported WP metabox |
-| `bridge/` | a real wp-admin for opted-in plugins | `mod.rs` runtime pick + state map + proxy, `php_cgi.rs` (`php -S` + sandbox-exec, preferred), `playground.rs` (WASM fallback), `http.rs` cookie/header translation, `mu-plugin/bridge.php` (rpress-session auto-login, write whitelist pull-back) |
+| `bridge/` | a real wp-admin for opted-in plugins | `mod.rs` runtime pick + state map + proxy, `php_cgi.rs` (`php -S` + sandbox-exec/bwrap, preferred), `playground.rs` (WASM fallback), `http.rs` cookie/header translation, `mu-plugin/bridge.php` (rpress-session auto-login, write whitelist pull-back) |
+
+## `src/plugins/` — cross-layer kernel (top-level)
+
+| File | Contents |
+|---|---|
+| `mod.rs` | `PluginAdapter` trait, `KindDef`/`ScreenDef`/`RenderCtx` registry (`adapters()`, `kind_def`, `adapter_for_kind`, `screen_for`, `resolve_bases`, `migrate_all`) — the one sanctioned seam every layer (admin screens, render, import) consults |
+| `spec.rs` | declarative adapter specs from `plugins/specs/*.toml` → generated `KindDef`s |
+| `tourmaster/` | Tour kind (Rust port): schema, elements, screens, render |
+| `goodlayers/` | PhpBridge adapter boot + write spec |
+| `misc.rs` | wpDiscuz / CF7 / MetaSlider / Site-Reviews settings screens |
+| `chaty.rs` | Chaty settings |
+| `theme_traveltour/` | theme adapter + seed assets |
 
 ## `src/db/` module map (wp-includes equivalents)
 
@@ -97,11 +112,14 @@ imported WP domain; empty = no rewrite).
 | `submissions.rs` | — | `counts`, `form_counts`, `list(Filter)` (sortable), `get`, `set_status`, `purge` |
 | `menus.rs` | `nav-menu.php` | `list_menus`, `get_menu`, `list_items`, `create_menu`, `rename_menu`, `delete_menu`, `save_tree`, `add_items`, `move_item`, panel queries |
 | `terms.rs` | `taxonomy.php` | `TermRow`, `list_terms`, `save_term`, `delete_term`, `term_choices`, `term_slugs_for`, `terms_for`, `set_terms`, `taxonomy_exists` |
-| `misc.rs` | `media.php` | `save_upload`, media file helpers, `body_json` (GoodLayers) helpers |
+| `media.rs` | `media.php` | `save_upload` (sanitize + magic-byte mime + image-size derivatives), `media_list/get/update/delete/detach`, `media_months`, `media_regenerate_sizes` |
+| `misc.rs` | — | settings/plugin-option helpers, widget/sidebar fns, `body_json` (GoodLayers) helpers, `now_sql`, `insert_draft` |
 
 **`src/db/sql/`** — one `.sql` file per statement (`{module}__{verb}_{noun}.sql`),
-loaded at compile time via `sql!("name")` (`include_str!`). The `db/`
-modules are the only SQL writers; `admin/` goes through `db::` functions.
+loaded at compile time via `sql!("name")` (`include_str!`). Every SQL
+*statement text* lives there — callers in `render*`/`admin`/`sitefx` embed
+`sql!("name")` (the macro pulls the file contents; nothing outside `db/sql/`
+may hold a statement literal). Mutation helpers still go through `db::` fns.
 
 ## Data model (owner: `src/schema.rs`)
 

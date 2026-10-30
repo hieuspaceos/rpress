@@ -58,8 +58,7 @@ pub(crate) fn is_taxonomy(conn: &Connection, t: &str) -> bool {
         return false;
     }
     conn.query_row(
-        "SELECT 1 FROM terms WHERE taxonomy=?1 COLLATE NOCASE \
-         UNION SELECT 1 FROM post_terms WHERE taxonomy=?1 COLLATE NOCASE LIMIT 1",
+        sql!("archive__select_taxonomy_exists"),
         [t],
         |r| r.get::<_, i64>(0),
     )
@@ -242,7 +241,7 @@ fn term_description(conn: &Connection, term: &Term) -> String {
             |r| r.get::<_, String>(0),
         ) {
             if !body.trim().is_empty() {
-                return wpautop(&crate::render::expand_shortcodes(&body, "", Some(conn)));
+                return wpautop(&crate::render::expand_shortcodes(&body, "", Some(conn), None));
             }
         }
     }
@@ -261,7 +260,7 @@ fn term_banner(conn: &Connection, slug: &str) -> String {
     };
     // Lazy media_map: only candidate rows matching the slug, never the
     // whole table (the old code scanned a materialized media_map).
-    let mut stmt = match conn.prepare("SELECT path FROM media WHERE LOWER(path) LIKE '%' || ?1 || '%'") {
+    let mut stmt = match conn.prepare(sql!("archive__select_media_like")) {
         Ok(s) => s,
         Err(_) => return String::new(),
     };
@@ -297,7 +296,7 @@ fn term_banner(conn: &Connection, slug: &str) -> String {
 pub(crate) fn page(
     conn: &Connection,
     templates: &Path,
-    ctx: &crate::admin::plugins::RenderCtx,
+    ctx: &crate::plugins::RenderCtx,
     term: &Term,
 ) -> Result<String> {
     let site_url = ctx.site_url.trim_end_matches('/').to_string();
@@ -305,7 +304,7 @@ pub(crate) fn page(
     let lang = ctx.lang.as_str();
     // The taxonomy's owning adapter (its kind's KindDef.taxonomies claims
     // the name) supplies member kind, slug canonicalization + URL bases.
-    let kind_defs = crate::admin::plugins::kind_defs();
+    let kind_defs = crate::plugins::kind_defs();
     let tax_kind_def = kind_defs
         .iter()
         .find(|d| {
@@ -314,7 +313,7 @@ pub(crate) fn page(
                 .any(|t| t.eq_ignore_ascii_case(&term.taxonomy))
         });
     let tax_adapter = tax_kind_def
-        .and_then(|d| crate::admin::plugins::adapter_for_kind(d.kind));
+        .and_then(|d| crate::plugins::adapter_for_kind(d.kind));
     // Member posts carry the owning kind (`tour`, `to_book`); post-tax
     // archives keep the post arm below instead. `member_base` is the
     // kind's own permalink base (`booking` for to_book) — never the
@@ -337,8 +336,8 @@ pub(crate) fn page(
     let prefix = crate::lang::url_prefix(&lang_cfg, lang);
     let term_url_path = |tax: &str, slug: &str, prefix: &str| -> String {
         match tax {
-            "category" => format!("{prefix}/{}/", crate::admin::plugins::theme_traveltour::cat_path(conn, slug)),
-            "post_tag" => format!("{prefix}/{}/{slug}/", crate::admin::plugins::theme_traveltour::tag_base(conn)),
+            "category" => format!("{prefix}/{}/", crate::plugins::theme_traveltour::cat_path(conn, slug)),
+            "post_tag" => format!("{prefix}/{}/{slug}/", crate::plugins::theme_traveltour::tag_base(conn)),
             t => {
                 let base = tax_adapter
                     .and_then(|a| a.taxonomy_base(t))
@@ -452,7 +451,7 @@ pub(crate) fn page(
             let cat_links: Vec<Value> = pcats
                 .iter()
                 .map(|(s, n)| json!({
-                    "url": format!("{site_url}{prefix}/{}/", crate::admin::plugins::theme_traveltour::cat_path(conn, s)),
+                    "url": format!("{site_url}{prefix}/{}/", crate::plugins::theme_traveltour::cat_path(conn, s)),
                     "name": esc(n),
                 }))
                 .collect();
@@ -578,9 +577,7 @@ pub(crate) fn page(
     // term archive's own freshness via published_at when none matches).
     let og_updated: Option<String> = conn
         .query_row(
-            "SELECT MAX(p.modified_at) FROM posts p JOIN post_terms pt \
-             ON pt.post_id=p.id WHERE pt.taxonomy=?1 COLLATE NOCASE \
-             AND pt.slug=?2 AND p.status='publish'",
+            sql!("archive__select_max_modified"),
             rusqlite::params![term.taxonomy, term.slug],
             |r| r.get(0),
         )
@@ -765,7 +762,7 @@ fn mark_current_menu(html: &str, site_url: &str, term_path: &str) -> String {
 /// Single post_meta value — bylines + archive card fields.
 fn post_meta1(conn: &Connection, post_id: i64, key: &str) -> String {
     conn.query_row(
-        "SELECT COALESCE(meta_value,'') FROM post_meta WHERE post_id=?1 AND meta_key=?2 LIMIT 1",
+        sql!("chrome__select_meta_value"),
         rusqlite::params![post_id, key],
         |r| r.get(0),
     )

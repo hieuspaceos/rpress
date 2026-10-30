@@ -1,0 +1,1 @@
+SELECT COUNT(*) FROM menu_items m WHERE m.parent_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM menu_items p WHERE p.id=m.parent_id)

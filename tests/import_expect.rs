@@ -75,7 +75,7 @@ fn fixture_import_and_verify() {
     std::fs::write(&dump, DUMP).unwrap();
     let db = d.join("rpress.db");
     let report = d.join("report.txt");
-    import::run(&dump, &db, &report).unwrap();
+    import::run(&dump, &db, &report, false).unwrap();
 
     let c = rusqlite::Connection::open(&db).unwrap();
     let cnt = |q: &str| c.query_row(q, [], |r| r.get::<_, i64>(0)).unwrap();

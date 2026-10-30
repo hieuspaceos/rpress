@@ -1,0 +1,1 @@
+SELECT id, slug, lang, title, kind FROM posts WHERE status='publish' AND kind IN (

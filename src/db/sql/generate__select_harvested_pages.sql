@@ -1,0 +1,1 @@
+SELECT post_id, html FROM harvested_pages

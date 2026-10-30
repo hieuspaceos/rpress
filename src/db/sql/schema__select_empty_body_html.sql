@@ -1,0 +1,1 @@
+SELECT id, COALESCE(body_json,'') FROM posts WHERE COALESCE(body_html,'')='' AND COALESCE(body_json,'')!=''

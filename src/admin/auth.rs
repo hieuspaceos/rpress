@@ -338,7 +338,7 @@ pub(crate) async fn two_fa_verify(
     let row: Option<(String, String)> = crate::db::conn(&sc.db)
         .ok()
         .and_then(|c| {
-            c.query_row("SELECT email, role FROM users WHERE id=?1", [user_id], |r| {
+            c.query_row(sql!("users__select_email_role"), [user_id], |r| {
                 Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
             })
             .ok()

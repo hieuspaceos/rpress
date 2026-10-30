@@ -1,0 +1,1 @@
+SELECT COUNT(*) FROM posts WHERE json_valid(body_json)=0

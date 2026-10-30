@@ -59,7 +59,10 @@ impl Report {
     }
 }
 
-pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
+/// `force=false` refuses to overwrite a database that already has rows —
+/// re-running `import` used to silently delete a live site. `force=true`
+/// is the `site build` path (fresh workdir semantics).
+pub fn run(dump: &Path, db_path: &Path, report_path: &Path, force: bool) -> Result<()> {
     /* Table prefix varies (`wp_`, `wp_42426_`, …) — detect it once, then
        ask `rows` for `<prefix><suffix>` but report canonical `wp_*` names
        so all downstream matching stays prefix-free. */
@@ -202,7 +205,7 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
                     // instead of falling back to built-in defaults. Plugin
                     // options whitelist by the adapter's declared prefixes
                     // (`ImportHooks.option_prefixes`).
-                    let plugin_opt = crate::admin::plugins::adapters()
+                    let plugin_opt = crate::plugins::adapters()
                         .iter()
                         .filter_map(|a| a.import_hooks())
                         .flat_map(|h| h.option_prefixes.iter())
@@ -305,7 +308,32 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
     }
 
     // ---- Pass 2: map → SQLite ----------------------------------------------
+    // Guard: a second `import` over a live db deletes users/sessions/
+    // submissions along with the imported rows — require `--force` and say
+    // what will be lost. An empty-but-existing file is fine to overwrite.
+    if db_path.is_file() && !force {
+        if let Ok(existing) = rusqlite::Connection::open(db_path) {
+            let has_rows = [
+                "SELECT COUNT(*) FROM posts",
+                "SELECT COUNT(*) FROM users",
+                "SELECT COUNT(*) FROM sessions",
+                "SELECT COUNT(*) FROM submissions",
+            ]
+            .iter()
+            .any(|q| existing.query_row(q, [], |r| r.get::<_, i64>(0)).unwrap_or(0) > 0);
+            anyhow::ensure!(
+                !has_rows,
+                "{} already contains content — re-importing deletes users, sessions and form submissions. Pass --force to overwrite.",
+                db_path.display()
+            );
+        }
+    }
+    // ---- Pass 2: map → SQLite ----------------------------------------------
+    // WAL files survive a copy but replay INTO the fresh file — remove the
+    // whole triple, never just the main db.
     let _ = std::fs::remove_file(db_path);
+    let _ = std::fs::remove_file(format!("{}-wal", db_path.display()));
+    let _ = std::fs::remove_file(format!("{}-shm", db_path.display()));
     let conn = crate::db::conn(db_path).context("open rpress.db")?;
     crate::schema::migrate_conn(&conn)?;
     conn.execute_batch(sql!("import__pragma_synchronous_off"))?;
@@ -385,7 +413,7 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
     let kind_of = |t: &str| -> Option<&'static str> {
         // Plugin adapters claim their wp post_types first; core post/page
         // fall through.
-        for a in crate::admin::plugins::adapters() {
+        for a in crate::plugins::adapters() {
             if let Some(kind) = a.import_hooks().and_then(|h| (h.claim_type)(t)) {
                 return Some(kind);
             }
@@ -654,7 +682,7 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
                     p.content,
                 ])?;
                 if p.status == "publish" {
-                    if let Some((_, base)) = crate::admin::plugins::spec::spec_harvest_bases()
+                    if let Some((_, base)) = crate::plugins::spec::spec_harvest_bases()
                         .iter()
                         .find(|(k, _)| *k == kind)
                     {
@@ -677,15 +705,18 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
                 for (k, vals) in &p.meta {
                     for mv in vals {
                         // OR IGNORE + the (post_id,meta_key) unique index:
-                        // extra values for one key silently drop — count
-                        // them so the loss is visible in the report.
+                        // WP metas can repeat a key; the collapse is
+                        // deterministic first-value-wins (dump order ==
+                        // meta_id order == WP's scalar LIMIT-1 read and
+                        // `dedupe_post_meta`'s MIN(rowid) keeper). Count
+                        // the drops so the loss is visible in the report.
                         if stmt_meta.execute(params![p.id, k, mv])? == 0 {
                             dropped_meta += 1;
                         }
                     }
                 }
                 // Plugin per-row hooks run inside the import tx (T13).
-                for a in crate::admin::plugins::adapters() {
+                for a in crate::plugins::adapters() {
                     if let Some(h) = a.import_hooks() {
                         (h.post_imported)(&tx, p.id)?;
                     }
@@ -1206,7 +1237,7 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
     ));
     tx.commit()?;
 
-    for a in crate::admin::plugins::adapters() {
+    for a in crate::plugins::adapters() {
         if let Some(h) = a.import_hooks() {
             (h.after_import)(&conn)?;
         }
@@ -1334,8 +1365,8 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
     // Theme seed: `taxonomy_map` is a Data-backend setting the theme
     // adapter owns — migrate() is idempotent (`INSERT OR IGNORE`), so a
     // previously seeded or imported row wins.
-    crate::admin::plugins::PluginAdapter::migrate(
-        &crate::admin::plugins::theme_traveltour::ADAPTER,
+    crate::plugins::PluginAdapter::migrate(
+        &crate::plugins::theme_traveltour::ADAPTER,
         db_path,
     )?;
 
@@ -1891,7 +1922,7 @@ fn widget_settings(
     let render_body = |s: &str| -> String {
         let b = rewrite_own(s, origin);
         let b = expand_widget_shortcodes(&b);
-        crate::render::shortcode::expand_shortcodes(&b, "{{ site_url }}", Some(&**tx))
+        crate::render::shortcode::expand_shortcodes(&b, "{{ site_url }}", Some(&**tx), None)
     };
 
     match base {
@@ -1910,7 +1941,7 @@ fn widget_settings(
                 b = widget_autop(&b);
             }
             b = expand_widget_shortcodes(&b);
-            b = crate::render::shortcode::expand_shortcodes(&b, "{{ site_url }}", Some(&**tx));
+            b = crate::render::shortcode::expand_shortcodes(&b, "{{ site_url }}", Some(&**tx), None);
             Some((
                 "text".into(),
                 json!({ "html": format!(

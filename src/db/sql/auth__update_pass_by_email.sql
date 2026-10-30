@@ -1,0 +1,1 @@
+UPDATE users SET pass_hash=?1 WHERE email=?2

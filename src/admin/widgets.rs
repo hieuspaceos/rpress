@@ -66,7 +66,7 @@ fn widget_row(
     id: &str,
 ) -> Option<(String, String, String, String, String)> {
     conn.query_row(
-        "SELECT id, sidebar_id, type, title, settings_json FROM widgets WHERE id=?1",
+        sql!("widgets__select_by_id"),
         [id],
         |r| {
             Ok((
@@ -83,7 +83,7 @@ fn widget_row(
 
 fn sidebar_ids(conn: &Connection) -> Vec<String> {
     let mut v: Vec<String> = Vec::new();
-    if let Ok(mut st) = conn.prepare("SELECT id FROM sidebars ORDER BY rowid") {
+    if let Ok(mut st) = conn.prepare(sql!("widgets__select_sidebar_ids")) {
         if let Ok(rows) = st.query_map([], |r| r.get::<_, String>(0)) {
             // Sidebar list is best-effort (no Result channel): skip bad rows.
             v.extend(rows.flatten());
@@ -136,7 +136,7 @@ pub(crate) async fn widgets_page(
     // Sidebars in registry order + the inactive pseudo-sidebar last.
     let sidebars: Vec<(String, String)> = {
         let mut v = Vec::new();
-        if let Ok(mut st) = conn.prepare("SELECT id, name FROM sidebars ORDER BY rowid") {
+        if let Ok(mut st) = conn.prepare(sql!("widgets__select_sidebars")) {
             if let Ok(rows) =
                 st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
             {
@@ -150,7 +150,7 @@ pub(crate) async fn widgets_page(
     let mut by_sidebar: HashMap<String, Vec<(String, String, String, String, String)>> =
         HashMap::new();
     if let Ok(mut st) = conn.prepare(
-        "SELECT id, sidebar_id, type, title, settings_json FROM widgets ORDER BY sidebar_id, ord",
+        sql!("widgets__select_all"),
     ) {
         if let Ok(rows) = st.query_map([], |r| {
             Ok((

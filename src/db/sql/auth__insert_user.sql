@@ -1,0 +1,1 @@
+INSERT INTO users(email, pass_hash, role, created_at) VALUES(?1,?2,?3,datetime('now'))

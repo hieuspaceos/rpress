@@ -1,0 +1,1 @@
+SELECT COUNT(*) FROM comments cm WHERE NOT EXISTS (SELECT 1 FROM posts p WHERE p.id=cm.post_id)

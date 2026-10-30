@@ -637,7 +637,7 @@ fn render_node(
             // gdlr_core_content_filter → do_shortcode + oembed for the small
             // set this site actually uses.
             if s.contains('[') {
-                *s = expand_shortcodes(s, site_url, conn);
+                *s = expand_shortcodes(s, site_url, conn, post.get_attr("id").ok().and_then(|v| v.as_i64()));
             }
             // gdlr_core_content_filter also unwraps <p> that encloses a
             // single block-level heading (TinyMCE artifact).
@@ -741,7 +741,7 @@ fn render_node(
             for tab in tabs.iter_mut() {
                 if let Some(Value::String(s)) = tab.get_mut("content") {
                     if s.contains('[') {
-                        *s = expand_shortcodes(s, site_url, conn);
+                        *s = expand_shortcodes(s, site_url, conn, post.get_attr("id").ok().and_then(|v| v.as_i64()));
                     }
                 }
             }
@@ -789,7 +789,7 @@ fn render_node(
         if let (Some(c), Some(pid)) = (conn, post.get_attr("id").ok().and_then(|v| v.as_i64())) {
             let frag: Option<String> = c
                 .query_row(
-                    "SELECT html FROM harvested_fragments WHERE post_id=?1",
+                    sql!("nodes__select_fragment"),
                     [pid],
                     |r| r.get(0),
                 )

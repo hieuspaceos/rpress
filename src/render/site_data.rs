@@ -67,10 +67,7 @@ pub(crate) fn site_data(
     let mut posts = Vec::new();
     {
         let mut stmt = conn.prepare(
-            "SELECT id, slug, title, COALESCE(excerpt,''), featured_media_id, \
-             COALESCE(published_at,'') FROM posts \
-             WHERE kind='post' AND lang=?1 AND status='publish' \
-             ORDER BY published_at DESC",
+            sql!("site_data__select_posts"),
         )?;
         let rows = stmt.query_map([lang], |r| {
             Ok((
@@ -90,7 +87,7 @@ pub(crate) fn site_data(
         let mut cats: HashMap<i64, Vec<Value>> = HashMap::new();
         if !ids.is_empty() {
             let marks = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-            let q = format!("SELECT post_id, slug, name FROM post_terms WHERE taxonomy='category' AND post_id IN ({marks})");
+            let q = format!("{} AND post_id IN ({marks})", sql!("site_data__select_category_terms"));
             let params = rusqlite::params_from_iter(ids.iter());
             if let Ok(mut cstmt) = conn.prepare(&q) {
                 if let Ok(crows) = cstmt.query_map(params, |r| {
@@ -121,7 +118,7 @@ pub(crate) fn site_data(
     let mut terms: Map<String, Value> = Map::new();
     {
         let mut stmt = conn.prepare(
-            "SELECT taxonomy, slug, name FROM terms ORDER BY taxonomy, name",
+            sql!("site_data__select_terms"),
         )?;
         let rows = stmt.query_map([], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
@@ -144,16 +141,7 @@ pub(crate) fn site_data(
         // title — resolve it here: post_type → posts.title, taxonomy →
         // terms.name, otherwise stay blank (never a bogus "menu item").
         let mut istmt = conn.prepare(
-            "SELECT m.id, m.wp_term_id, m.name, m.lang, m.location, i.id, i.parent_id, i.ord, \
-             COALESCE(NULLIF(i.label,''), \
-               CASE i.item_type \
-                 WHEN 'post_type' THEN (SELECT title FROM posts WHERE id=i.object_id AND lang=m.lang LIMIT 1) \
-                 WHEN 'post_type' THEN (SELECT title FROM posts WHERE id=i.object_id LIMIT 1) \
-                 WHEN 'taxonomy' THEN (SELECT name FROM terms WHERE id=i.object_id LIMIT 1) \
-               END, i.label), \
-             COALESCE(i.url,''), i.object_id, i.item_type, COALESCE(i.classes,''), \
-             COALESCE(i.title_attr,''), COALESCE(i.mega,'') FROM menus m \
-             JOIN menu_items i ON i.menu_id=m.id ORDER BY i.ord",
+            sql!("site_data__select_menu_items"),
         )?;
         let rows = istmt.query_map([], |r| {
             Ok((
@@ -211,7 +199,7 @@ pub(crate) fn site_data(
            match; then first menu. menu_footer tries footer-ish locations. */
         let pick = |locs: &[&str]| -> Option<i64> {
             let mut st = conn
-                .prepare("SELECT menu_id FROM theme_locations WHERE location=?1 AND lang=?2")
+                .prepare(sql!("site_data__select_theme_location"))
                 .ok()?;
             for loc in locs {
                 if let Ok(Some(mid)) = st.query_row(rusqlite::params![loc, lang], |r| r.get(0)) {
@@ -226,7 +214,7 @@ pub(crate) fn site_data(
         let mut chosen = pick(&header_locs);
         if chosen.is_none() {
             if let Ok(mut s) = conn.prepare(
-                "SELECT id FROM menus WHERE COALESCE(lang,'')=?1 LIMIT 1",
+                sql!("site_data__select_menu_by_lang"),
             ) {
                 chosen = s.query_row([lang], |r| r.get::<_, i64>(0)).ok();
             }
@@ -267,13 +255,13 @@ pub(crate) fn site_data(
 
     // Adapter-owned feeds (tours list, search options, …) merge under
     // their declared keys; the kind URL base resolves through KindBases.
-    let bases = crate::admin::plugins::resolve_bases(tour_base);
+    let bases = crate::plugins::resolve_bases(tour_base);
     let mut extra: Map<String, Value> = Map::new();
-    for adapter in crate::admin::plugins::adapters() {
+    for adapter in crate::plugins::adapters() {
         let kind_base = adapter
             .kinds()
             .first()
-            .and_then(|k| crate::admin::plugins::base_for(&bases, k.kind));
+            .and_then(|k| crate::plugins::base_for(&bases, k.kind));
         for (k, v) in adapter.site_data_feeds(conn, lang, site_url, kind_base) {
             extra.insert(k, v);
         }
@@ -283,9 +271,7 @@ pub(crate) fn site_data(
     let mut pages = Vec::new();
     {
         let mut stmt = conn.prepare(
-            "SELECT id, slug, title, COALESCE(parent_id,0), COALESCE(menu_order,0) \
-             FROM posts WHERE kind='page' AND lang=?1 AND status='publish' \
-             ORDER BY menu_order, title",
+            sql!("site_data__select_pages"),
         )?;
         let rows = stmt.query_map([lang], |r| {
             Ok((
@@ -335,9 +321,7 @@ fn site_reviews(conn: &Connection, site_url: &str) -> Result<Vec<Value>> {
     };
     let mut reviews = Vec::new();
     let mut stmt = conn.prepare(
-        "SELECT id, title, COALESCE(body_json,''), COALESCE(excerpt,''), featured_media_id \
-         FROM posts WHERE kind='site-review' AND status='publish' \
-         ORDER BY published_at DESC",
+        sql!("site_data__select_reviews"),
     )?;
     let rows = stmt.query_map([], |r| {
         Ok((
@@ -348,17 +332,23 @@ fn site_reviews(conn: &Connection, site_url: &str) -> Result<Vec<Value>> {
             r.get::<_, Option<i64>>(4)?,
         ))
     })?;
+    // One query per review was the cold-render N+1 — batch the whole
+    // _submitted set up front (once per page, not once per row).
+    let mut submitted_map: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
+    {
+        let mut sm = conn.prepare(
+            sql!("site_data__select_submitted_meta"),
+        )?;
+        for r in sm.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))? {
+            let (pid, mv) = r?;
+            submitted_map.entry(pid).or_insert(mv);
+        }
+    }
     for row in rows {
         let (id, title, body_json, excerpt, fid) = row?;
         let mut name = title.clone();
         let mut rating: Option<i64> = None;
-        let submitted: Option<String> = conn
-            .query_row(
-                "SELECT meta_value FROM post_meta WHERE post_id=?1 AND meta_key='_submitted' LIMIT 1",
-                [id],
-                |r| r.get(0),
-            )
-            .ok();
+        let submitted: Option<String> = submitted_map.get(&id).cloned();
         if let Some(raw) = submitted {
             if let Ok(v) = crate::php_serialize::unserialize(raw.as_bytes()) {
                 if let Some(n) = v.get("name").and_then(|x| x.as_str()) {
@@ -480,7 +470,7 @@ fn menu_aliases(conn: &Connection, site_url: &str) -> String {
        url_aliases CSV extras. `strip_origin` re-anchors them all on the
        live site_url. */
     let get = |k: &str| -> String {
-        conn.query_row("SELECT value FROM settings WHERE key=?1", [k], |r| {
+        conn.query_row(sql!("intake__select_setting"), [k], |r| {
             r.get::<_, String>(0)
         })
         .unwrap_or_default()
@@ -540,7 +530,7 @@ fn resolve_tree_depth(
             && item_type == "taxonomy"
         {
             if let Some(name) = object_id.and_then(|oid| {
-                conn.query_row("SELECT name FROM terms WHERE id=?1", [oid], |r| {
+                conn.query_row(sql!("site_data__select_term_name"), [oid], |r| {
                     r.get::<_, String>(0)
                 })
                 .ok()
@@ -569,7 +559,7 @@ fn resolve_tree_depth(
             "post_type" | "page" | "post" => object_id
                 .and_then(|oid| {
                     conn.query_row(
-                        "SELECT kind FROM posts WHERE wp_id=?1",
+                        sql!("site_data__select_post_kind_by_wp_id"),
                         [oid],
                         |r| r.get::<_, String>(0),
                     )
@@ -578,7 +568,7 @@ fn resolve_tree_depth(
                 .unwrap_or_else(|| "post".into()),
             "taxonomy" => object_id
                 .and_then(|oid| {
-                    conn.query_row("SELECT taxonomy FROM terms WHERE id=?1", [oid], |r| {
+                    conn.query_row(sql!("site_data__select_term_taxonomy"), [oid], |r| {
                         r.get::<_, String>(0)
                     })
                     .ok()
@@ -771,7 +761,7 @@ fn menu_li_tevily(items: &[Value], site_url: &str) -> String {
 /// or derived from settings — never a hardcoded aucoeur string.
 fn chrome_ctx(conn: &Connection, site_url: &str, lang: &str) -> Value {
     let get = |k: &str| -> String {
-        conn.query_row("SELECT value FROM settings WHERE key=?1", [k], |r| r.get::<_, String>(0))
+        conn.query_row(sql!("intake__select_setting"), [k], |r| r.get::<_, String>(0))
             .unwrap_or_default()
     };
     let theme: Value = get("plugin:theme-traveltour:general")
@@ -790,7 +780,7 @@ fn chrome_ctx(conn: &Connection, site_url: &str, lang: &str) -> Value {
     let media_path = |id: &str| -> Option<(String, String)> {
         let wid: i64 = id.parse().ok()?;
         conn.query_row(
-            "SELECT path, COALESCE(alt,'') FROM media WHERE wp_id=?1",
+            sql!("site_data__select_media_by_wp_id"),
             [wid],
             |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
         )
@@ -801,7 +791,7 @@ fn chrome_ctx(conn: &Connection, site_url: &str, lang: &str) -> Value {
     // same heuristic the origin's header uses.
     let logo_fallback = || -> Option<(String, String)> {
         conn.query_row(
-            "SELECT path, COALESCE(alt,'') FROM media              WHERE LOWER(path) LIKE '%logo%' ORDER BY wp_id LIMIT 1",
+            sql!("site_data__select_logo_fallback"),
             [],
             |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
         )
@@ -824,7 +814,7 @@ fn chrome_ctx(conn: &Connection, site_url: &str, lang: &str) -> Value {
        with translations — non-primary pages substitute the translated
        copy verbatim (same post-processing as the primary string). */
     let primary = conn
-        .query_row("SELECT value FROM settings WHERE key='primary_lang'", [], |r| {
+        .query_row(sql!("site_data__select_primary_lang"), [], |r| {
             r.get::<_, String>(0)
         })
         .unwrap_or_default();
@@ -879,7 +869,7 @@ fn chrome_ctx(conn: &Connection, site_url: &str, lang: &str) -> Value {
         if raw.is_empty() {
             return String::new();
         }
-        let expanded = crate::render::shortcode::expand_shortcodes(&raw, site_url, Some(conn));
+        let expanded = crate::render::shortcode::expand_shortcodes(&raw, site_url, Some(conn), None);
         crate::url_util::rewrite_own_origin(&expanded, site_url, &menu_aliases(conn, site_url))
     };
     // Social profile URLs for JSON-LD sameAs — theme social options +
@@ -935,10 +925,10 @@ fn chrome_ctx(conn: &Connection, site_url: &str, lang: &str) -> Value {
         "topbar_left_html": bar("topbar_left_html"),
         "topbar_right_html": bar("topbar_right_html"),
         "copyright_left_html": crate::url_util::rewrite_own_origin(
-            &crate::render::shortcode::expand_shortcodes(&get("copyright_left_html"), site_url, Some(conn)),
+            &crate::render::shortcode::expand_shortcodes(&get("copyright_left_html"), site_url, Some(conn), None),
             site_url, &menu_aliases(conn, site_url)),
         "copyright_right_html": crate::url_util::rewrite_own_origin(
-            &crate::render::shortcode::expand_shortcodes(&get("copyright_right_html"), site_url, Some(conn)),
+            &crate::render::shortcode::expand_shortcodes(&get("copyright_right_html"), site_url, Some(conn), None),
             site_url, &menu_aliases(conn, site_url)),
         "sticky": sticky,
         "contact_slugs": serde_json::from_str::<serde_json::Value>(&get("contact_slugs")).unwrap_or(Value::Null),
@@ -973,13 +963,13 @@ impl IfEmpty for String {
 /// variants when the attachment metadata carries them).
 fn favicons_html(conn: &Connection, site_url: &str) -> String {
     let id: i64 = conn
-        .query_row("SELECT CAST(value AS INTEGER) FROM settings WHERE key='site_icon'", [], |r| r.get(0))
+        .query_row(sql!("site_data__select_site_icon"), [], |r| r.get(0))
         .unwrap_or(0);
     if id == 0 {
         return String::new();
     }
     let (path, sizes): (String, String) = match conn.query_row(
-        "SELECT path, COALESCE(sizes_json,'{}') FROM media WHERE wp_id=?1",
+        sql!("site_data__select_media_sizes"),
         [id],
         |r| Ok((r.get(0)?, r.get(1)?)),
     ) {
@@ -1063,7 +1053,7 @@ pub(crate) fn flag_src(conn: &Connection, site_url: &str, lang: &str) -> String 
     let site = site_url.trim_end_matches('/');
     let img: String = conn
         .query_row(
-            "SELECT path FROM media WHERE LOWER(alt)=LOWER(?1) OR LOWER(title)=LOWER(?1) LIMIT 1",
+            sql!("site_data__select_flag_media"),
             [format!("flag {lang}")],
             |r| r.get(0),
         )
@@ -1115,7 +1105,7 @@ fn lang_flags_sticky_html(conn: &Connection, site_url: &str) -> String {
 /// traffic/date rules client-side exactly like WP.
 fn chaty_js(conn: &Connection, site_url: &str) -> String {
     let get = |k: &str| -> String {
-        conn.query_row("SELECT value FROM settings WHERE key=?1", [k], |r| r.get::<_, String>(0))
+        conn.query_row(sql!("intake__select_setting"), [k], |r| r.get::<_, String>(0))
             .unwrap_or_default()
     };
     let g = |k: &str, d: &str| -> String {
@@ -1147,9 +1137,9 @@ fn chaty_js(conn: &Connection, site_url: &str) -> String {
         let sql = if sfx.is_empty() {
             // suffixless widget — exclude `cht_social_<N>_*` rows that
             // belong to widgets 1+.
-            "SELECT key, value FROM settings WHERE key GLOB ?1 AND key NOT GLOB 'cht_social_[0-9]*_*'"
+            sql!("site_data__select_chaty_channels_base")
         } else {
-            "SELECT key, value FROM settings WHERE key GLOB ?1"
+            sql!("site_data__select_chaty_channels")
         };
         let mut st = match conn.prepare(sql) {
             Ok(s) => s,
@@ -1253,7 +1243,7 @@ fn chaty_js(conn: &Connection, site_url: &str) -> String {
 }
 fn chaty_css(conn: &Connection, site_url: &str) -> String {
     let has: bool = conn
-        .query_row("SELECT 1 FROM settings WHERE value='1' AND (key='cht_active' OR key GLOB 'cht_active_[0-9]*') LIMIT 1", [], |r| {
+        .query_row(sql!("site_data__select_chaty_active"), [], |r| {
             r.get::<_, i64>(0)
         })
         .is_ok();

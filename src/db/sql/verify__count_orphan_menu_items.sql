@@ -1,0 +1,1 @@
+SELECT COUNT(*) FROM menu_items m WHERE NOT EXISTS (SELECT 1 FROM menus n WHERE n.id=m.menu_id)

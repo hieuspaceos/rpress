@@ -4,9 +4,10 @@
 //! ```python
 //! def scope_css(css): strip comments; for each rule: at-rules pass
 //! through per name (media/supports/layer recurse, keyframes/font-face
-//! verbatim, charset/import/namespace dropped); style rules get every
-//! comma-separated selector prefixed with `.gdlr-core-pb-livemode`
-//! (html/body/:root collapse onto the scope itself).
+//! verbatim, import verbatim, charset/namespace dropped); style rules
+//! get every comma-separated selector prefixed with
+//! `.gdlr-core-pb-livemode` (html/body/:root collapse onto the scope
+//! itself).
 //! ```
 //!
 //! Used by `theme_traveltour::migrate` to emit `<name>.scoped.css` twins
@@ -19,20 +20,24 @@ fn strip_comments(css: &str) -> String {
     let mut out = String::with_capacity(css.len());
     let b = css.as_bytes();
     let mut i = 0;
+    // `start` tracks the first byte not yet emitted; we push whole `&str`
+    // slices so multibyte UTF-8 is copied verbatim, never byte-by-byte.
+    let mut start = 0;
     while i + 1 < b.len() {
         if b[i] == b'/' && b[i + 1] == b'*' {
+            out.push_str(&css[start..i]);
             match css[i + 2..].find("*/") {
                 Some(j) => i += 2 + j + 2,
-                None => break,
+                // Unterminated comment: keep the remainder verbatim
+                // (parity with the previous behaviour).
+                None => i = b.len(),
             }
+            start = i;
         } else {
-            out.push(b[i] as char);
             i += 1;
         }
     }
-    if i < b.len() {
-        out.push_str(&css[i..]);
-    }
+    out.push_str(&css[start..]);
     out
 }
 
@@ -105,10 +110,10 @@ fn scope_block(css: &str, i: usize) -> (String, usize) {
                 return (format!("{head}{{{}}}", scope_css(inner)), end)
             }
             "font-face" | "page" | "property" | "viewport" | "keyframes"
-            | "-webkit-keyframes" | "-moz-keyframes" => {
+            | "-webkit-keyframes" | "-moz-keyframes" | "import" => {
                 return (css[i..end].to_string(), end)
             }
-            "charset" | "import" | "namespace" => return (String::new(), end),
+            "charset" | "namespace" => return (String::new(), end),
             _ => return (css[i..end].to_string(), end),
         }
     }
@@ -157,5 +162,34 @@ mod tests {
         assert!(out.contains(".gdlr-core-pb-livemode .x"), "{out}");
         assert!(out.contains("from{a:0}"), "{out}");
         assert!(out.contains("@import"), "{out}"); // ';' rules pass verbatim (parity with scope-css.py)
+    }
+
+    #[test]
+    fn non_ascii_roundtrips_byte_identical() {
+        // Multibyte UTF-8 in declarations must not be mangled into
+        // Latin-1 mojibake by byte-wise copying.
+        let css = ".t::after{content:\"héllo — wörld ☕\"} /* kommentar äöü */ .u{background:url('café.png')}";
+        let out = scope_css(css);
+        assert!(out.contains("héllo — wörld ☕"), "{out}");
+        assert!(out.contains("café.png"), "{out}");
+        // é widened byte-wise would appear as "Ã©"; none may be present.
+        assert!(!out.contains("Ã©"), "{out}");
+        // Byte-widening turns each `é` into the two chars Ã and ©; the
+        // two `é`s (héllo, café) must survive intact.
+        assert_eq!(out.matches('é').count(), 2, "{out}");
+    }
+
+    #[test]
+    fn import_rule_passes_verbatim() {
+        let css = "@import 'https://fonts.googleapis.com/css2?family=Inter:wght@400&display=swap'; .a{x:1}";
+        let out = scope_css(css);
+        assert!(
+            out.contains(
+                "@import 'https://fonts.googleapis.com/css2?family=Inter:wght@400&display=swap';"
+            ),
+            "{out}"
+        );
+        // Surrounding rules are still scoped — @import is untouched.
+        assert!(out.contains(".gdlr-core-pb-livemode .a{x:1}"), "{out}");
     }
 }

@@ -44,6 +44,7 @@ pub(crate) async fn backup_page(State(app): State<App>, headers: HeaderMap) -> R
     let body = format!(
         r#"<h1>Backup</h1><hr class="wp-header-end">
 <p>Snapshots the site workdir into <code>work/{}/backups/&lt;timestamp&gt;.tar.gz</code> — a consistent <code>VACUUM INTO</code> copy of <code>rpress.db</code> plus <code>www/</code> and <code>sites/{}.env</code>. Keeps the newest 5 archives. Restore via <code>rpress site init --backup &lt;archive&gt;</code>.</p>
+<p><b>Importante:</b> el archivo contiene credenciales vivas — tokens de sesión, contraseñas de aplicación y secretos TOTP pendientes — trátelo como un archivo de credenciales y guárdelo en un lugar restringido.</p>
 <form method="post" action="/admin/tools/backup"><input type="hidden" name="csrf" value="{}"><button type="submit" class="button button-primary">Backup now</button></form>
 {table}"#,
         esc(&sc.slug), esc(&sc.slug), esc(&s.csrf)
@@ -64,8 +65,10 @@ pub(crate) async fn backup_run(State(app): State<App>, headers: HeaderMap, Form(
     let work = sc.db.parent().unwrap_or_else(|| std::path::Path::new(".")).to_path_buf();
     let env = crate::site::env_path(&std::env::current_dir().unwrap_or_default(), &sc.slug);
     // VACUUM INTO + tar of a multi-GB www/ takes minutes — never block
-    // a tokio worker on it.
-    let res = tokio::task::spawn_blocking(move || crate::backup::run_backup(&work, &env, 5))
+    // a tokio worker on it. The db filename is whatever --db said, not
+    // always rpress.db.
+    let db = sc.db.clone();
+    let res = tokio::task::spawn_blocking(move || crate::backup::run_backup_db(&work, &db, &env, 5))
         .await;
     match res {
         Ok(Ok(_)) => Redirect::to("/admin/tools/backup").into_response(),
@@ -82,7 +85,7 @@ pub(crate) async fn backup_download(State(app): State<App>, headers: HeaderMap, 
     let dir = backups_dir(sc);
     let Ok(path) = crate::backup::resolve(&dir, &name) else { return StatusCode::BAD_REQUEST.into_response() };
     // Stream in chunks — a multi-GB archive can't be read into memory.
-    let Ok(mut file) = std::fs::File::open(&path) else { return StatusCode::NOT_FOUND.into_response(); };
+    let Ok(file) = std::fs::File::open(&path) else { return StatusCode::NOT_FOUND.into_response(); };
     let stream = futures_util::stream::unfold(file, |mut f| async move {
         let chunk = tokio::task::spawn_blocking(move || {
             let mut buf = vec![0u8; 256 * 1024];

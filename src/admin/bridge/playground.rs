@@ -156,7 +156,7 @@ pub(crate) fn spawn(
         let dump = www.parent().map(|w| w.join("dump.sql"));
         let opt = |key: &str| -> Option<String> {
             let row: Option<String> = c
-                .query_row("SELECT value FROM settings WHERE key=?1", [key], |r| r.get(0))
+                .query_row(sql!("intake__select_setting"), [key], |r| r.get(0))
                 .ok()
                 .filter(|s: &String| !s.trim().is_empty());
             match row {
@@ -165,7 +165,7 @@ pub(crate) fn spawn(
                     let v = option_from_dump(dump.as_deref(), key);
                     if let Some(v) = &v {
                         let _ = c.execute(
-                            "INSERT OR REPLACE INTO settings(key,value) VALUES(?1,?2)",
+                            sql!("import__insert_or_replace"),
                             rusqlite::params![key, v],
                         );
                     }
@@ -251,10 +251,7 @@ pub(crate) fn project_post(rpress_db: &Path, wp_content: &Path, post_id: i64) ->
     let src = crate::db::conn(rpress_db).context("open rpress.db for projection")?;
     let post: Option<serde_json::Value> = src
         .query_row(
-            "SELECT COALESCE(wp_id, id), title, body_html, excerpt, status,
-                    slug, kind, COALESCE(parent_id,0), COALESCE(menu_order,0),
-                    COALESCE(published_at,''), COALESCE(modified_at,'')
-             FROM posts WHERE id = ?1",
+            sql!("bridge_playground__select_post_projection"),
             [post_id],
             |r| {
                 Ok(serde_json::json!({
@@ -274,7 +271,7 @@ pub(crate) fn project_post(rpress_db: &Path, wp_content: &Path, post_id: i64) ->
         )
         .ok();
     let Some(post) = post else { return Ok(()) };
-    let mut st = src.prepare("SELECT meta_key, meta_value FROM post_meta WHERE post_id = ?1")?;
+    let mut st = src.prepare(sql!("bridge_playground__select_post_meta"))?;
     let meta: serde_json::Map<String, serde_json::Value> = st
         .query_map([post_id], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
@@ -307,13 +304,11 @@ mod tests {
         let c = crate::db::conn(&rdb).unwrap();
         crate::schema::migrate_conn(&c).unwrap();
         c.execute(
-            "INSERT INTO posts(id, wp_id, slug, title, body_html, status, kind)
-             VALUES(7, 42, 'hello', 'Hi', '<p>x</p>', 'publish', 'page')",
+            sql!("bridge_playground__test_insert_post"),
             [],
         ).unwrap();
         c.execute(
-            "INSERT INTO post_meta(post_id, meta_key, meta_value)
-             VALUES(7, 'gdlr-core-layout', 'wide'), (7, 'other', 'x')",
+            sql!("bridge_playground__test_insert_post_meta"),
             [],
         ).unwrap();
         drop(c);
@@ -387,10 +382,7 @@ mod tests2 {
         let dir = std::env::temp_dir().join(format!("rpress-od-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let dump = dir.join("dump.sql");
-        std::fs::write(&dump,
-            "INSERT INTO `wp_options` VALUES (1,'siteurl','http://x',0),\
-             (2,'stylesheet','tevily_child',0),\
-             (3,'active_plugins','a:1:{i:0;s:9:\"a/a.php\";}',0);\n").unwrap();
+        std::fs::write(&dump, sql!("bridge_playground__test_dump_wp_options")).unwrap();
         assert_eq!(option_from_dump(Some(&dump), "stylesheet").as_deref(), Some("tevily_child"));
         assert!(option_from_dump(Some(&dump), "active_plugins").unwrap().starts_with("a:1:"));
         assert_eq!(option_from_dump(Some(&dump), "nope"), None);

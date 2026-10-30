@@ -1,0 +1,1 @@
+UPDATE posts SET body_html=?1 WHERE id=?2

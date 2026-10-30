@@ -1,0 +1,3 @@
+CREATE TABLE sessions(token TEXT PRIMARY KEY, user_id INTEGER NOT NULL,
+    ua TEXT NOT NULL, ip TEXT NOT NULL, created_at TEXT NOT NULL,
+    last_seen TEXT NOT NULL, expires_at INTEGER NOT NULL DEFAULT 0);

@@ -125,7 +125,7 @@ pub(crate) fn page(conn: &Connection, templates: &Path, ctx: &PostCtx) -> Result
         .iter()
         .map(|(slug, name)| {
             json!({
-                "url": format!("{site}{}/{}/", crate::lang::url_prefix(&lang_cfg, &ctx.lang), crate::admin::plugins::theme_traveltour::cat_path(conn, slug)),
+                "url": format!("{site}{}/{}/", crate::lang::url_prefix(&lang_cfg, &ctx.lang), crate::plugins::theme_traveltour::cat_path(conn, slug)),
                 "name": esc(name),
             })
         })
@@ -141,7 +141,7 @@ pub(crate) fn page(conn: &Connection, templates: &Path, ctx: &PostCtx) -> Result
     let post_url = format!("{site}{}/{}/", crate::lang::url_prefix(&lang_cfg, &ctx.lang), ctx.slug);
     let site_name = conn
         .query_row(
-            "SELECT value FROM settings WHERE key='site_name' LIMIT 1",
+            sql!("render__select_site_name"),
             [],
             |r| r.get::<_, String>(0),
         )
@@ -295,7 +295,7 @@ pub(crate) fn page(conn: &Connection, templates: &Path, ctx: &PostCtx) -> Result
     // attributes and text nodes — pre-escape at the boundary (templates run
     // AutoEscape::None; `|safe` on names marks them intentionally raw).
     let sidebar_post = crate::widgets::render_sidebar(conn, "sidebar-post", site, &ctx.lang, &ctx.slug, &ctx.tour_base)?;
-    let tag_base = crate::admin::plugins::theme_traveltour::tag_base(conn);
+    let tag_base = crate::plugins::theme_traveltour::tag_base(conn);
     for (k, v) in serde_json::json!({
         "seo_title": esc_attr(&seo_title),
         "seo_desc": seo_desc,
@@ -450,7 +450,7 @@ pub(crate) fn fr_date_parts(published: &str) -> (String, String, String, String,
 fn breadcrumb_chain(conn: &Connection, cats: &[(String, String)]) -> Vec<(String, String)> {
     let mut best: Vec<(String, String)> = Vec::new();
     for (slug, name) in cats {
-        let mut chain: Vec<(String, String)> = crate::admin::plugins::theme_traveltour::cat_path(conn, slug)
+        let mut chain: Vec<(String, String)> = crate::plugins::theme_traveltour::cat_path(conn, slug)
             .split('/')
             .map(|s| {
                 let n = cats
@@ -675,7 +675,7 @@ fn is_staff(conn: &Connection, author: &str) -> bool {
         return true;
     }
     conn.query_row(
-        "SELECT 1 FROM users WHERE lower(display_name)=?1 OR lower(email)=?1 LIMIT 1",
+        sql!("render_post__select_staff"),
         [a],
         |r| r.get::<_, i64>(0),
     )
@@ -748,10 +748,10 @@ fn esc_attr(s: &str) -> String {
 fn translation_urls(conn: &Connection, id: i64, site: &str, tour_base: &str) -> Vec<(String, String)> {
     let cfg = crate::lang::config(conn);
     let group: Option<String> = conn
-        .query_row("SELECT group_id FROM post_translation_members WHERE post_id=?1 LIMIT 1", [id], |r| r.get(0))
+        .query_row(sql!("chrome__select_translation_group"), [id], |r| r.get(0))
         .ok();
     let Some(group) = group else { return Vec::new(); };
-    let mut stmt = match conn.prepare("SELECT lang, post_id FROM post_translation_members WHERE group_id=?1 ORDER BY lang") {
+    let mut stmt = match conn.prepare(sql!("chrome__select_group_members")) {
         Ok(s) => s,
         Err(_) => return Vec::new(),
     };
@@ -763,7 +763,7 @@ fn translation_urls(conn: &Connection, id: i64, site: &str, tour_base: &str) -> 
         .filter_map(|(lang, pid)| {
             conn.query_row(sql!("render__select_slug_kind"), [pid], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
                 .ok()
-                .map(|(slug, kind)| (lang.clone(), crate::lang::page_url(&cfg, site, &lang, &kind, &slug, crate::admin::plugins::kind_url_base(tour_base, &kind).as_deref())))
+                .map(|(slug, kind)| (lang.clone(), crate::lang::page_url(&cfg, site, &lang, &kind, &slug, crate::plugins::kind_url_base(tour_base, &kind).as_deref())))
         })
         .collect()
 }
@@ -1315,6 +1315,13 @@ fn tex_run(t: &str) -> String {
     r
 }
 
+/// TOC text emit: `tex_run` output may carry literal `<`/`>` decoded from
+/// `&lt;`/`&gt;` in the heading — re-escape only those two (never `&`, or
+/// the entities tex_run produces would double-encode).
+fn toc_text(t: &str) -> String {
+    tex_run(t).replace('<', "&lt;").replace('>', "&gt;")
+}
+
 /* ---------------- ez-toc ---------------- */
 
 /// Fold accented chars to ASCII base (subset needed by FR/ES headings).
@@ -1359,8 +1366,7 @@ fn toc_anchor(text: &str) -> String {
     for c in folded.chars() {
         match c {
             ' ' => out.push('_'),
-            '\'' | '’' | '?' | '!' | '‘' | ',' | '.' | ':' | ';' | '(' | ')' | '«' | '»' | '"' => {}
-            c if c.is_ascii() => out.push(c),
+            '\'' | '’' | '?' | '!' | '‘' | ',' | '.' | ':' | ';' | '(' | ')' | '«' | '»' | '"' | '<' | '>' | '&' => {}
             c => {
                 let mut buf = [0u8; 4];
                 for b in c.encode_utf8(&mut buf).as_bytes() {
@@ -1458,7 +1464,7 @@ fn ez_toc(s: &str) -> String {
             }
             nav.push_str(&format!(
                 "<li class='ez-toc-page-1 ez-toc-heading-level-2'><a class=\"ez-toc-link ez-toc-heading-{}\" href=\"#{}\" >{}</a>",
-                h2_count, anchors[i], tex_run(&heads[i].3)
+                h2_count, anchors[i], toc_text(&heads[i].3)
             ));
             // following level-3 children
             let mut j = i + 1;
@@ -1476,7 +1482,7 @@ fn ez_toc(s: &str) -> String {
                     let page = if k == 0 { "" } else { "ez-toc-page-1 " };
                     nav.push_str(&format!(
                         "<li class='{page}ez-toc-heading-level-3'><a class=\"ez-toc-link ez-toc-heading-{}\" href=\"#{}\" >{}</a></li>",
-                        idx + 1, anchors[*idx], tex_run(&heads[*idx].3)
+                        idx + 1, anchors[*idx], toc_text(&heads[*idx].3)
                     ));
                 }
                 nav.push_str("</ul>");
@@ -1487,7 +1493,7 @@ fn ez_toc(s: &str) -> String {
             // level-3 without a preceding h2: still emit at top level
             nav.push_str(&format!(
                 "<li class='ez-toc-page-1 ez-toc-heading-level-3'><a class=\"ez-toc-link ez-toc-heading-{}\" href=\"#{}\" >{}</a></li>",
-                i + 1, anchors[i], tex_run(&heads[i].3)
+                i + 1, anchors[i], toc_text(&heads[i].3)
             ));
             i += 1;
         }
@@ -1572,5 +1578,21 @@ mod tests {
         let out = wpautop(src);
         assert!(out.contains("<a href=\"/x\">lien</a></p></blockquote>"), "{out}");
         assert!(out.contains("<p>Nos derniers mots,</p>\n<p>fin</p>"), "{out}");
+    }
+
+    #[test]
+    fn toc_escapes_decoded_markup() {
+        // Stored-XSS regression: a heading whose stored entities decode to
+        // markup must re-escape in the TOC link text and never reach `id`/`href`.
+        let src = "<h2>&lt;script&gt;alert(1)&lt;/script&gt;</h2><p>x</p>";
+        let out = ez_toc(src);
+        assert!(!out.contains("<script>"), "{out}");
+        assert!(out.contains("&lt;script&gt;alert(1)&lt;/script&gt;"), "{out}");
+        // anchor drops <>& — no markup chars in id/href
+        assert!(!out.contains("id=\"<"), "{out}");
+        // benign heading text still emits entities correctly (no double-encode)
+        let src2 = "<h2>Déjà vu &amp; l’été</h2><p>x</p>";
+        let out2 = ez_toc(src2);
+        assert!(out2.contains("Déjà vu &amp;"), "{out2}");
     }
 }

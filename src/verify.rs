@@ -7,7 +7,13 @@ use rusqlite::Connection;
 use std::path::Path;
 
 fn check(c: &Connection, failed: &mut u32, name: &str, sql: &str, expect: i64) {
-    let got: i64 = c.query_row(sql, [], |r| r.get(0)).unwrap_or(-1);
+    check_p(c, failed, name, sql, &[], expect);
+}
+
+/// `check` with bound params — identifiers still come from the dump, so
+/// interpolated `kind`/`lang` strings would silently break the count.
+fn check_p(c: &Connection, failed: &mut u32, name: &str, sql: &str, params: &[&dyn rusqlite::ToSql], expect: i64) {
+    let got: i64 = c.query_row(sql, params, |r| r.get(0)).unwrap_or(-1);
     let ok = if expect < 0 {
         "?"
     } else if got == expect {
@@ -34,6 +40,7 @@ pub fn verify_refs(db: &Path, templates: &Path, site_url: &str, tour_base: &str)
     ];
     let refdir = templates.join("reference");
     println!("{:<10} {:>7} {:>8} {:>8}", "page", "match%", "ref", "out");
+    let c = crate::db::conn(db)?;
     let mut all_ok = true;
     for (label, file, spec) in manifest {
         let refp = refdir.join(file);
@@ -49,7 +56,7 @@ pub fn verify_refs(db: &Path, templates: &Path, site_url: &str, tour_base: &str)
             all_ok = false;
             continue;
         };
-        let ours = match crate::render::render_slug(db, templates, slug, lang, kind, site_url, tour_base) {
+        let ours = match crate::render::render_slug_conn(&c, templates, slug, lang, kind, site_url, tour_base) {
             Ok((h, _, _)) => h,
             Err(e) => {
                 println!("{label:<10} render error: {e}");
@@ -190,15 +197,16 @@ pub fn run(db: &Path) -> Result<()> {
                 let n = expect[k].as_i64().unwrap_or(0);
                 if let Some(rest) = k.strip_prefix("posts:") {
                     let (kind, lang) = rest.rsplit_once(':').unwrap_or((rest, ""));
-                    check(&c, &mut failed, &format!("{kind} {lang}"),
-                        &format!("SELECT COUNT(*) FROM posts WHERE kind='{kind}' AND lang='{lang}' AND status IN ('publish','draft')"), n);
+                    check_p(&c, &mut failed, &format!("{kind} {lang}"),
+                        sql!("verify__count_posts_kind_lang"),
+                        &[&kind, &lang], n);
                 } else {
                     let (label, sql) = match k.as_str() {
-                        "comments_total" => ("comments", "SELECT COUNT(*) FROM comments"),
-                        "menu_items" => ("menu_items", "SELECT COUNT(*) FROM menu_items"),
-                        "menus" => ("menus", "SELECT COUNT(*) FROM menus"),
-                        "media" => ("media", "SELECT COUNT(*) FROM media"),
-                        "translation_members" => ("translation members", "SELECT COUNT(*) FROM post_translation_members"),
+                        "comments_total" => ("comments", sql!("verify__count_comments")),
+                        "menu_items" => ("menu_items", sql!("verify__count_menu_items")),
+                        "menus" => ("menus", sql!("verify__count_menus")),
+                        "media" => ("media", sql!("verify__count_media")),
+                        "translation_members" => ("translation members", sql!("verify__count_translation_members")),
                         _ => continue,
                     };
                     check(&c, &mut failed, label, sql, n);
@@ -207,7 +215,7 @@ pub fn run(db: &Path) -> Result<()> {
             /* Widgets compare with `>=` like redirects: admins can add
                widget rows post-import without breaking parity. */
             let want_w: i64 = expect.get("widgets").and_then(|v| v.as_i64()).unwrap_or(0);
-            let widgets: i64 = c.query_row("SELECT COUNT(*) FROM widgets", [], |r| r.get(0)).unwrap_or(0);
+            let widgets: i64 = c.query_row(sql!("verify__count_widgets"), [], |r| r.get(0)).unwrap_or(0);
             let widgets_ok = widgets >= want_w;
             println!("{:<44} got={:<8} expect={:<8} {}", format!("widgets >= {want_w}"), widgets, want_w, if widgets_ok { "OK" } else { "MISMATCH" });
             if !widgets_ok {
@@ -226,24 +234,22 @@ pub fn run(db: &Path) -> Result<()> {
     println!("\n== integrity ==");
     // wp_id IS NULL on runtime-created rows (last_insert_rowid convention,
     // M12) — the id==wp_id invariant only applies to imported rows.
-    check(&c, &mut failed, "id == wp_id (posts)", "SELECT COUNT(*) FROM posts WHERE wp_id IS NOT NULL AND id != wp_id", 0);
-    check(&c, &mut failed, "id == wp_id (comments)", "SELECT COUNT(*) FROM comments WHERE wp_id IS NOT NULL AND id != wp_id", 0);
-    check(&c, &mut failed, "id == wp_id (media)", "SELECT COUNT(*) FROM media WHERE wp_id IS NOT NULL AND id != wp_id", 0);
+    check(&c, &mut failed, "id == wp_id (posts)", sql!("verify__count_wp_id_mismatch_posts"), 0);
+    check(&c, &mut failed, "id == wp_id (comments)", sql!("verify__count_wp_id_mismatch_comments"), 0);
+    check(&c, &mut failed, "id == wp_id (media)", sql!("verify__count_wp_id_mismatch_media"), 0);
     check(&c, &mut failed, "comments join posts.id",
-        "SELECT COUNT(*) FROM comments cm WHERE NOT EXISTS (SELECT 1 FROM posts p WHERE p.id=cm.post_id)", 0);
+        sql!("verify__count_orphan_comments"), 0);
     check(&c, &mut failed, "menu parent join items.id",
-        "SELECT COUNT(*) FROM menu_items m WHERE m.parent_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM menu_items p WHERE p.id=m.parent_id)", 0);
+        sql!("verify__count_orphan_menu_parents"), 0);
     check(&c, &mut failed, "menu_id join menus.id",
-        "SELECT COUNT(*) FROM menu_items m WHERE NOT EXISTS (SELECT 1 FROM menus n WHERE n.id=m.menu_id)", 0);
+        sql!("verify__count_orphan_menu_items"), 0);
     check(&c, &mut failed, "translation members resolve",
-        "SELECT COUNT(*) FROM post_translations t WHERE (t.fr_post_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM posts p WHERE p.id=t.fr_post_id)) OR (t.es_post_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM posts p WHERE p.id=t.es_post_id))", 0);
+        sql!("verify__count_orphan_translations"), 0);
     check(&c, &mut failed, "body_json invalid",
-        "SELECT COUNT(*) FROM posts WHERE json_valid(body_json)=0", 0);
+        sql!("verify__count_invalid_body_json"), 0);
     // posts whose lang isn't in the imported languages set (N-lang generic)
     check(&c, &mut failed, "posts without lang",
-        "SELECT COUNT(*) FROM posts p WHERE NOT EXISTS (
-           SELECT 1 FROM settings s WHERE s.key='languages'
-             AND (','||s.value||',') LIKE ('%,'||p.lang||',%'))", 0);
+        sql!("verify__count_posts_without_lang"), 0);
     // page_on_front only matters when the front page is a static page —
     // show_on_front='posts' (WP's default) legitimately leaves it unset/0.
     let show_on_front: String = c
@@ -251,7 +257,7 @@ pub fn run(db: &Path) -> Result<()> {
         .unwrap_or_else(|_| "posts".into());
     if show_on_front == "page" {
         check(&c, &mut failed, "settings.page_on_front set",
-            "SELECT COUNT(*) FROM settings WHERE key='page_on_front' AND value != '0'", 1);
+            sql!("verify__count_page_on_front"), 1);
     } else {
         println!("{:<44} {}", "settings.page_on_front set", "skipped (show_on_front=posts)");
     }

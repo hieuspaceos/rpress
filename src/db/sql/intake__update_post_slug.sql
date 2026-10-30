@@ -1,0 +1,1 @@
+UPDATE posts SET slug=?1 WHERE id=?2

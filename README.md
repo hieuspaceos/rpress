@@ -120,6 +120,19 @@ Public requests are `fs::read` of a pre-generated file. If the file is missing
 back — the same trick WP caching plugins approximate. nginx or a CDN can front
 `cache/` and `www/` directly for even faster serving.
 
+## Install on a Linux VPS — one command
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/OWNER/REPO/main/rpress/install.sh | bash
+```
+
+(replace `OWNER/REPO` with the repo hosting this file — or clone the repo
+and run `rpress/install.sh` directly). The script installs a released Linux
+binary when one exists, otherwise builds from source; runs `site init` to
+import the WP dump; writes + starts a hardened `rpress-<slug>` systemd
+unit; and prints the nginx proxy block. No PHP/MySQL needed for the core —
+`php-cli`+`bubblewrap` only if the site opts into the plugin bridge.
+
 ## Quick start — migration path
 
 ```bash
@@ -277,8 +290,9 @@ the origin only has to be live at import.
 
 ```
 src/
-  admin/        axum server — wp-admin screen equivalents
-  db/           every SQL statement lives here; sql/*.sql loaded via include_str!
+  admin/        axum server — wp-admin screens + public serve (serve.rs)
+  db/           SQL statement text lives in db/sql/*.sql; helpers re-export
+  plugins/      cross-layer adapter registry (kinds, screens, hooks)
   render*.rs    public page render + cache write-back
   generate.rs   bulk warm/refresh (not the serving path)
   intake.rs     public comment/review intake
@@ -286,7 +300,9 @@ src/
   sitefx.rs     sitemap, feeds, robots.txt, 404, redirects.map, llms.txt
   schema.rs     DDL owner
 templates/      minijinja templates — admin/ + public theme shells (base_<lang>.html)
-scripts/        e2e-site.sh — repeatable dump→serve workflow per site env
+scripts/        e2e-site.sh — dump→serve workflow; check-layers.sh — architecture gate
+plugins/specs/  declarative plugin adapters (baked into the binary by build.rs)
+install.sh     one-command Linux VPS installer
 sites/          per-site env configs (source, local URL, clone opt-in)
 www/            persistent public assets (front.css, nav.js, uploads, wp-includes)
 docs/           architecture, code standards, API reference

@@ -14,7 +14,7 @@ pub fn add_user(db: &Path, email: &str, password: &str, role: &str) -> Result<()
     let conn = crate::db::conn(db)?;
     let hash = hash_password(password)?;
     conn.execute(
-        "INSERT INTO users(email, pass_hash, role, created_at) VALUES(?1,?2,?3,datetime('now'))",
+        crate::sql!("auth__insert_user"),
         params![email, hash, role],
     )
     .with_context(|| format!("insert user {email}"))?;
@@ -26,7 +26,7 @@ pub fn set_password(db: &Path, email: &str, password: &str) -> Result<()> {
     let conn = crate::db::conn(db)?;
     let hash = hash_password(password)?;
     let n = conn.execute(
-        "UPDATE users SET pass_hash=?1 WHERE email=?2",
+        crate::sql!("auth__update_pass_by_email"),
         params![hash, email],
     )?;
     if n == 0 {

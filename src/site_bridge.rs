@@ -9,7 +9,8 @@
 //! a clean rebuild (bounded blast radius by design; wp.db is never a
 //! source of truth).
 
-use anyhow::{Context, Result};
+use crate::site;
+use anyhow::{bail, Context, Result};
 use std::path::Path;
 use std::time::SystemTime;
 
@@ -79,6 +80,10 @@ fn status(base: &Path) -> Result<()> {
 }
 
 fn kill(base: &Path, slug: &str) -> Result<()> {
+    // slug → remove_dir_all: a path like "../.." must never leave www/bridge.
+    if !site::valid_slug(slug) {
+        bail!("invalid slug {slug:?} — want [a-z0-9][a-z0-9-]*");
+    }
     let dir = base.join(slug);
     if dir.is_dir() {
         std::fs::remove_dir_all(&dir).with_context(|| format!("remove {}", dir.display()))?;

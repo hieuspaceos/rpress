@@ -1,0 +1,1 @@
+SELECT id FROM menus WHERE COALESCE(lang,'')=?1 LIMIT 1

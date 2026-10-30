@@ -457,7 +457,8 @@ fn import_phase(c: &Ctx) -> Result<PhaseOut> {
         let _ = std::fs::remove_file(f);
     }
     let _ = std::fs::remove_dir_all(&c.cache);
-    import::run(&c.dump, &c.db, &c.work.join("import-report.txt"))?;
+    // site build owns the workdir lifecycle — a re-run rebuilds, no prompt.
+    import::run(&c.dump, &c.db, &c.work.join("import-report.txt"), true)?;
     verify::run(&c.db)?;
     let db_mb = std::fs::metadata(&c.db)?.len() / (1 << 20);
     out(format!("rpress.db {db_mb}MB, report → work/{}/import-report.txt", c.env.site))
@@ -526,7 +527,7 @@ fn check(c: &Ctx) -> Result<PhaseOut> {
     // Belt-and-braces migration path: deploy-only pipelines never open
     // admin, so the plugin fold (tours DDL, namespaced settings keys,
     // taxonomy_map seed) must also run on `site build` boot. Idempotent.
-    crate::admin::plugins::migrate_all(&c.db);
+    crate::plugins::migrate_all(&c.db);
     let front: i64 = db
         .query_row(sql!("settings__select_int"), params!["page_on_front"], |r| r.get(0))
         .unwrap_or(0);
@@ -545,10 +546,10 @@ fn check(c: &Ctx) -> Result<PhaseOut> {
 
     let mut warns = vec![];
     let mut misses = vec![];
-    let kind_bases = crate::admin::plugins::resolve_bases(&c.env.tour_base);
+    let kind_bases = crate::plugins::resolve_bases(&c.env.tour_base);
     for (id, slug, lang, kind) in &rows {
         let mut rel = slug.clone();
-        if let Some(b) = crate::admin::plugins::base_for(&kind_bases, kind) {
+        if let Some(b) = crate::plugins::base_for(&kind_bases, kind) {
             rel = format!("{b}/{rel}");
         }
         if lang != &primary {

@@ -1,0 +1,1 @@
+UPDATE widgets SET sidebar_id=?2 WHERE sidebar_id=?1

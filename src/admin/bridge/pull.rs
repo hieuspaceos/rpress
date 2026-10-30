@@ -9,7 +9,7 @@
 //! ignored and wiped on the next spawn anyway.
 
 use anyhow::Result;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
 
 /// Tables the pull may write — a closed enum so a malformed spec can't
@@ -113,6 +113,16 @@ pub(crate) fn pull(wp_db: &Path, rpress_db: &Path, specs: &[WriteSpec]) -> Resul
     let dst = crate::db::conn(rpress_db)?;
     let tx = dst.unchecked_transaction()?;
     let mut copied = 0u64;
+    let mut skipped = 0u64;
+    // wp.db post_id is a WP ID — it resolves to a rpress row ONLY through
+    // posts.wp_id. Falling back to raw rowid would stamp the write onto an
+    // unrelated post (WP-created posts have no rpress row): skip + count.
+    let resolve = |post_id: i64| -> rusqlite::Result<Option<i64>> {
+        tx.query_row(
+            sql!("bridge_pull__select_id_from_posts"),
+            [post_id], |r| r.get(0),
+        ).optional()
+    };
     for s in specs {
         match s.table {
             PullTable::PostMeta => {
@@ -121,7 +131,7 @@ pub(crate) fn pull(wp_db: &Path, rpress_db: &Path, specs: &[WriteSpec]) -> Resul
                 // rpress post_meta PK is (post_id, meta_key, meta_value)
                 // so delete-then-insert = upsert semantics.
                 let mut st = src.prepare(
-                    "SELECT post_id, meta_key, meta_value FROM wp_postmeta WHERE meta_key LIKE ?1",
+                    sql!("bridge_pull__select_postmeta_like"),
                 )?;
                 let rows = st
                     .query_map([s.key_prefix], |r| {
@@ -129,16 +139,15 @@ pub(crate) fn pull(wp_db: &Path, rpress_db: &Path, specs: &[WriteSpec]) -> Resul
                     })?
                     .collect::<rusqlite::Result<Vec<_>>>()?;
                 for (post_id, k, v) in rows {
-                    // wp.db post_id is the WP ID (== rpress wp_id or id);
-                    // translate through posts.wp_id with id fallback.
-                    let rpress_id: i64 = tx.query_row(
-                        "SELECT COALESCE((SELECT id FROM posts WHERE wp_id=?1 LIMIT 1), ?1)",
-                        [post_id], |r| r.get(0),
-                    )?;
-                    tx.execute("DELETE FROM post_meta WHERE post_id=?1 AND meta_key=?2",
-                        rusqlite::params![rpress_id, k])?;
+                    let Some(rpress_id) = resolve(post_id)? else {
+                        skipped += 1;
+                        continue;
+                    };
+                    // OR REPLACE (not DELETE+INSERT): a WP post carrying
+                    // multiple rows for one meta_key used to crash mid-tx
+                    // after the DELETE already ran — half-applied pull.
                     tx.execute(
-                        "INSERT INTO post_meta(post_id, meta_key, meta_value) VALUES(?1, ?2, ?3)",
+                        sql!("posts__insert_post_meta"),
                         rusqlite::params![rpress_id, k, v],
                     )?;
                     copied += 1;
@@ -146,7 +155,7 @@ pub(crate) fn pull(wp_db: &Path, rpress_db: &Path, specs: &[WriteSpec]) -> Resul
             }
             PullTable::Settings => {
                 let mut st = src.prepare(
-                    "SELECT option_name, option_value FROM wp_options WHERE option_name LIKE ?1",
+                    sql!("bridge_pull__select_options_like"),
                 )?;
                 let rows = st
                     .query_map([s.key_prefix], |r| {
@@ -159,7 +168,7 @@ pub(crate) fn pull(wp_db: &Path, rpress_db: &Path, specs: &[WriteSpec]) -> Resul
                         None => k,
                     };
                     tx.execute(
-                        "INSERT OR REPLACE INTO settings(key, value) VALUES(?1, ?2)",
+                        sql!("bridge_pull__insert_or_replace_settings"),
                         rusqlite::params![k, v],
                     )?;
                     copied += 1;
@@ -171,7 +180,7 @@ pub(crate) fn pull(wp_db: &Path, rpress_db: &Path, specs: &[WriteSpec]) -> Resul
                 // our editor/public render expects JSON — unserialize, then
                 // re-encode. Non-serialized values pass through verbatim.
                 let mut st = src.prepare(
-                    "SELECT post_id, meta_value FROM wp_postmeta WHERE meta_key = ?1",
+                    sql!("bridge_pull__select_postmeta_eq"),
                 )?;
                 let rows = st
                     .query_map([s.key_prefix], |r| {
@@ -179,16 +188,16 @@ pub(crate) fn pull(wp_db: &Path, rpress_db: &Path, specs: &[WriteSpec]) -> Resul
                     })?
                     .collect::<rusqlite::Result<Vec<_>>>()?;
                 for (post_id, v) in rows {
-                    let rpress_id: i64 = tx.query_row(
-                        "SELECT COALESCE((SELECT id FROM posts WHERE wp_id=?1 LIMIT 1), ?1)",
-                        [post_id], |r| r.get(0),
-                    )?;
+                    let Some(rpress_id) = resolve(post_id)? else {
+                        skipped += 1;
+                        continue;
+                    };
                     let body = match crate::php_serialize::unserialize(v.as_bytes()) {
                         Ok(j) => j.to_string(),
                         Err(_) => v,
                     };
                     tx.execute(
-                        "UPDATE posts SET body_json=?2 WHERE id=?1",
+                        sql!("bridge_pull__update_body_json"),
                         rusqlite::params![rpress_id, body],
                     )?;
                     copied += 1;
@@ -197,6 +206,9 @@ pub(crate) fn pull(wp_db: &Path, rpress_db: &Path, specs: &[WriteSpec]) -> Resul
         }
     }
     tx.commit()?;
+    if skipped > 0 {
+        eprintln!("bridge pull: {copied} rows copied, {skipped} skipped (wp_id had no rpress post)");
+    }
     Ok(copied)
 }
 
@@ -232,25 +244,13 @@ mod tests {
         let rdb = dir.join("rpress.db");
         {
             let w = Connection::open(&wdb).unwrap();
-            w.execute_batch(
-                "CREATE TABLE wp_postmeta(post_id INT, meta_key TEXT, meta_value TEXT);
-                 CREATE TABLE wp_options(option_name TEXT, option_value TEXT);
-                 INSERT INTO wp_postmeta VALUES
-                    (42,'gdlr-core-page-builder','[{\"a\":1}]'),
-                    (42,'gdlr-core-skin','dark'),
-                    (42,'secret','x'),
-                    (43,'gdlr-core-skin','y');
-                 INSERT INTO wp_options VALUES
-                    ('gdlr-core-templates','{\"t\":1}'),
-                    ('admin_email','a@b.c');",
-            ).unwrap();
+            w.execute_batch(sql!("bridge_pull__test_seed_wpdb")).unwrap();
         }
         {
             let r = crate::db::conn(&rdb).unwrap();
             crate::schema::migrate_conn(&r).unwrap();
             r.execute(
-                "INSERT INTO posts(id, wp_id, slug, title, status, kind)
-                 VALUES(42, 42, 'p', 'P', 'publish', 'page')",
+                sql!("bridge_pull__test_insert_post"),
                 [],
             ).unwrap();
             // posts.id in rpress == wp post_id only when wp_id is set;
@@ -266,24 +266,65 @@ mod tests {
         pull(&wdb, &rdb, &specs).unwrap();
         let r = crate::db::conn(&rdb).unwrap();
         let metas: i64 = r.query_row(
-            "SELECT COUNT(*) FROM post_meta WHERE post_id=42 AND meta_key LIKE 'gdlr-core-%'",
+            sql!("bridge_pull__test_count_meta_like"),
             [], |x| x.get(0),
         ).unwrap();
         assert_eq!(metas, 2);
         let secret: i64 = r.query_row(
-            "SELECT COUNT(*) FROM post_meta WHERE meta_key='secret'", [], |x| x.get(0),
+            sql!("bridge_pull__test_count_meta_secret"), [], |x| x.get(0),
         ).unwrap();
         assert_eq!(secret, 0);
         let opt: i64 = r.query_row(
-            "SELECT COUNT(*) FROM settings WHERE key='plugin:goodlayers:gdlr-core-templates'", [], |x| x.get(0),
+            sql!("bridge_pull__test_count_setting_plugin"), [], |x| x.get(0),
         ).unwrap();
         assert_eq!(opt, 1);
         let admin: i64 = r.query_row(
-            "SELECT COUNT(*) FROM settings WHERE key='admin_email'", [], |x| x.get(0),
+            sql!("bridge_pull__test_count_setting_admin"), [], |x| x.get(0),
         ).unwrap();
         assert_eq!(admin, 0);
-        let bj: String = r.query_row("SELECT body_json FROM posts WHERE id=42", [], |x| x.get(0)).unwrap();
+        let bj: String = r.query_row(sql!("bridge_pull__test_select_body_json"), [], |x| x.get(0)).unwrap();
         assert_eq!(bj, "[{\"a\":1}]");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pull_skips_unknown_wp_id_and_survives_multivalued_meta() {
+        // Regression: (a) a wp_id with no rpress post must SKIP, not stamp
+        // meta onto an unrelated rowid; (b) duplicate (post_id,meta_key)
+        // rows must OR REPLACE, not crash mid-tx.
+        let dir = std::env::temp_dir().join(format!("rpress-pull2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let wdb = dir.join("wp.db");
+        let rdb = dir.join("rpress.db");
+        {
+            let w = Connection::open(&wdb).unwrap();
+            w.execute_batch(sql!("bridge_pull__test_seed_postmeta")).unwrap();
+        }
+        {
+            let r = crate::db::conn(&rdb).unwrap();
+            crate::schema::migrate_conn(&r).unwrap();
+            // rpress post id=1 exists but wp_id=7 maps to id=2? No —
+            // wp_id 7 resolves to id=1 via posts.wp_id; id=999 resolves
+            // to nothing and must not touch post 999-th rowid either.
+            r.execute(
+                sql!("bridge_pull__test_insert_post_2"),
+                [],
+            ).unwrap();
+        }
+        let specs = [WriteSpec { table: PullTable::PostMeta, key_column: "meta_key", key_prefix: "gdlr-core-%", key_map: None }];
+        let copied = pull(&wdb, &rdb, &specs).unwrap();
+        assert_eq!(copied, 2); // both rows for wp_id 7 (multi-value meta)
+        let r = crate::db::conn(&rdb).unwrap();
+        let vals: i64 = r.query_row(
+            sql!("bridge_pull__test_count_meta"),
+            [], |x| x.get(0),
+        ).unwrap();
+        assert_eq!(vals, 1, "multi-value meta collapses to one row");
+        let ghost: i64 = r.query_row(
+            sql!("bridge_pull__test_count_meta_ghost"), [], |x| x.get(0),
+        ).unwrap();
+        assert_eq!(ghost, 0, "unresolvable wp_id must not stamp meta anywhere");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

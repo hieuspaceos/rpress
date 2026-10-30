@@ -49,7 +49,7 @@ fn widgets_import() {
     std::fs::write(&dump, DUMP).unwrap();
     let db = d.join("rpress.db");
     let report = d.join("report.txt");
-    import::run(&dump, &db, &report).unwrap();
+    import::run(&dump, &db, &report, false).unwrap();
 
     let c = rusqlite::Connection::open(&db).unwrap();
     let ids = |sidebar: &str| -> Vec<String> {

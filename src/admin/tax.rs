@@ -417,7 +417,7 @@ document.addEventListener('click',function(e){{
 /// `KindDef.taxonomies` (tourmaster's fields live under Tours); core
 /// post taxonomies → Posts.
 fn tax_menu(tax: &str) -> &'static str {
-    crate::admin::plugins::tax_section(tax)
+    crate::plugins::tax_section(tax)
 }
 
 pub(crate) async fn tax_page(State(app): State<App>, headers: HeaderMap, Path(tax): Path<String>, Query(q): Query<HashMap<String, String>>) -> Response {

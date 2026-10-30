@@ -99,7 +99,7 @@ fn glance_box(c: &Connection) -> String {
     for def in plugins::kind_defs() {
         let n = c
             .query_row(
-                "SELECT COUNT(*) FROM posts WHERE kind=?1 AND status='publish'",
+                sql!("posts__count_by_kind_published"),
                 [def.kind],
                 |r| r.get::<_, i64>(0),
             )
@@ -110,9 +110,9 @@ fn glance_box(c: &Connection) -> String {
             def.section, label
         ));
     }
-    let media = n("SELECT COUNT(*) FROM media");
-    let comments = n("SELECT COUNT(*) FROM comments WHERE status IN ('approved','pending')");
-    let pending = n("SELECT COUNT(*) FROM comments WHERE status='pending'");
+    let media = n(sql!("admin__count_media"));
+    let comments = n(sql!("comments__count_active"));
+    let pending = n(sql!("comments__count_pending"));
     postbox(
         "dashboard_right_now",
         "At a Glance",

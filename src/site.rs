@@ -126,6 +126,7 @@ impl SiteEnv {
         s.push_str(&format!("HOST={}\n", self.host));
         s.push_str(&format!("BIND={}\n", self.bind));
         s.push_str(&format!("LOCAL_URL={}\n", self.local_url));
+        s.push_str(&format!("SITE_URL={}\n", q(&self.site_url)));
         s.push_str(&format!("TOUR_BASE={}\n", self.tour_base));
         s.push_str(&format!("PLUGINS_PHP={}\n", self.plugins_php));
         s.push_str(&format!(
@@ -388,6 +389,38 @@ mod tests {
         // filename stem vs SITE= mismatch is a hard error
         std::fs::write(root.join("sites/ok.env"), "SITE=other\nBIND=127.0.0.1:1\n").unwrap();
         assert!(SiteEnv::load(&root, "ok").is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn site_url_survives_save_load_round_trip() {
+        // Regression: save() once omitted SITE_URL entirely — every env
+        // written by `site init` loaded site_url="" and neutered the
+        // deploy domain==origin refusal.
+        let root = std::env::temp_dir().join(format!("rpress-site-url-{}", std::process::id()));
+        let mut env = SiteEnv {
+            site: "rt".into(),
+            name: "RT".into(),
+            host: "example.test".into(),
+            bind: "127.0.0.1:8400".into(),
+            local_url: "http://127.0.0.1:8400".into(),
+            tour_base: "tour".into(),
+            site_url: "https://origin.example".into(),
+            plugins_php: "".into(),
+            clone_source_ok: false,
+            vps_host: None,
+            ssh_target: None,
+            wp_root: None,
+            dump_remote: None,
+            dump_local: None,
+            wp_content_local: None,
+        };
+        env.save(&root).unwrap();
+        let back = SiteEnv::load(&root, "rt").unwrap();
+        assert_eq!(back.site_url, "https://origin.example");
+        // quoted values round-trip too
+        env.site_url = "https://o\"dd.example".into();
+        env.save(&root).unwrap();
         let _ = std::fs::remove_dir_all(&root);
     }
 }

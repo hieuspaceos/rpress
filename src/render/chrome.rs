@@ -9,14 +9,14 @@ pub(crate) fn translation_urls(conn: &Connection, id: i64, site: &str, tour_base
     let cfg = crate::lang::config(conn);
     let group: Option<String> = conn
         .query_row(
-            "SELECT group_id FROM post_translation_members WHERE post_id=?1 LIMIT 1",
+            sql!("chrome__select_translation_group"),
             [id],
             |r| r.get(0),
         )
         .optional()?;
     let Some(group) = group else { return Ok(Vec::new()); };
     let mut stmt = conn.prepare(
-        "SELECT lang, post_id FROM post_translation_members WHERE group_id=?1 ORDER BY lang",
+        sql!("chrome__select_group_members"),
     )?;
     let rows = stmt
         .query_map([group], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
@@ -24,7 +24,7 @@ pub(crate) fn translation_urls(conn: &Connection, id: i64, site: &str, tour_base
     let mut out = Vec::new();
     for (lang, pid) in rows {
         if let Some((slug, kind)) = slug_of(conn, pid) {
-            let base = crate::admin::plugins::kind_url_base(tour_base, &kind);
+            let base = crate::plugins::kind_url_base(tour_base, &kind);
             out.push((lang.clone(), crate::lang::page_url(&cfg, site, &lang, &kind, &slug, base.as_deref())));
         }
     }
@@ -51,7 +51,7 @@ pub(crate) fn slug_of(conn: &Connection, id: i64) -> Option<(String, String)> {
 pub(crate) fn page_url(conn: &Connection, site: &str, lang: &str, kind: &str, slug: &str, tour_base: &str) -> String {
     let cfg = crate::lang::config(conn);
     let prefix = crate::lang::url_prefix(&cfg, lang);
-    match crate::admin::plugins::kind_url_base(tour_base, kind) {
+    match crate::plugins::kind_url_base(tour_base, kind) {
         Some(b) if !b.is_empty() => format!("{site}{prefix}/{b}/{slug}/"),
         _ => format!("{site}{prefix}/{slug}/"),
     }
@@ -114,7 +114,7 @@ fn post_jsonld(
     for t in types {
         let v: String = conn
             .query_row(
-                "SELECT COALESCE(meta_value,'') FROM post_meta WHERE post_id=?1 AND meta_key=?2 LIMIT 1",
+                sql!("chrome__select_meta_value"),
                 rusqlite::params![id, format!("rank_math_schema_{t}")],
                 |r| r.get(0),
             )
@@ -130,7 +130,7 @@ fn post_jsonld(
     let value = crate::php_serialize::unserialize(raw.as_bytes()).ok()?;
     let author_name = conn
         .query_row(
-            "SELECT value FROM settings WHERE key='site_name' LIMIT 1",
+            sql!("render__select_site_name"),
             [],
             |r| r.get::<_, String>(0),
         )
@@ -214,18 +214,18 @@ pub(crate) fn body_class(conn: &Connection, _lang: &str, kind: &str, id: i64, is
     // Resolution order: explicit `site_body_suffix` seed → the matched
     // theme adapter's `body_suffix` → traveltour (legacy default).
     let suffix = conn
-        .query_row("SELECT value FROM settings WHERE key='site_body_suffix'", [], |r| {
+        .query_row(sql!("chrome__select_body_suffix"), [], |r| {
             r.get::<_, String>(0)
         })
         .ok()
         .filter(|s| !s.is_empty())
         .or_else(|| {
             let stylesheet: String = conn
-                .query_row("SELECT value FROM settings WHERE key='stylesheet'", [], |r| {
+                .query_row(sql!("render__select_stylesheet"), [], |r| {
                     r.get::<_, String>(0)
                 })
                 .unwrap_or_default();
-            crate::admin::plugins::theme_for_stylesheet(&stylesheet)
+            crate::plugins::theme_for_stylesheet(&stylesheet)
                 .filter(|d| !d.body_suffix.is_empty())
                 .map(|d| d.body_suffix.to_string())
         })
@@ -276,10 +276,7 @@ pub(crate) fn nav_map(
                with `menu_items.object_id` taxonomy items (terms.id is the
                WP term id). No hardcoded taxonomy list: theme_data owns it. */
             let mut st = conn.prepare(
-                "SELECT DISTINCT pt.taxonomy, pt.slug FROM post_terms pt \
-                 JOIN terms t ON t.taxonomy=pt.taxonomy COLLATE NOCASE AND t.slug=pt.slug \
-                 JOIN menu_items mi ON mi.item_type='taxonomy' AND mi.object_id=t.id \
-                 WHERE pt.post_id=?1",
+                sql!("chrome__select_menu_ancestor_terms"),
             )?;
             let rows = st.query_map([id], |r| {
                 Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
@@ -344,7 +341,7 @@ pub(crate) fn chrome_vars(
         .unwrap_or_default();
     let meta = |key: &str| -> String {
         conn.query_row(
-            "SELECT COALESCE(meta_value,'') FROM post_meta WHERE post_id=?1 AND meta_key=?2 LIMIT 1",
+            sql!("chrome__select_meta_value"),
             rusqlite::params![id, key],
             |r| r.get(0),
         )
@@ -362,7 +359,7 @@ pub(crate) fn chrome_vars(
     /* Contact-form pages: the imported CF7 form slugs, keyed per lang
        (settings.contact_slugs seeded at import). */
     let is_contact = conn
-        .query_row("SELECT value FROM settings WHERE key='contact_slugs'", [], |r| {
+        .query_row(sql!("chrome__select_contact_slugs"), [], |r| {
             r.get::<_, String>(0)
         })
         .ok()
@@ -398,7 +395,7 @@ pub(crate) fn chrome_vars(
     let img_id = featured_id
         .or_else(|| meta("_thumbnail_id").parse::<i64>().ok())
         .or_else(|| {
-            conn.query_row("SELECT CAST(value AS INTEGER) FROM settings WHERE key='og_fallback_media'", [], |r| r.get(0))
+            conn.query_row(sql!("chrome__select_og_fallback"), [], |r| r.get(0))
                 .ok()
         })
         .unwrap_or(0);
@@ -593,7 +590,7 @@ pub(crate) fn chrome_vars(
                         t.as_i64().or_else(|| t.as_str().and_then(|s| s.parse().ok()))
                     })
                     .and_then(|mid| {
-                        conn.query_row("SELECT path FROM media WHERE wp_id=?1", [mid], |r| {
+                        conn.query_row(sql!("chrome__select_media_path_wp_id"), [mid], |r| {
                             r.get::<_, String>(0)
                         })
                         .ok()
@@ -612,13 +609,13 @@ pub(crate) fn chrome_vars(
     // settings.custom_css = WP "Additional CSS" carried by the importer —
     // emitted inline like wp_custom_css_cb does.
     let custom_css: String = conn
-        .query_row("SELECT value FROM settings WHERE key='custom_css'", [], |r| r.get(0))
+        .query_row(sql!("chrome__select_custom_css"), [], |r| r.get(0))
         .unwrap_or_default();
     /* WP Categories Widget plugin emits `wcw-inlinecss-inline-css` before
        WP Additional CSS (`wp-custom-css`). Ordering matters: this plugin
        default color is blue, and the site's custom CSS overrides it to
        Traveltour/Aucoeur colors. */
-    let wcw = include_str!("../admin/plugins/theme_traveltour/seed/wcw-inlinecss.html");
+    let wcw = include_str!("../plugins/theme_traveltour/seed/wcw-inlinecss.html");
     let custom_css_tag = if custom_css.trim().is_empty() {
         String::new()
     } else {
@@ -644,7 +641,7 @@ pub(crate) fn chrome_vars(
        per post (org JSON-LD, preload links — content owned by the site,
        kept verbatim). Deserialized `head` field only. */
     let sitewide = conn
-        .query_row("SELECT value FROM settings WHERE key='site_head_html'", [], |r| r.get::<_, String>(0))
+        .query_row(sql!("chrome__select_site_head_html"), [], |r| r.get::<_, String>(0))
         .unwrap_or_default();
     let head_extra = crate::php_serialize::unserialize(meta("_auhfc").as_bytes())
         .ok()
@@ -655,7 +652,7 @@ pub(crate) fn chrome_vars(
         &head_extra,
         site_url,
         &conn
-            .query_row("SELECT value FROM settings WHERE key='site_url'", [], |r| r.get::<_, String>(0))
+            .query_row(sql!("chrome__select_site_url"), [], |r| r.get::<_, String>(0))
             .unwrap_or_default(),
     )));
     // Widget registry: the four traveltour-footer-column contents come from

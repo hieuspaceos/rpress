@@ -1,0 +1,1 @@
+SELECT id FROM posts WHERE slug=?1 AND status='publish' LIMIT 1

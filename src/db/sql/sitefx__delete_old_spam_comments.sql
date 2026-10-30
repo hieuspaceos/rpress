@@ -1,0 +1,1 @@
+DELETE FROM comments WHERE status='spam' AND created_at < datetime('now','-30 days')

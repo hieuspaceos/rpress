@@ -27,7 +27,7 @@ pub(crate) fn resolve_menu_url(
             let id = object_id?;
             let (slug, plang, kind, title): (String, String, String, String) = conn
                 .query_row(
-                    "SELECT slug, lang, kind, title FROM posts WHERE wp_id=?1 AND status='publish'",
+                    sql!("menu_url__select_post_by_wp_id"),
                     [id],
                     |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
                 )
@@ -36,18 +36,18 @@ pub(crate) fn resolve_menu_url(
             /* page_on_front stores posts.id — front page links to the
                lang root, not /{slug}/. */
             let post_id: i64 = conn
-                .query_row("SELECT id FROM posts WHERE wp_id=?1", [id], |r| r.get(0))
+                .query_row(sql!("menu_url__select_id_by_wp_id"), [id], |r| r.get(0))
                 .ok()?;
             let front: i64 = conn
-                .query_row("SELECT CAST(value AS INTEGER) FROM settings WHERE key='page_on_front'", [], |r| r.get(0))
+                .query_row(sql!("menu_url__select_page_on_front"), [], |r| r.get(0))
                 .unwrap_or(0);
             if post_id == front {
                 return Some(format!("{site}{}/", crate::lang::url_prefix(&cfg, &plang)));
             }
-            let wslug = crate::admin::plugins::adapter_for_kind(&kind)
+            let wslug = crate::plugins::adapter_for_kind(&kind)
                 .and_then(|a| a.display_slug(conn, post_id, &slug, &title))
                 .unwrap_or(slug);
-            let base = crate::admin::plugins::kind_url_base(tour_base, &kind);
+            let base = crate::plugins::kind_url_base(tour_base, &kind);
             Some(format!(
                 "{site}{}",
                 crate::lang::page_url(&cfg, "", &plang, &kind, &wslug, base.as_deref())
@@ -59,7 +59,7 @@ pub(crate) fn resolve_menu_url(
                 .query_row(
                     /* terms.id holds the WP term_id by import design
                        (cat-item-N classes and translation maps key it). */
-                    "SELECT taxonomy, slug FROM terms WHERE id=?1",
+                    sql!("menu_url__select_term"),
                     [id],
                     |r| Ok((r.get(0)?, r.get(1)?)),
                 )
@@ -67,9 +67,9 @@ pub(crate) fn resolve_menu_url(
             let cfg = crate::lang::config(conn);
             let t = tax.to_lowercase();
             let base = if t == "category" {
-                crate::admin::plugins::theme_traveltour::cat_path(conn, &tslug)
+                crate::plugins::theme_traveltour::cat_path(conn, &tslug)
             } else if t == "post_tag" {
-                format!("{}/{}", crate::admin::plugins::theme_traveltour::tag_base(conn), tslug)
+                format!("{}/{}", crate::plugins::theme_traveltour::tag_base(conn), tslug)
             } else {
                 format!("{t}/{tslug}")
             };
@@ -99,18 +99,7 @@ mod tests {
     fn db() -> Connection {
         let c = Connection::open_in_memory().unwrap();
         c.execute_batch(
-            "CREATE TABLE posts(id INTEGER PRIMARY KEY, wp_id INTEGER UNIQUE, slug TEXT,
-                lang TEXT, kind TEXT, title TEXT, status TEXT);
-             CREATE TABLE terms(id INTEGER PRIMARY KEY, taxonomy TEXT, slug TEXT, name TEXT);
-             CREATE TABLE settings(key TEXT PRIMARY KEY, value TEXT);
-             CREATE TABLE post_terms(post_id INTEGER, taxonomy TEXT, slug TEXT);
-             INSERT INTO settings VALUES('languages','fr,es'),('primary_lang','fr'),
-                ('page_on_front','0'),('site_url','https://origin.test');
-             INSERT INTO posts VALUES(1,101,'hello','fr','post','Hello','publish');
-             INSERT INTO posts VALUES(2,102,'draft','fr','post','Draft','draft');
-             INSERT INTO terms VALUES(7,'region','voyage-au-vietnam','Voyage au Vietnam');
-             INSERT INTO terms VALUES(8,'post_tag','news','News');
-             INSERT INTO post_terms VALUES(1,'region','voyage-au-vietnam');",
+            sql!("menu_url__test_ddl"),
         )
         .unwrap();
         c

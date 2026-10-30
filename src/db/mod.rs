@@ -15,13 +15,15 @@ macro_rules! sql {
 // Layout:
 //   posts.rs  posts/posts_meta/tours: load, save, list, clone, status, quick/bulk update
 //   terms.rs  taxonomy: terms table, post_terms assignments, choices
-//   misc.rs   media uploads, menus, body_json (GoodLayers) helpers
+//   media.rs  media table + uploads: list/get/save/replace, image sizes, mime/dims
+//   misc.rs   settings/plugin options, widgets, body_json (GoodLayers) helpers
 //
 // Shared helpers below are `pub(crate)` for the whole `db` tree.
 use anyhow::Result;
 use rusqlite::{params, Connection, OptionalExtension};
 
 pub mod misc;
+pub mod media;
 pub mod posts;
 pub mod comments;
 pub mod users;
@@ -31,6 +33,7 @@ pub mod forms;
 pub mod terms;
 
 pub use misc::*;
+pub use media::*;
 pub use posts::*;
 pub use terms::*;
 #[allow(unused_imports)]
@@ -61,6 +64,10 @@ pub(crate) fn conn(db: &std::path::Path) -> Result<Connection> {
     c.pragma_update(None, "cache_size", -20000i64)?;
     c.pragma_update(None, "mmap_size", 268_435_456i64)?;
     c.pragma_update(None, "wal_autocheckpoint", 4000i64)?;
+    // FKs ON: posts.menu_id / theme_locations.menu_id declared ON DELETE
+    // SET NULL were dead text — deleting a menu left dangling ids. Child
+    // inserts must still reference existing parents; callers already do.
+    c.pragma_update(None, "foreign_keys", "ON")?;
     Ok(c)
 }
 

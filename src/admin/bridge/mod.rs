@@ -135,10 +135,17 @@ fn reap_stale_pidfile(www: &std::path::Path, slug: &str) {
     let Ok(raw) = std::fs::read_to_string(&pf) else { return };
     let pid: Option<u32> = raw.split(':').next().and_then(|s| s.trim().parse().ok());
     if let Some(pid) = pid {
-        let ps = Command::new("ps").args(["-p", &pid.to_string(), "-o", "comm="]).output();
+        // Match the child's actual argv signature, not just the image name:
+        // a PID recycled into an unrelated php/node process (dev server,
+        // another tool) must never be killed. Expected argv contains the
+        // bridge docroot/port or the playground workdir.
+        let ps = Command::new("ps").args(["-p", &pid.to_string(), "-o", "args="]).output();
         if let Ok(o) = ps {
-            let comm = String::from_utf8_lossy(&o.stdout);
-            if o.status.success() && (comm.contains("php") || comm.contains("node") || comm.contains("npx") || comm.contains("sandbox-exec")) {
+            let args = String::from_utf8_lossy(&o.stdout);
+            let ours = o.status.success()
+                && (args.contains(&format!("bridge/{slug}"))
+                    || args.contains("wp-playground"));
+            if ours {
                 let _ = Command::new("kill").arg(pid.to_string()).status();
                 eprintln!("bridge: reaped orphan {slug} pid {pid}");
             }

@@ -1,0 +1,1 @@
+SELECT COUNT(*) FROM posts WHERE kind=?1 AND lang=?2 AND status IN ('publish','draft')

@@ -148,7 +148,7 @@ pub(crate) async fn seo_analysis_frag(
 /// candidate key, that key wins so reads/writes stay consistent.
 fn tax_map(conn: &Connection, id: i64) -> Vec<(String, String)> {
     let mut stmt = match conn
-        .prepare("SELECT DISTINCT taxonomy FROM post_terms WHERE post_id=?1 ORDER BY 1")
+        .prepare(sql!("rankmath__select_post_taxonomies"))
     {
         Ok(s) => s,
         Err(_) => return Vec::new(),
@@ -171,7 +171,7 @@ fn tax_map(conn: &Connection, id: i64) -> Vec<(String, String)> {
             let key = format!("rank_math_primary_{c}");
             let exists: bool = conn
                 .query_row(
-                    "SELECT 1 FROM post_meta WHERE post_id=?1 AND meta_key=?2 LIMIT 1",
+                    sql!("rankmath__select_post_meta_exists"),
                     rusqlite::params![id, key],
                     |_| Ok(()),
                 )
@@ -190,7 +190,7 @@ fn tax_map(conn: &Connection, id: i64) -> Vec<(String, String)> {
 fn rankmath_meta(conn: &Connection, id: i64) -> HashMap<String, String> {
     let mut m = HashMap::new();
     if let Ok(mut s) = conn.prepare(
-        "SELECT DISTINCT meta_key, meta_value FROM post_meta WHERE post_id=?1 AND meta_key LIKE 'rank\\_math\\_%' ESCAPE '\\'",
+        sql!("rankmath__select_meta"),
     ) {
         if let Ok(rows) = s.query_map([id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))) {
             // Meta-box helpers degrade to empty rather than 500; a skipped
@@ -208,7 +208,7 @@ fn rankmath_meta(conn: &Connection, id: i64) -> HashMap<String, String> {
 fn post_terms(conn: &Connection, id: i64) -> BTreeMap<String, Vec<(String, String)>> {
     let mut out: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
     if let Ok(mut s) = conn.prepare(
-        "SELECT taxonomy, slug, name FROM post_terms WHERE post_id=?1 ORDER BY taxonomy, name",
+        sql!("rankmath__select_post_terms"),
     ) {
         if let Ok(rows) = s.query_map([id], |r| {
             Ok((

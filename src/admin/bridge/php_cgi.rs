@@ -229,14 +229,87 @@ const SANDBOX_PROFILE: &str = r#"(version 1)
 (allow mach-lookup)
 "#;
 
-/// Wrap a Command in `sandbox-exec` when available; returns the same
-/// command untouched where the tool is absent (Linux — bubblewrap would
-/// need a separate path; PHP still confined to loopback + token).
+/// Wrap a Command in `sandbox-exec` when available; returns `None` where
+/// the tool is absent (Linux — the child then runs UNCONFINED: full fs +
+/// network of the rpress user; systemd unit hardening is the confinement
+/// layer there, see deploy runbook).
 fn sandboxed(php: &Path, docroot: &Path, www: &Path, templates: &Path, db_dir: &Path) -> Option<Command> {
     let se = PathBuf::from("/usr/bin/sandbox-exec");
-    if !se.is_file() {
-        return None;
+    if se.is_file() {
+        return sandboxed_seatbelt(&se, php, docroot, www, templates, db_dir);
     }
+    // Linux: bubblewrap gives the same shape — ro-bind everything the child
+    // needs, rw-bind only db/uploads/mu-plugins, no host fs beyond the list.
+    if let Some(bw) = which_bwrap() {
+        return Some(sandboxed_bwrap(&bw, php, docroot, www, templates, db_dir));
+    }
+    None
+}
+
+/// `bwrap` on PATH or the usual sbin locations.
+fn which_bwrap() -> Option<PathBuf> {
+    for c in ["bwrap", "/usr/bin/bwrap", "/usr/local/bin/bwrap", "/bin/bwrap"] {
+        let p = PathBuf::from(c);
+        // PATH lookup for bare name; absolute candidates are checked as files.
+        if !c.contains('/') {
+            if let Ok(o) = std::process::Command::new("sh").args(["-c", "command -v bwrap"]).output() {
+                if o.status.success() {
+                    let path = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                    if !path.is_empty() {
+                        return Some(PathBuf::from(path));
+                    }
+                }
+            }
+        } else if p.is_file() {
+            return Some(p);
+        }
+    }
+    None
+}
+
+/// Linux equivalent of the Seatbelt profile: mount-namespace confinement.
+/// Everything the child needs is ro-bound; only wp.db, uploads and the
+/// site's mu-plugins are writable. `--share-net` keeps host loopback so the
+/// rpress proxy can reach `php -S 127.0.0.1:<port>` — same boundary as the
+/// macOS profile (which also allows localhost). Outbound stays open on
+/// both; the real fence is the fs mount table + per-spawn token + pull
+/// whitelist.
+fn sandboxed_bwrap(bw: &Path, php: &Path, docroot: &Path, www: &Path, templates: &Path, db_dir: &Path) -> Command {
+    let uploads = www.join("wp-content/uploads");
+    let mu = www.join("wp-content/mu-plugins");
+    let mut c = Command::new(bw);
+    c.args([
+        // pid/ipc isolation; share host net (loopback needed for the proxy)
+        "--unshare-pid", "--unshare-ipc", "--unshare-uts", "--share-net",
+        "--die-with-parent", "--new-session",
+        // minimal root: real system dirs read-only where present
+        "--ro-bind", "/usr", "/usr",
+        "--ro-bind-try", "/lib", "/lib",
+        "--ro-bind-try", "/lib64", "/lib64",
+        "--ro-bind-try", "/opt", "/opt",
+        "--ro-bind-try", "/etc", "/etc",
+        "--dev", "/dev",
+        "--tmpfs", "/tmp",
+    ]);
+    let ro = |c: &mut Command, p: &Path| {
+        if p.exists() {
+            c.arg("--ro-bind").arg(p).arg(p);
+        }
+    };
+    ro(&mut c, php);
+    ro(&mut c, docroot);
+    ro(&mut c, templates);
+    // www read-only EXCEPT the two writable subtrees, bound after.
+    ro(&mut c, www);
+    for p in [db_dir, &uploads, &mu] {
+        std::fs::create_dir_all(p).ok();
+        c.arg("--bind").arg(p).arg(p);
+    }
+    c.arg("--").arg(php);
+    c
+}
+
+fn sandboxed_seatbelt(se: &Path, php: &Path, docroot: &Path, www: &Path, templates: &Path, db_dir: &Path) -> Option<Command> {
     // SQLite stats every parent of its db file — a `subpath` grant covers
     // leaves only; ancestors need explicit `literal` lines or PDO open fails.
     let mut parents = String::new();
@@ -399,14 +472,14 @@ pub(crate) fn spawn(
     if let Ok(c) = crate::db::conn(rpress_db) {
         let dump = www.parent().map(|w| w.join("dump.sql"));
         let opt = |key: &str| -> Option<String> {
-            let row: Option<String> = c.query_row("SELECT value FROM settings WHERE key=?1", [key], |r| r.get(0)).ok()
+            let row: Option<String> = c.query_row(sql!("intake__select_setting"), [key], |r| r.get(0)).ok()
                 .filter(|s: &String| !s.trim().is_empty());
             match row {
                 Some(v) => Some(v),
                 None => {
                     let v = option_from_dump(dump.as_deref(), key);
                     if let Some(v) = &v {
-                        let _ = c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES(?1,?2)", rusqlite::params![key, v]);
+                        let _ = c.execute(sql!("import__insert_or_replace"), rusqlite::params![key, v]);
                     }
                     v
                 }
@@ -461,6 +534,14 @@ pub(crate) fn spawn(
             c.args(&php_args).stdout(Stdio::null()).stderr(Stdio::from(log)).spawn().context("spawn sandboxed php -S")?
         }
         None => {
+            // No Seatbelt on this host (Linux): the child runs with the
+            // full rpress user's filesystem + network. Say so loudly per
+            // spawn — on systemd deployments ProtectHome/ProtectSystem in
+            // the unit is what actually confines it (see deploy runbook).
+            eprintln!(
+                "bridge: WARNING — sandbox-exec absent; php -S for {slug} is UNSANDBOXED \
+                 (full fs + network). On Linux use systemd ProtectHome/ProtectSystem or bwrap."
+            );
             let log = std::fs::File::create(dir.join("php.log")).with_context(|| "create bridge php.log")?;
             Command::new(&php).args(&php_args).stdout(Stdio::null()).stderr(Stdio::from(log)).spawn().context("spawn php -S")?
         }
@@ -481,23 +562,24 @@ pub(crate) fn spawn(
     // the install.php HTTP wizard — the wizard spends ~14s retrying
     // wp_remote_get (version check, theme files, cron) inside the sandbox.
     // Guard on `wp_options.siteurl` so respawns against a seeded wp.db skip.
-    let fqdb = format!("{}/wp.db", db_dir.display());
+    let fqdb = php_str(&format!("{}/wp.db", db_dir.display()));
+    let token = php_str(&token); // hex-only, but every interpolated PHP literal goes through php_str
     let install_php = format!(
-        "define('DB_ENGINE','sqlite'); define('FQDB','{fqdb}'); \
+        "define('DB_ENGINE','sqlite'); define('FQDB',{fqdb}); \
          define('DB_NAME','wordpress'); define('DB_USER',''); define('DB_PASSWORD',''); define('DB_HOST','localhost'); \
          define('DB_CHARSET','utf8'); define('DB_COLLATE',''); \
          define('WP_HOME','http://127.0.0.1:{port}'); define('WP_SITEURL','http://127.0.0.1:{port}'); \
-         define('WP_CONTENT_DIR','{docroot}/wp-content'); \
+         define('WP_CONTENT_DIR',{docroot} . '/wp-content'); \
          define('WP_CONTENT_URL','http://127.0.0.1:{port}/wp-content'); \
          define('WP_PLUGIN_DIR',WP_CONTENT_DIR.'/plugins'); define('WP_PLUGIN_URL','http://x'); \
          define('WPMU_PLUGIN_DIR',WP_CONTENT_DIR.'/mu-plugins'); define('WPMU_PLUGIN_URL','x'); \
          define('UPLOADS','wp-content/uploads'); \
-         define('RPRESS_BRIDGE_TOKEN','{token}'); define('RPRESS_BRIDGE_PLUGIN','{plugin}'); \
-         define('RPRESS_BRIDGE_THEME','{theme}'); \
+         define('RPRESS_BRIDGE_TOKEN',{token}); define('RPRESS_BRIDGE_PLUGIN',{plugin}); \
+         define('RPRESS_BRIDGE_THEME',{theme}); \
          define('WP_INSTALLING',true); \
          $table_prefix='wp_'; \
-         $_SERVER['HTTP_X_RPRESS_BRIDGE']='{token}'; \
-         define('ABSPATH','{docroot}/'); \
+         $_SERVER['HTTP_X_RPRESS_BRIDGE']={token}; \
+         define('ABSPATH',{docroot} . '/'); \
          require ABSPATH.'wp-settings.php'; \
          if (get_option('siteurl') !== WP_HOME || get_option('blogname') === '') {{ \
              require_once ABSPATH.'wp-admin/includes/upgrade.php'; \
@@ -547,9 +629,9 @@ pub(crate) fn spawn(
              }} \
          update_option('rpress_seed_done', 1, false); \
          }}",
-        docroot = docroot.display(),
-        theme = theme.as_deref().unwrap_or(""),
-        plugin = plugin_file,
+        docroot = php_str(&docroot.display().to_string()),
+        theme = php_str(theme.as_deref().unwrap_or("")),
+        plugin = php_str(plugin_file),
     );
     let install_args = [
         "-d".to_string(), "opcache.enable_cli=1".to_string(),

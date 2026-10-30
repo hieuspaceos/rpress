@@ -1,0 +1,1 @@
+SELECT title FROM posts WHERE id=?1

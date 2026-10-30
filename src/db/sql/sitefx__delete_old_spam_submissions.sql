@@ -1,0 +1,1 @@
+DELETE FROM submissions WHERE status IN ('spam','trash') AND created_at < datetime('now','-30 days')

@@ -1,0 +1,1 @@
+SELECT COUNT(*) FROM media WHERE wp_id IS NOT NULL AND id != wp_id

@@ -232,10 +232,14 @@ fn public_exposure() {
         c.execute("UPDATE settings SET value='http://evil.example.net' WHERE key='asset_origin'", []).ok();
         c.execute("INSERT INTO settings(key,value) VALUES('asset_origin','http://evil.example.net')", []).ok();
     }
+    // The write is out-of-band — the running server's settings snapshot has
+    // a 30s TTL, so a fresh process is the deterministic way to observe the
+    // poisoned origin (bounce, not sleep-and-flake).
+    drop(srv);
+    let srv = serve(&db, &out, &www, port, &[("RPRESS_ASSET_ORIGINS", "wp-src.example.com")]);
     let (st, _) = get(srv.port, "/wp-content/uploads/2024/01/x.jpg");
     assert_eq!(st, 404, "non-allowlisted asset_origin must not redirect");
     let (st, _) = get(srv.port, "/wp-content/themes/t/style.css");
     assert_eq!(st, 404);
-
     let _ = fs::remove_dir_all(&root);
 }

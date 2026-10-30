@@ -55,7 +55,10 @@ fn sc_attrs(s: &str) -> Map<String, Value> {
 /// `[metaslider id=N]` (MetaSlider flex output; needs `conn` to reach the
 /// imported `ml-slider`/`ml-slide` rows — left verbatim without it).
 /// Unknown tags are left verbatim (WP shows them as text too).
-pub(crate) fn expand_shortcodes(s: &str, site_url: &str, conn: Option<&Connection>) -> String {
+/// `post_id` = the enclosing post for `[site_reviews_form]`'s hidden
+/// `_post_id` field — `None` for chrome/term contexts (form posts land on
+/// the `_page` fallback in intake).
+pub(crate) fn expand_shortcodes(s: &str, site_url: &str, conn: Option<&Connection>, post_id: Option<i64>) -> String {
     let mut out: Vec<u8> = Vec::with_capacity(s.len() + 256);
     let bytes = s.as_bytes();
     let mut i = 0;
@@ -78,7 +81,7 @@ pub(crate) fn expand_shortcodes(s: &str, site_url: &str, conn: Option<&Connectio
                         let id = a.get("id").and_then(|v| v.as_str()).unwrap_or("lte68mso");
                         let html = include_str!("../../templates/elements/site_reviews_form.html")
                             .replace("{{ form_id }}", id)
-                            .replace("{{ post_id }}", "6190")
+                            .replace("{{ post_id }}", &post_id.map(|p| p.to_string()).unwrap_or_default())
                             .replace("{{ site_url }}", site_url);
                         out.extend_from_slice(html.as_bytes());
                         i += end + 1;
@@ -91,11 +94,11 @@ pub(crate) fn expand_shortcodes(s: &str, site_url: &str, conn: Option<&Connectio
                         // `_hash` meta; older dumps may carry numeric wp_ids.
                         // `cf7hash:<id>` → forms.slug (seeded at import).
                         let slug = conn.and_then(|c| c.query_row(
-                            "SELECT value FROM settings WHERE key=?1",
+                            sql!("intake__select_setting"),
                             [format!("cf7hash:{id}")], |r| r.get::<_, String>(0)).ok())
                             .unwrap_or_else(|| id.to_string());
                         let markup = conn.and_then(|c| c.query_row(
-                            "SELECT markup FROM forms WHERE slug=?1",
+                            sql!("shortcode__select_form_markup"),
                             [&slug], |r| r.get::<_, String>(0)).ok());
                         if let Some(m) = markup {
                             let html = crate::forms_markup::form_html(&m, &slug, site_url);
@@ -230,10 +233,7 @@ pub(crate) fn expand_shortcodes(s: &str, site_url: &str, conn: Option<&Connectio
 fn metaslider_html(conn: &Connection, id: i64, site_url: &str) -> Option<String> {
     let (title, settings_raw, theme) = conn
         .query_row(
-            "SELECT p.title, \
-             (SELECT meta_value FROM post_meta WHERE post_id=p.id AND meta_key='ml-slider_settings' LIMIT 1), \
-             (SELECT meta_value FROM post_meta WHERE post_id=p.id AND meta_key='metaslider_slideshow_theme' LIMIT 1) \
-             FROM posts p WHERE p.id=?1 AND p.kind='ml-slider'",
+            sql!("shortcode__select_slider"),
             [id],
             |r| {
                 Ok((
@@ -258,12 +258,7 @@ fn metaslider_html(conn: &Connection, id: i64, site_url: &str) -> Option<String>
     // orderby=menu_order). _thumbnail_id is the slide's image attachment.
     let mut stmt = conn
         .prepare(
-            "SELECT p.id, COALESCE(p.published_at,''), \
-             (SELECT meta_value FROM post_meta WHERE post_id=p.id AND meta_key='_thumbnail_id' LIMIT 1) \
-             FROM posts p JOIN post_terms pt ON pt.post_id=p.id \
-             WHERE p.kind='ml-slide' AND p.status='publish' \
-             AND pt.taxonomy='ml-slider' AND pt.slug=?1 \
-             ORDER BY p.menu_order",
+            sql!("shortcode__select_slides"),
         )
         .ok()?;
     let rows = stmt
@@ -322,7 +317,7 @@ fn metaslider_html(conn: &Connection, id: i64, site_url: &str) -> Option<String>
     for (slide_id, date, thumb) in &slides {
         let media = thumb.and_then(|t| {
             conn.query_row(
-                "SELECT path, COALESCE(alt,''), COALESCE(title,''), COALESCE(sizes_json,''), COALESCE(caption,''), COALESCE(w,0), COALESCE(h,0) FROM media WHERE id=?1",
+                sql!("shortcode__select_media_row"),
                 [t],
                 |r| {
                     Ok((
@@ -708,7 +703,7 @@ pub(crate) fn blog_posts(
 pub(crate) fn media_img_attrs(conn: &Connection, id: i64, site_url: &str) -> String {
     let row = conn
         .query_row(
-            "SELECT path, COALESCE(sizes_json,''), COALESCE(w,0), COALESCE(h,0) FROM media WHERE id=?1",
+            sql!("shortcode__select_media_size"),
             [id],
             |r| {
                 Ok((
@@ -762,8 +757,7 @@ pub(crate) fn media_img_attrs(conn: &Connection, id: i64, site_url: &str) -> Str
 /// (Distinct from Phase-2 `media_detail`, which returns the og:image tuple.)
 pub(crate) fn media_info(conn: &Connection, id: i64) -> Option<Value> {
     conn.query_row(
-        "SELECT path, COALESCE(alt,''), COALESCE(caption,''), COALESCE(title,''), \
-         COALESCE(w,0), COALESCE(h,0) FROM media WHERE id=?1",
+        sql!("shortcode__select_media_info"),
         [id],
         |r| {
             Ok(json!({
@@ -790,7 +784,7 @@ fn query_blog(
     lang: &str,
     num: i64,
 ) -> Result<Vec<(i64, String, String, String, Option<i64>, String)>> {
-    let base = "SELECT p.id, p.slug, p.title, COALESCE(p.excerpt,''), p.featured_media_id, COALESCE(p.published_at,'') FROM posts p";
+    let base = sql!("shortcode__select_blog_base");
     let (sql, params): (String, Vec<String>) = if cats.is_empty() {
         (
             format!("{base} WHERE p.status='publish' AND p.lang=?1 AND p.kind='post' ORDER BY p.published_at DESC LIMIT ?2"),

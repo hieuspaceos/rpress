@@ -1,0 +1,1 @@
+SELECT CAST(value AS INT) FROM settings WHERE key='rss_use_excerpt'

@@ -105,15 +105,17 @@ pub(crate) fn pll_cell(r: &crud::AdminListRow, kind: &str) -> String {
 }
 
 pub(crate) fn qs(status: &str, lang: &str, tax: &str, page: i64) -> String {
+    // Every interpolated component is urlenc'd — these land verbatim inside
+    // href="{}" attributes; a raw quote in ?tax= is reflected XSS.
     let mut p = Vec::new();
     if !status.is_empty() {
-        p.push(format!("status={status}"));
+        p.push(format!("status={}", super::urlenc(status)));
     }
     if !lang.is_empty() {
-        p.push(format!("lang={lang}"));
+        p.push(format!("lang={}", super::urlenc(lang)));
     }
     if !tax.is_empty() {
-        p.push(format!("tax={tax}"));
+        p.push(format!("tax={}", super::urlenc(tax)));
     }
     if page > 1 {
         p.push(format!("paged={page}"));
@@ -284,7 +286,7 @@ pub(crate) fn render_list(
             hidden.push_str(&format!(
                 r#"<input type="hidden" name="{}" value="{}">"#,
                 k,
-                esc(v)
+                esc_attr(v)
             ));
         }
     }
@@ -293,7 +295,8 @@ pub(crate) fn render_list(
     // WP shows it for pages too, so all kinds get it.
     let empty_btn = if status == "trash" {
         format!(
-            r#"<button type="submit" class="button" form="posts-bulk" formaction="/admin/posts/empty?kind={kind}">Empty Trash</button>"#
+            r#"<button type="submit" class="button" form="posts-bulk" formaction="/admin/posts/empty?kind={}">Empty Trash</button>"#,
+            super::urlenc(kind)
         )
     } else {
         String::new()
@@ -627,7 +630,7 @@ struct PreSave {
 fn snapshot_before_save(sc: &SiteCtx, id: i64) -> Option<PreSave> {
     let conn = crate::db::conn(&sc.db).ok()?;
     let (slug, lang, kind): (String, String, String) = conn
-        .query_row("SELECT slug, lang, kind FROM posts WHERE id=?1", [id], |r| {
+        .query_row(sql!("posts__select_slug_lang_kind"), [id], |r| {
             Ok((r.get(0)?, r.get(1)?, r.get(2)?))
         })
         .ok()?;
@@ -672,7 +675,7 @@ pub(crate) async fn posts_empty(
     // A snapshot failure means files would be orphaned silently — fail
     // loudly and skip the delete rather than strand stale pages.
     let mut doomed: Vec<PathBuf> = Vec::new();
-    let ids = match crud::ids_matching(&sc.db, "SELECT id FROM posts WHERE status='trash' AND kind=?1", [kind]) {
+    let ids = match crud::ids_matching(&sc.db, sql!("posts__select_id_kind_trash"), [kind]) {
         Ok(ids) => ids,
         Err(e) => {
             eprintln!("empty_trash: list doomed ids: {e:#}");
@@ -798,11 +801,7 @@ pub(crate) async fn post_data(State(app): State<App>, headers: HeaderMap, Path(i
     let allowed_cats: Vec<String> = (|| {
         let c = crate::db::conn(&sc.db).ok()?;
         let mut st = c.prepare(
-            "SELECT slug FROM terms WHERE taxonomy='category' AND (\
-               slug IN (SELECT slug FROM post_terms WHERE taxonomy='category' AND post_id=?2) OR \
-               slug IN (SELECT pt.slug FROM post_terms pt JOIN posts p ON p.id=pt.post_id \
-                        WHERE pt.taxonomy='category' AND p.lang=?1) OR \
-               slug NOT IN (SELECT slug FROM post_terms WHERE taxonomy='category'))",
+            sql!("posts__select_allowed_category_slugs"),
         ).ok()?;
         let rows = st
             .query_map(rusqlite::params![lang, id], |r| r.get::<_, String>(0))
@@ -810,7 +809,7 @@ pub(crate) async fn post_data(State(app): State<App>, headers: HeaderMap, Path(i
         rows.collect::<Result<Vec<String>, _>>().ok()
     })()
     .unwrap_or_default();
-    let body = format!(r#"{{"cats":{:?},"tags":{:?},"lang":"{}","allowed_cats":{:?}}}"#, cats, tag_names, lang, allowed_cats);
+    let body = serde_json::json!({"cats": cats, "tags": tag_names, "lang": lang, "allowed_cats": allowed_cats}).to_string();
     ([(header::CONTENT_TYPE, "application/json")], body).into_response()
 }
 
@@ -1126,8 +1125,8 @@ window.deleteUserSetting = window.deleteUserSetting || function(n) {{ try {{ loc
                     c.push_str(", ");
                 }
                 c.push_str(&format!(
-                    r##"<a href="#" onclick="var h=document.getElementById('tagfield');var t='{}';var cur=h.value?h.value.split(',').map(function(s){{return s.trim()}}).filter(Boolean):[];if(cur.indexOf(t)<0)cur.push(t);h.value=cur.join(', ');renderTagChips();return false">{}</a>"##,
-                    esc(name).replace('\'', "\\'"),
+                    r##"<a href="#" onclick="var h=document.getElementById('tagfield');var t={};var cur=h.value?h.value.split(',').map(function(s){{return s.trim()}}).filter(Boolean):[];if(cur.indexOf(t)<0)cur.push(t);h.value=cur.join(', ');renderTagChips();return false">{}</a>"##,
+                    esc(&serde_json::to_string(&name).unwrap_or_else(|_| "\"\"".to_string())),
                     esc(name)
                 ));
             }

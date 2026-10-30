@@ -1,0 +1,1 @@
+SELECT post_id FROM harvest_posts
