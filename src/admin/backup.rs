@@ -56,7 +56,7 @@ pub(crate) struct CsrfForm {
     csrf: String,
 }
 
-/// POST — run the backup synchronously, redirect back.
+/// POST — run the backup on the blocking pool, redirect back.
 pub(crate) async fn backup_run(State(app): State<App>, headers: HeaderMap, Form(f): Form<CsrfForm>) -> Response {
     let Ok((s, sc)) = need_auth(&app, &headers) else { return Redirect::to("/admin/login").into_response(); };
     if let Err(r) = check_csrf(&s, &f.csrf) { return r; }

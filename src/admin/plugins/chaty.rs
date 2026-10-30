@@ -109,10 +109,14 @@ fn settings<'a>(
                 let Ok(Form(f)) = Form::<SettingsForm>::from_request(req, &()).await else {
                     return StatusCode::BAD_REQUEST.into_response();
                 };
-                // Two independent forms post to this URL — each carries a
-                // hidden `sfx`. Saving both specs at once would zero the
-                // other widget's rows, so only its own spec applies.
-                let sfx = if f.fields.get("sfx").map(|s| s.as_str()) == Some("_1") { "_1" } else { "" };
+                // Two independent forms post here — each carries hidden
+                // `sfx`. A missing/forged value must NOT silently target
+                // widget 0 (its spec would blank every cht_* row).
+                let sfx = match f.fields.get("sfx").map(|s| s.as_str()) {
+                    Some("") => "",
+                    Some("_1") => "_1",
+                    _ => return StatusCode::BAD_REQUEST.into_response(),
+                };
                 match save_settings_fields(s, sc, &f, &widget_fields(sfx)) {
                     Ok(()) => Redirect::to("/admin/plugins/chaty/settings").into_response(),
                     Err(r) => r,

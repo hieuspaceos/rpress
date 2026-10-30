@@ -1147,7 +1147,7 @@ fn chaty_js(conn: &Connection, site_url: &str) -> String {
         let sql = if sfx.is_empty() {
             // suffixless widget — exclude `cht_social_<N>_*` rows that
             // belong to widgets 1+.
-            "SELECT key, value FROM settings WHERE key GLOB ?1 AND key NOT GLOB 'cht_social_[0-9]_*'"
+            "SELECT key, value FROM settings WHERE key GLOB ?1 AND key NOT GLOB 'cht_social_[0-9]*_*'"
         } else {
             "SELECT key, value FROM settings WHERE key GLOB ?1"
         };
