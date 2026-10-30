@@ -7,13 +7,13 @@
 
 use super::{adapters, Backend};
 use crate::admin::{
-    check_csrf, chrome, chrome_end, esc, html_page, need_auth, App, Sess, SiteCtx,
+    check_csrf, chrome, esc, html_page, need_auth, App, Sess, SiteCtx,
 };
 use anyhow::Result;
 use axum::{
     extract::State,
     http::{HeaderMap, StatusCode},
-    response::{Html, IntoResponse, Redirect, Response},
+    response::{IntoResponse, Redirect, Response},
 };
 use rusqlite::Connection;
 use serde::Deserialize;
@@ -311,15 +311,16 @@ pub(crate) fn settings_page_html(
     spec: &[FieldSpec],
 ) -> Response {
     match crate::db::conn(&sc.db) {
-        Ok(conn) => Html(format!(
-            "{}{}{}",
-            chrome(title, s),
-            format!(
-                "<div class=\"wrap\">{}</div>",
+        Ok(conn) => html_page(
+            s,
+            title,
+            &format!(
+                "{}<div class=\"wrap\">{}</div>",
+                chrome(title, s),
                 settings_form_html(&conn, action, &s.csrf, title, spec)
             ),
-            chrome_end(s)
-        ))
+            false,
+        )
         .into_response(),
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
