@@ -1218,6 +1218,7 @@ pub(crate) async fn users_app_pass_add(State(app): State<App>, headers: HeaderMa
     if !ct_eq(s.csrf.as_bytes(), f.get("csrf").map(|x| x.as_str()).unwrap_or("").as_bytes()) { return StatusCode::FORBIDDEN.into_response(); }
     let user_id = f.get("user_id").and_then(|v| v.parse::<i64>().ok()).unwrap_or(0);
     if user_id != s.user_id && require_admin(&s).is_err() { return StatusCode::FORBIDDEN.into_response(); }
+    let Ok(Some(_)) = udb::get(&sc.db, user_id) else { return Redirect::to("/admin/users?msg=notfound").into_response(); };
     let name = f.get("name").map(|v| v.trim()).filter(|v| !v.is_empty()).unwrap_or("Application Password");
     let pw = app_password();
     let compact = pw.replace(' ', "");
