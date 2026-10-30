@@ -1,6 +1,6 @@
 // Single module list: the binary consumes the `rpress` library crate so
 // the two targets can't drift on module visibility (module hygiene L).
-use rpress::{admin, auth, generate, import, render, site_bridge, site_build, site_deploy, site_init, site_serve, verify};
+use rpress::{admin, auth, backup, generate, import, render, site, site_bridge, site_build, site_deploy, site_init, site_serve, verify};
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -221,6 +221,7 @@ fn main() -> Result<()> {
             SiteStep::Deploy { site, target, domain, dest, project, app_dir, yes, dry_run } => {
                 site_deploy::run(site_deploy::DeployArgs { site, target, domain, dest, project, app_dir, yes, dry_run })
             }
+            SiteStep::Backup { site, keep } => site_backup(&site, keep),
         },
         Cmd::Serve { bind, db, templates, out, www, host, site, name, tour_base } => {
             let addr: std::net::SocketAddr = bind.parse()?;
@@ -292,6 +293,25 @@ enum SiteStep {
         #[arg(long)]
         dry_run: bool,
     },
+    /// tar.gz snapshot of the site workdir (rpress.db + www/ + env)
+    Backup {
+        /// Site slug (sites/<slug>.env)
+        site: String,
+        /// Archives to keep (default 5; oldest deleted past this)
+        #[arg(long, default_value = "5")]
+        keep: usize,
+    },
+}
+
+/// `rpress site backup <slug>` — thin wrapper over `backup::run_backup`.
+fn site_backup(site: &str, keep: usize) -> Result<()> {
+    let root = std::env::current_dir()?;
+    let work = root.join("work").join(site);
+    let env = site::env_path(&root, site);
+    let archive = backup::run_backup(&work, &env, keep)?;
+    let size = std::fs::metadata(&archive).map(|m| m.len()).unwrap_or(0);
+    println!("backup: {} ({} bytes)", archive.display(), size);
+    Ok(())
 }
 
 #[derive(clap::Args)]

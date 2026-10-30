@@ -117,8 +117,22 @@ fn plugins_index_html(_s: &Sess, sc: &SiteCtx) -> String {
                     .first()
                     .map(|s| format!("/admin/plugins/{}/{}", slug, s.path))
                     .unwrap_or_else(|| format!("/admin/plugins/{slug}/"));
+                // Bridge panel — workdir + wp.db state, same sources
+                // `rpress bridge <site> status` reads.
+                let state = sc.db.parent()
+                    .map(|p| p.join("www/bridge").join(slug))
+                    .and_then(|d| {
+                        let db = d.join("wp.db");
+                        let m = std::fs::metadata(&db).ok()?;
+                        let age = m.modified().ok()
+                            .and_then(|t| std::time::SystemTime::now().duration_since(t).ok())
+                            .map(|d| format!("{}s", d.as_secs()))
+                            .unwrap_or_else(|| "?".into());
+                        Some(format!("{} ({} bytes, {} ago)", d.display(), m.len(), age))
+                    })
+                    .unwrap_or_else(|| "no workdir — builds on first request".to_string());
                 (
-                    "<span class=\"badge badge-bridge\">Bridge</span>".to_string(),
+                    format!("<span class=\"badge badge-bridge\">Bridge</span><div class=\"muted\" style=\"font-size:11px;margin-top:3px\">{}</div>", esc(&state)),
                     format!("<a href=\"{}\">Open</a>", esc(&open)),
                 )
             }

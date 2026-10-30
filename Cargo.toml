@@ -19,6 +19,7 @@ serde_urlencoded = "0.7"
 sha2 = "0.10"
 regex = "1"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
+futures-util = "0.3"
 similar = "2"
 flate2 = "1"
 toml = "0.8"

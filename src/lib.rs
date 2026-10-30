@@ -1,3 +1,4 @@
+pub mod backup;
 pub mod auth;
 #[macro_use]
 pub mod db;

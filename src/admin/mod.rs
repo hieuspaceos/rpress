@@ -35,6 +35,7 @@ mod forms_editor;
 mod menus;
 mod widgets;
 mod settings;
+mod backup;
 
 #[derive(Clone)]
 pub(crate) struct SiteCtx {
@@ -266,6 +267,8 @@ pub async fn serve(db: PathBuf, templates: PathBuf, out: PathBuf, www: PathBuf, 
         .route("/admin/menus/delete", post(menus::menus_delete))
         .route("/admin/menus/add-items", post(menus::menus_add))
         .route("/admin/menus/move", post(menus::menus_move))
+        .route("/admin/tools/backup", get(backup::backup_page).post(backup::backup_run))
+        .route("/admin/tools/backup/download/{name}", get(backup::backup_download))
         .route("/admin/menus/save", post(menus::menus_save))
         .route("/admin/menus/locations", post(menus::menus_locations_save))
         .route("/admin/menus/screen", post(menus::menus_screen_save))
@@ -1554,6 +1557,16 @@ pub(crate) fn chrome_start(active: &str, s: &Sess) -> String {
                 ("/admin/settings/permalink", "Permalinks"),
                 ("/admin/settings/privacy", "Privacy"),
             ],
+        ));
+    }
+    if s.role == "admin" {
+        html.push_str(&menu_li(
+            "tools",
+            "/admin/tools/backup",
+            "Tools",
+            "dashicons-admin-tools",
+            active,
+            &[("/admin/tools/backup", "Backup")],
         ));
     }
 
