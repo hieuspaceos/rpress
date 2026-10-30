@@ -1007,18 +1007,44 @@ pub(crate) fn client_ip(headers: &HeaderMap, peer: Option<SocketAddr>) -> String
 }
 
 fn cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<String> {
-    let raw = headers.get(header::COOKIE)?.to_str().ok()?;
-    for part in raw.split(';') {
-        let mut kv = part.trim().splitn(2, '=');
-        if kv.next()? == name {
-            return kv.next().map(|s| s.to_string());
+    // `Cookie:` may arrive on multiple header lines; `get` only sees the first.
+    for value in headers.get_all(header::COOKIE).iter() {
+        let Ok(raw) = value.to_str() else { continue };
+        for part in raw.split(';') {
+            let mut kv = part.trim().splitn(2, '=');
+            if kv.next()? == name {
+                return kv.next().map(|s| s.to_string());
+            }
         }
     }
     None
 }
 
+/// All values sent under one cookie name — browsers may carry stale
+/// duplicates (different Path/Secure histories), and header order puts the
+/// dead one first often enough to log a valid user out. Try each until a
+/// live session resolves.
+fn cookie_all<'a>(headers: &'a HeaderMap, name: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    // `Cookie:` may arrive on multiple header lines (some agents split);
+    // `get` only sees the first.
+    for value in headers.get_all(header::COOKIE).iter() {
+        let Ok(raw) = value.to_str() else { continue };
+        for part in raw.split(';') {
+            let mut kv = part.trim().splitn(2, '=');
+            if kv.next() == Some(name) {
+                if let Some(v) = kv.next() {
+                    if !v.is_empty() && !out.iter().any(|x| x == v) {
+                        out.push(v.to_string());
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 pub(crate) fn get_sess<'a>(app: &'a App, sc: &'a SiteCtx, headers: &HeaderMap) -> Option<Sess> {
-    let tok = cookie(headers, SESSION_COOKIE)?;
     // WP `wp_schedule_publish` equivalent: the static site has no cron, so
     // the due-scheduled check piggybacks on the auth path — after cookie
     // extraction so unauthed requests don't pay the write-check (6.3).
@@ -1026,68 +1052,72 @@ pub(crate) fn get_sess<'a>(app: &'a App, sc: &'a SiteCtx, headers: &HeaderMap) -
     // thread so publish latency stays one request, not one full generate.
     publish_due(sc);
     let mut map = app.sessions.lock();
-    // Rehydrate from the `sessions` table on a map miss — cookie logins now
-    // survive a restart (sessions are persisted, decision B). On any hit,
-    // live or rehydrated, `last_seen` is stamped below.
-    if !map.contains_key(&tok) {
-        if let Ok(Some((_t, user_id, email, role, csrf))) = crud::users::session_get(&sc.db, &tok) {
-            // Persisted csrf survives restarts so a mid-edit form still
-            // submits (M20). '' = row written before the column existed:
-            // mint once, persist it, keep it stable from then on.
-            let csrf = if csrf.is_empty() {
-                let mut b = [0u8; 16];
-                rand::thread_rng().fill_bytes(&mut b);
-                let v = hex(&b);
-                if let Err(e) = crud::users::session_set_csrf(&sc.db, &tok, &v) {
-                    eprintln!("session_set_csrf persist failed for rehydrated token: {e}");
-                }
-                v
-            } else {
-                csrf
-            };
-            map.insert(
-                tok.clone(),
-                Sess {
-                    site: sc.slug.clone(),
-                    site_name: sc.name.clone(),
-                    user_id,
-                    email,
-                    role,
-                    db: sc.db.clone(),
-                    csrf,
-                    exp: Instant::now() + Duration::from_secs(12 * 3600),
-                    touched: Instant::now(),
-                },
-            );
+    for tok in cookie_all(headers, SESSION_COOKIE) {
+        // Rehydrate from the `sessions` table on a map miss — cookie logins
+        // now survive a restart (sessions are persisted, decision B). On
+        // any hit, live or rehydrated, `last_seen` is stamped below.
+        if !map.contains_key(&tok) {
+            if let Ok(Some((_t, user_id, email, role, csrf))) = crud::users::session_get(&sc.db, &tok) {
+                // Persisted csrf survives restarts so a mid-edit form still
+                // submits (M20). '' = row written before the column existed:
+                // mint once, persist it, keep it stable from then on.
+                let csrf = if csrf.is_empty() {
+                    let mut b = [0u8; 16];
+                    rand::thread_rng().fill_bytes(&mut b);
+                    let v = hex(&b);
+                    if let Err(e) = crud::users::session_set_csrf(&sc.db, &tok, &v) {
+                        eprintln!("session_set_csrf persist failed for rehydrated token: {e}");
+                    }
+                    v
+                } else {
+                    csrf
+                };
+                map.insert(
+                    tok.clone(),
+                    Sess {
+                        site: sc.slug.clone(),
+                        site_name: sc.name.clone(),
+                        user_id,
+                        email,
+                        role,
+                        db: sc.db.clone(),
+                        csrf,
+                        exp: Instant::now() + Duration::from_secs(12 * 3600),
+                        touched: Instant::now(),
+                    },
+                );
+            }
         }
+        let valid = match map.get(&tok) {
+            Some(s) => s.exp > Instant::now() && s.site == sc.slug,
+            None => false,
+        };
+        if !valid {
+            map.remove(&tok);
+            continue;
+        }
+        // Rolling expiry, matching session_touch's 12h bump — a live map
+        // entry must not outlive its inactivity window. The DB write only
+        // runs when the session was last touched >5min ago (per-request
+        // UPDATE was L).
+        let s = map.get_mut(&tok)?;
+        if s.touched.elapsed() > Duration::from_secs(300) {
+            let _ = crud::users::session_touch(&sc.db, &tok);
+            s.touched = Instant::now();
+        }
+        return Some(Sess {
+            site: s.site.clone(),
+            site_name: s.site_name.clone(),
+            user_id: s.user_id,
+            email: s.email.clone(),
+            role: s.role.clone(),
+            db: sc.db.clone(),
+            csrf: s.csrf.clone(),
+            exp: s.exp,
+            touched: s.touched,
+        });
     }
-    let valid = match map.get(&tok) {
-        Some(s) => s.exp > Instant::now() && s.site == sc.slug,
-        None => return None,
-    };
-    if !valid {
-        map.remove(&tok);
-        return None;
-    }
-    // Rolling expiry, matching session_touch's 12h bump — a live map entry
-    // must not outlive its inactivity window. The DB write only runs when
-    // the session was last touched >5min ago (per-request UPDATE was L).
-    let s = map.get_mut(&tok)?;
-    if s.touched.elapsed() > Duration::from_secs(300) {
-        let _ = crud::users::session_touch(&sc.db, &tok);
-        s.touched = Instant::now();
-    }
-    Some(Sess {
-        site: s.site.clone(),
-        site_name: s.site_name.clone(),
-        user_id: s.user_id,
-        email: s.email.clone(),
-        role: s.role.clone(),
-        db: sc.db.clone(),
-        csrf: s.csrf.clone(),
-        exp: s.exp,
-        touched: s.touched,
-    })
+    None
 }
 
 /// Flip due 'future' posts to 'publish' and regenerate their files.
@@ -1149,6 +1179,7 @@ pub(crate) fn html_admin(s: &Sess, title: &str, body: &str, htmx: bool, screen: 
 <script>var wp=window.wp||{{}};wp.i18n={{__:function(s){{return s;}},_x:function(s){{return s;}},sprintf:function(f){{var a=[].slice.call(arguments,1);var i=0;return f.replace(/%[sd]/g,function(){{return String(a[i++]);}});}}}};</script>
 <script src="/admin/wp/jquery.min.js"></script>
 <script src="/admin/wp/hoverintent-js.min.js"></script>
+<script src="/admin/wp/hoverIntent.min.js"></script>
 <script src="/admin/wp/common.min.js"></script>
 <script src="/admin/wp/admin-bar.min.js"></script>
 <script src="/admin/wp/svg-painter.js"></script>

@@ -1288,7 +1288,7 @@ return false">Add</button>
 <a href="#edit_timestamp" class="button" onclick="document.getElementById('timestampdiv').style.display='none';this.previousElementSibling.previousElementSibling.style.display='none';document.querySelector('.misc-pub-curtime > a').style.display='';return false">OK</a></div></div>
 </div></div>
 <div id="major-publishing-actions">
-<div id="delete-action"><a class="submitdelete deletion" href="#" onclick="document.querySelector('select[name=status]').value='trash';document.getElementById('post').submit();return false">Move to Trash</a></div>
+<div id="delete-action"><button type="button" class="submitdelete deletion button-link" onclick="var b=new URLSearchParams();b.append('csrf','{csrf}');b.append('id','{id}');b.append('status','trash');fetch('/admin/trash',{{method:'POST',headers:{{'Content-Type':'application/x-www-form-urlencoded'}},body:b}}).then(function(){{location.href='/admin/posts'}});return false">Move to Trash</button></div>
 <div id="publishing-action"><a href="{preview_href}" target="_blank" class="button button-secondary button-large" style="margin-right:8px">{preview_label}</a><button class="button button-primary button-large" id="publish" type="submit">Update</button></div>
 </div>
 </div>

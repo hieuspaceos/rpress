@@ -18,6 +18,8 @@ pub(crate) fn html_login(title: &str, body: &str) -> Html<String> {
 </head><body class="login no-js login-action-login wp-core-ui admin-color-modern">
 <script>document.body.className = document.body.className.replace('no-js','js');</script>
 {body}
+<script>var wp=window.wp||{{}};wp.i18n={{__:function(s){{return s;}},_x:function(s){{return s;}},sprintf:function(f){{var a=[].slice.call(arguments,1);var i=0;return f.replace(/%[sd]/g,function(){{return String(a[i++]);}});}}}};</script>
+<script src="/admin/wp/clipboard.min.js"></script>
 <script src="/admin/wp/user-profile.min.js"></script>
 </body></html>"#
     ))
