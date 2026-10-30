@@ -66,6 +66,31 @@ pub(crate) async fn api_generate(
     Redirect::to("/admin").into_response()
 }
 
+/// Full-site regen used by settings screens + non-form callers: same
+/// body as `api_generate` (flag + spawn_blocking duties + emit + bust).
+/// Returns `false` when a regen is already running.
+pub(crate) fn regen_site(sc: &SiteCtx) -> bool {
+    if sc.generating.swap(true, Ordering::SeqCst) {
+        return false;
+    }
+    let db = sc.db.clone();
+    let templates = sc.templates.clone();
+    let out = sc.out.clone();
+    let flag = sc.generating.clone();
+    let tour_base = crate::admin::tour_base(sc).to_string();
+    tokio::task::spawn_blocking(move || {
+        crate::sitefx::purge_duties(&db, &out, &tour_base);
+        let base = crate::db::setting_value(&db, "site_url", "/");
+        if let Err(e) = crate::sitefx::emit_site_files(&db, &templates, &out, &base, &tour_base) {
+            eprintln!("emit_site_files: {e:#}");
+        }
+        crate::admin::admin::bust_cache_dir(&out);
+        let _ = crate::db::setting_put(&db, "widgets_dirty", "0");
+        flag.store(false, Ordering::SeqCst);
+    });
+    true
+}
+
 pub(crate) async fn generate_status(State(app): State<App>, headers: HeaderMap) -> Response {
     let Ok((_s, sc)) = need_auth(&app, &headers) else {
         return StatusCode::UNAUTHORIZED.into_response();

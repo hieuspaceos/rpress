@@ -33,6 +33,8 @@ pub(crate) mod theme_tevily;
 pub(crate) mod theme_traveltour;
 pub(crate) mod tourmaster;
 pub(crate) mod goodlayers;
+/// `/admin/plugins` index + shared settings-screen helpers.
+pub(crate) mod index;
 /// Everything a kind editor needs — the four hooks the old `EditorPlugin`
 /// carried, verbatim. `KindDef.editor` is `None` for kinds with no plugin
 /// editor (core post/page use the classic editor).
@@ -194,6 +196,19 @@ pub(crate) enum Backend {
     /// Playground / php-cgi). Never present unless explicitly enabled.
     PhpBridge,
 }
+/// Display metadata for the `/admin/plugins` index — name + one-line
+/// blurb, WP plugin-list parity.
+pub(crate) struct PluginDescriptor {
+    pub(crate) name: &'static str,
+    pub(crate) blurb: &'static str,
+}
+
+/// Fallback descriptor from the slug (adapters that don't declare one).
+impl PluginDescriptor {
+    pub(crate) fn of_slug(slug: &'static str) -> Self {
+        PluginDescriptor { name: slug, blurb: "" }
+    }
+}
 
 /// One contract for all plugins. Registration is compile-time: add a
 /// `&'static ADAPTER` to `ADAPTERS`; commenting the line out is the off
@@ -205,6 +220,16 @@ pub(crate) trait PluginAdapter: Sync {
     fn slug(&self) -> &'static str;
     /// Post kinds this adapter owns; may be empty (screens-only plugins).
     fn kinds(&self) -> &'static [KindDef];
+
+    /// Display name + blurb for the plugins index. Slug fallback.
+    fn descriptor(&self) -> PluginDescriptor {
+        PluginDescriptor::of_slug(self.slug())
+    }
+    /// Option-key prefixes this adapter's settings screen edits —
+    /// informational on the index (warns on unclaimed plugin options).
+    fn settings_prefixes(&self) -> &'static [&'static str] {
+        &[]
+    }
     /// Admin screens under `/admin/plugins/<slug>/…`.
     fn screens(&self) -> &'static [ScreenDef] {
         &[]

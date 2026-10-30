@@ -252,6 +252,7 @@ pub async fn serve(db: PathBuf, templates: PathBuf, out: PathBuf, www: PathBuf, 
         .route("/admin/media/save", post(admin::media_save))
         .route("/admin/media/delete", post(admin::media_delete))
         .route("/admin/media/detach", post(admin::media_detach))
+        .route("/admin/plugins", get(plugins::index::index_page))
         .route("/admin/plugins/{slug}/{*rest}", get(plugin_screen).post(plugin_screen))
         .route("/admin/api/tour/save-option", post(save_option_shim))
         .route("/admin/media/bulk", post(admin::media_bulk))
@@ -1517,6 +1518,16 @@ pub(crate) fn chrome_start(active: &str, s: &Sess) -> String {
         active,
         &appearance_sub,
     ));
+    if s.role == "admin" {
+        html.push_str(&menu_li(
+            "plugins",
+            "/admin/plugins",
+            "Plugins",
+            "dashicons-admin-plugins",
+            active,
+            &[("/admin/plugins", "Installed Plugins")],
+        ));
+    }
     if s.role == "admin" {
         html.push_str(&menu_li(
             "users",
