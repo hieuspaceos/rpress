@@ -122,10 +122,13 @@ body.wp-admin::before, body.login::before {
 }
 #wpadminbar .ab-top-menu > li:hover > .ab-item,
 #wpadminbar .ab-top-menu > li.hover > .ab-item,
-#wpadminbar .ab-top-menu > li > .ab-item:focus {
-  background: transparent; color: var(--accent);
+#wpadminbar .ab-top-menu > li > .ab-item:focus,
+#wpadminbar:not(.mobile) .ab-top-menu > li:hover > .ab-item,
+#wpadminbar:not(.mobile) .ab-top-menu > li > .ab-item:focus {
+  background: var(--paper-2) !important; color: var(--accent) !important;
+  border-radius: var(--r-sm);
 }
-#wpadminbar .ab-top-menu > li > .ab-item:hover { color: var(--accent); background: transparent; }
+#wpadminbar .ab-top-menu > li > .ab-item:hover { color: var(--accent) !important; background: transparent; }
 #wpadminbar .menupop .ab-sub-wrapper {
   background: var(--glass-solid);
   background: var(--glass-strong);
@@ -139,8 +142,12 @@ body.wp-admin::before, body.login::before {
   padding: 4px;
   top: 36px;
 }
-#wpadminbar .ab-submenu .ab-item { color: var(--ink-2); border-radius: var(--r-sm); }
-#wpadminbar .ab-submenu .ab-item:hover { background: var(--paper-2); color: var(--accent); }
+#wpadminbar .menupop ul li a.ab-item,
+#wpadminbar .quicklinks .menupop ul li a.ab-item,
+#wpadminbar .ab-submenu .ab-item { color: var(--ink-2) !important; border-radius: var(--r-sm); }
+#wpadminbar .menupop ul li a.ab-item:hover,
+#wpadminbar .quicklinks .menupop ul li a.ab-item:hover,
+#wpadminbar .ab-submenu .ab-item:hover { background: var(--paper-2) !important; color: var(--accent) !important; }
 #wpadminbar #wp-admin-bar-site-name > .ab-item { font-weight: 700; letter-spacing: -0.01em; color: var(--ink); }
 
 /* ═══════════ NAV CHROME — the dock (metric repaint, scoped) ═══════════ */
@@ -648,7 +655,7 @@ ul.subsubsub li a {
 }
 ul.subsubsub li a:hover { background: var(--paper-2); color: var(--ink); }
 ul.subsubsub li a.current { background: var(--ink); color: var(--paper); font-weight: 600; }
-ul.subsubsub .count { font-family: var(--font-num); font-size: 10px; font-weight: 400; color: inherit; opacity: .7; }
+ul.subsubsub .count, ul.subsubsub a.current .count { font-family: var(--font-num); font-size: 10px; font-weight: 400; color: inherit !important; opacity: .75; }
 
 .tablenav select, .tablenav input[type="search"], .search-box input[type="search"] {
   height: 30px;

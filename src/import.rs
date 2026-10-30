@@ -525,6 +525,66 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
                 } else if p.post_type == "revision" {
                     // dropped by design (schema exists; plan keeps revisions
                     // table for CMS-created revisions only)
+                } else if p.post_type == "wpcf7_contact_form" {
+                    /* CF7 form definitions → `forms` (the Contact screen reads
+                       this table; without it every site imports a dead
+                       "No contact forms found." list). `_form` is CF7's
+                       markup, `_mail`/`_mail_2`/`_messages` are PHP-serialized
+                       option blobs, `_additional_settings` stays verbatim.
+                       Slug: WP post_name is empty on CF7 — `form-{id}` keeps
+                       the contact-form-7 shortcode id semantics. */
+                    if p.status == "publish" {
+                        let lang = post_lang.get(&p.id).cloned().unwrap_or_else(|| primary.clone());
+                        let slug = if p.slug.trim().is_empty() {
+                            format!("form-{}", p.id)
+                        } else {
+                            p.slug.clone()
+                        };
+                        let mail = meta1(p, "_mail").unwrap_or_default();
+                        let mail2 = meta1(p, "_mail_2").unwrap_or_default();
+                        let messages = meta1(p, "_messages").unwrap_or_default();
+                        let msgs_json = if messages.is_empty() {
+                            "{}".to_string()
+                        } else {
+                            crate::php_serialize::unserialize(messages.as_bytes())
+                                .ok()
+                                .and_then(|v| serde_json::to_string(&v).ok())
+                                .unwrap_or_else(|| "{}".to_string())
+                        };
+                        let mail_str = |raw: &str, key: &str| -> String {
+                            if raw.is_empty() { return String::new(); }
+                            crate::php_serialize::unserialize(raw.as_bytes())
+                                .ok()
+                                .and_then(|v| v.get(key).and_then(|x| x.as_str()).map(String::from))
+                                .unwrap_or_default()
+                        };
+                        let mail2_active: i64 = if mail2.is_empty() {
+                            0
+                        } else {
+                            crate::php_serialize::unserialize(mail2.as_bytes())
+                                .ok()
+                                .and_then(|v| v.get("active").and_then(|x| x.as_bool().or(x.as_i64().map(|n| n != 0))).map(|b| b as i64))
+                                .unwrap_or(0)
+                        };
+                        let _ = tx.execute(
+                            "INSERT OR REPLACE INTO forms(slug, title, lang, kind, markup, \
+                             mail_to, mail_from, mail_subject, mail_body, mail2_active, \
+                             mail2_to, mail2_subject, mail2_body, messages, additional, \
+                             created_at, updated_at) \
+                             VALUES(?1,?2,?3,'form',?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,datetime('now'),datetime('now'))",
+                            params![
+                                slug, p.title, lang,
+                                meta1(p, "_form").unwrap_or_else(|| p.content.clone()),
+                                mail_str(&mail, "recipient"), mail_str(&mail, "sender"),
+                                mail_str(&mail, "subject"), mail_str(&mail, "body"),
+                                mail2_active,
+                                mail_str(&mail2, "recipient"), mail_str(&mail2, "subject"), mail_str(&mail2, "body"),
+                                msgs_json, meta1(p, "_additional_settings").unwrap_or_default()
+                            ],
+                        ).map_err(|e| rep.log(format!("cf7 import {} failed: {e}", p.id)));
+                        rep.log(format!("cf7 form {} → {}", p.id, slug));
+                    }
+                    continue;
                 } else if p.post_type == "custom_css" && p.status == "publish" {
                     // WP Customizer "Additional CSS" — post_content is the
                     // site's hand-written stylesheet. Renderer emits it as

@@ -326,16 +326,32 @@ pub(crate) fn render_list(
         search_label = search_label,
         pager = pager
     );
-    let qe = if kind == "post" {
-        let mut cat_checks = String::new();
-        if let Ok(list) = crud::term_choices(&sc.db, "category", &[]) {
-            for (slug, name, _) in list.iter().take(80) {
-                cat_checks.push_str(&format!(
-                    r#"<li><label><input type="checkbox" name="cat" value="{}"> {}</label></li>"#,
-                    esc(slug), esc(name)
-                ));
+    let qe = {
+        let tax_block = if kind == "post" {
+            let mut cat_checks = String::new();
+            if let Ok(list) = crud::term_choices(&sc.db, "category", &[]) {
+                for (slug, name, _) in list.iter().take(80) {
+                    cat_checks.push_str(&format!(
+                        r#"<li><label><input type="checkbox" name="cat" value="{}"> {}</label></li>"#,
+                        esc(slug), esc(name)
+                    ));
+                }
             }
-        }
+            format!(
+                r#"<div>
+<span class="title inline-edit-categories-label">Categories</span>
+<ul id="qe-cats" class="categorychecklist" style="max-height:180px;overflow:auto;margin:4px 0;border:1px solid #ddd;padding:6px;min-width:240px">{cat_checks}</ul>
+</div>
+<div>
+<span class="title">Tags</span>
+<textarea form="qe-posts-form" name="tags" id="qe-tags" rows="3" cols="34" placeholder=""></textarea>
+<p class="howto" style="margin:0 0 8px">Separate tags with commas</p>
+<label class="inline-edit-group"><span class="title">Comments</span><input type="checkbox" name="comments" value="1"> Allow Comments</label>
+<label class="inline-edit-group"><span class="title">Sticky</span><input type="checkbox" name="sticky" value="1"> Make this post sticky</label></div>"#
+            )
+        } else {
+            String::new()
+        };
         format!(
             r##"<tr id="qe-row" class="inline-edit-row quick-edit-row" style="display:none"><td colspan="6" class="colspanchange">
 <input form="qe-posts-form" type="hidden" name="csrf" value="{csrf}">
@@ -348,19 +364,9 @@ pub(crate) fn render_list(
 <label class="inline-edit-group"><span class="title">Slug</span><input form="qe-posts-form" type="text" name="slug" id="qe-slug" style="width:360px"></label>
 <label class="inline-edit-group"><span class="title">Status</span>
 <select form="qe-posts-form" name="status" id="qe-status"><option value="publish">Published</option><option value="future">Scheduled</option><option value="draft">Draft</option><option value="pending">Pending Review</option><option value="trash">Trash</option></select></label>
-</div>
-<div>
-<span class="title inline-edit-categories-label">Categories</span>
-<ul id="qe-cats" class="categorychecklist" style="max-height:180px;overflow:auto;margin:4px 0;border:1px solid #ddd;padding:6px;min-width:240px">{cat_checks}</ul>
-</div>
-<div>
-<span class="title">Tags</span>
-<textarea form="qe-posts-form" name="tags" id="qe-tags" rows="3" cols="34" placeholder=""></textarea>
-<p class="howto" style="margin:0 0 8px">Separate tags with commas</p>
-<label class="inline-edit-group"><span class="title">Comments</span><input type="checkbox" name="comments" value="1"> Allow Comments</label>
-<label class="inline-edit-group"><span class="title">Sticky</span><input type="checkbox" name="sticky" value="1"> Make this post sticky</label>
 <label class="inline-edit-group"><span class="title">Language</span><select form="qe-posts-form" name="lang" id="qe-lang"><option value="">—</option><option value="fr">Français</option><option value="es">Español</option></select></label>
 </div>
+{tax_block}
 </div>
 <p class="submit inline-edit-save" style="margin-top:10px">
 <button form="qe-posts-form" type="submit" class="button button-primary">Update</button>
@@ -368,10 +374,9 @@ pub(crate) fn render_list(
 </p>
 </fieldset>
 </td></tr>"##,
-            csrf = s.csrf
+            csrf = s.csrf,
+            tax_block = tax_block
         )
-    } else {
-        String::new()
     };
     let be = if kind == "post" {
         let mut cat_checks = String::new();
@@ -440,10 +445,11 @@ document.addEventListener('click',function(e){{
     qe.querySelector('#qe-slug').value=tr.getAttribute('data-slug')||'';
     qe.querySelector('#qe-status').value=tr.getAttribute('data-status')||'publish';
     qe.querySelectorAll('#qe-cats input').forEach(function(c){{c.checked=false}});
-    qe.querySelector('#qe-tags').value='';
+    var tagsEl = qe.querySelector('#qe-tags');
+    if(tagsEl)tagsEl.value='';
     fetch('/admin/postdata/'+id).then(function(r){{return r.json()}}).then(function(d){{
       (d.cats||[]).forEach(function(s){{var c=qe.querySelector('#qe-cats input[value="'+s+'"]');if(c)c.checked=true}});
-      qe.querySelector('#qe-tags').value=(d.tags||[]).join(', ');
+      if(tagsEl)tagsEl.value=(d.tags||[]).join(', ');
       if(d.lang)qe.querySelector('#qe-lang').value=d.lang;
     }});
     tr.parentNode.insertBefore(qe,tr.nextSibling);
@@ -455,7 +461,8 @@ document.addEventListener('click',function(e){{
     if(origTr)origTr.style.display='';
   }}
   if(e.target&&e.target.type==='submit'&&e.target.closest('#qe-row')){{
-    qe.querySelector('input[name=cats]').value=[...qe.querySelectorAll('#qe-cats input:checked')].map(c=>c.value).join(',');
+    var ci = qe.querySelectorAll('#qe-cats input:checked');
+    qe.querySelector('input[name=cats]').value=[...ci].map(c=>c.value).join(',');
   }}
   // bulk apply
   if(e.target&&e.target.id==='doaction'){{
