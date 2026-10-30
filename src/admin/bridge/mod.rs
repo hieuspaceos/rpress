@@ -36,7 +36,7 @@ pub(crate) mod playground;
 pub(crate) mod pull;
 
 /// Default idle time-to-live before the reaper kills a bridge.
-pub(crate) const TTL_IDLE: Duration = Duration::from_secs(600);
+pub(crate) const TTL_IDLE: Duration = Duration::from_secs(300);
 
 /// Minimum gap between respawns of the same key. A bridge that dies
 /// faster than this is a boot failure — surface errors instead of a
