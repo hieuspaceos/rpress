@@ -38,7 +38,7 @@
 #att-modal > div {
     inset: auto !important;
     top: 50% !important;
-    left: 50% !important;
+    box-shadow: var(--shadow-dock, 0 5px 30px rgba(0,0,0,.4));
     transform: translate(-50%, -50%);
     width: min(920px, 92vw);
     max-height: 82vh;
@@ -55,15 +55,15 @@
     position: fixed;
     top: 32px;
     z-index: 100;
-    background: #f0f0f0;
-    border-bottom: 1px solid #e5e5e5;
+    background: var(--glass-solid, #f0f0f0);
+    border-bottom: 1px solid var(--rule, #e5e5e5);
 }
 .mce-toolbar-grp.wp-pin {
     position: fixed !important;
     top: 68px;
     z-index: 99;
-    background: #fff;
-    border-bottom: 1px solid #e5e5e5;
+    background: var(--paper, #fff);
+    border-bottom: 1px solid var(--rule, #e5e5e5);
 }
 
 /* Editor tools: media-buttons + Visual/Code tabs share one row like WP
@@ -117,7 +117,7 @@
 }
 .mce-content-body .wp-caption {
     max-width: 100%;
-    background: #f1f1f1;
+    background: var(--paper-2, #f1f1f1);
     padding-top: 4px;
     margin: 10px 0;
 }
@@ -126,7 +126,7 @@
     padding: 0 4px 5px;
     font-size: 11px;
     line-height: 17px;
-    color: #444;
+    color: var(--ink-2, #444);
 }
 
 /* Sidebar: pin the whole metabox column under the adminbar while the
