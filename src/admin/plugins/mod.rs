@@ -36,6 +36,7 @@ pub(crate) mod goodlayers;
 /// `/admin/plugins` index + shared settings-screen helpers.
 pub(crate) mod index;
 pub(crate) mod chaty;
+pub(crate) mod misc;
 /// Everything a kind editor needs — the four hooks the old `EditorPlugin`
 /// carried, verbatim. `KindDef.editor` is `None` for kinds with no plugin
 /// editor (core post/page use the classic editor).
@@ -408,6 +409,11 @@ static ADAPTERS: &[&'static dyn PluginAdapter] = &[
     &theme_tevily::ADAPTER,
     &goodlayers::ADAPTER,
     &chaty::ADAPTER,
+    &misc::WPDISCUZ,
+    &misc::CF7,
+    &misc::METASLIDER,
+    &misc::SITE_REVIEWS,
+    &misc::HEAD_FOOTER,
 ];
 
 /// Indexed view over `ADAPTERS` + `CORE_KINDS`, built once.

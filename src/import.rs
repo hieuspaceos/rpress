@@ -228,6 +228,13 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
                     ) || k.starts_with("theme_mods_")
                         || k.starts_with("chaty_")
                         || k.starts_with("cht_")
+                        /* Plugin option prefixes kept verbatim — the admin
+                           settings screens read/write these keys. */
+                        || k.starts_with("wpdiscuz_")
+                        || k.starts_with("glsr_")
+                        || k.starts_with("cf7sr_")
+                        || k.starts_with("ml-slider_")
+                        || k == "ml-slider_settings"
                         /* Widget instances: `sidebars_widgets` maps each WP
                            sidebar to its ordered widget ids; `widget_{id_base}`
                            holds the instance payloads those ids index into. */
