@@ -57,6 +57,19 @@
   applyMore();
   if (mobileQ.addEventListener) mobileQ.addEventListener('change', applyMore);
 
+  /* current submenu link: the server only marks the top-level tile, so
+     mirror WP and pin `li.current` on the flyout item matching the path */
+  if (menu) {
+    var path = location.pathname.replace(/\/+$/, '');
+    Array.prototype.forEach.call(menu.querySelectorAll('.wp-submenu a'), function (a) {
+      var href = (a.getAttribute('href') || '').replace(/\/+$/, '');
+      if (href && href === path) {
+        a.parentNode.classList.add('current');
+        a.setAttribute('aria-current', 'page');
+      }
+    });
+  }
+
   // touch: first tap on a parent tile opens its flyout, second navigates
   if (touchQ.matches && menu) {
     menu.addEventListener('click', function (e) {

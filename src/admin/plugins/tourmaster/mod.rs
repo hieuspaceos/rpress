@@ -183,11 +183,25 @@ fn submenu(db: &Path) -> Vec<(String, String)> {
         ("/admin/new/tour".into(), "Add New Tour".into()),
         ("/admin/plugins/tourmaster/new-filter".into(), "Add New Filter".into()),
     ];
-    for t in crate::db::list_taxonomies(db).unwrap_or_default() {
-        if t == "category" || t == "post_tag" {
-            continue;
+    // Declared tour taxonomies + admin-added custom filters
+    // (`plugin:tourmaster:tour_custom_taxs`). Never the DB-wide list —
+    // `terms` also carries nav_menu, rank_math, wpcode, ml_slider and
+    // other internal taxonomies that have no business in this flyout.
+    let mut seen: Vec<String> = Vec::new();
+    for t in KINDS[0].taxonomies {
+        if !seen.iter().any(|s| s.eq_ignore_ascii_case(t)) {
+            seen.push(t.to_string());
         }
+    }
+    let custom = crate::db::plugin_setting_json_map(db, "tourmaster", "tour_custom_taxs");
+    for slug in custom.keys() {
+        if !seen.iter().any(|t| t.eq_ignore_ascii_case(slug)) {
+            seen.push(slug.clone());
+        }
+    }
+    for t in seen {
         let (label, _) = crate::admin::tax_label(&t);
+        let label = custom.get(&t).cloned().unwrap_or(label);
         sub.push((format!("/admin/tax/{t}"), label));
     }
     sub

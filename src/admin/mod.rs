@@ -1467,8 +1467,18 @@ pub(crate) fn chrome_start(active: &str, s: &Sess) -> String {
     ));
     // Registered plugin kinds get one generic menu entry each (adapter
     // may override the submenu via `PluginAdapter::submenu`).
+    // Plugin kinds with no imported content get no dock tile (e.g. babe
+    // `to_book` on a site that never used it) — the section + list routes
+    // still resolve, the tile just stops advertising an empty screen.
+    let kind_has_posts = |kind: &str| -> bool {
+        rusqlite::Connection::open(&s.db)
+            .ok()
+            .and_then(|c| c.query_row("SELECT COUNT(*) FROM posts WHERE kind=?1", [kind], |r| r.get::<_, i64>(0)).ok())
+            .map(|n| n > 0)
+            .unwrap_or(true)
+    };
     for def in plugins::kind_defs() {
-        if def.menu_icon.is_empty() || matches!(def.kind, "post" | "page") {
+        if def.menu_icon.is_empty() || matches!(def.kind, "post" | "page") || !kind_has_posts(def.kind) {
             continue;
         }
         html.push_str(&menu_li(

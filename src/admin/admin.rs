@@ -142,6 +142,7 @@ pub(crate) async fn media_page(State(app): State<App>, headers: HeaderMap, Query
             ("m".into(), month.into()),
             ("s".into(), search.into()),
             ("sort".into(), sort.into()),
+            ("paged".into(), page.to_string()),
         ];
         for (k, v) in over {
             parts.iter_mut().for_each(|p| {
@@ -216,14 +217,16 @@ pub(crate) async fn media_page(State(app): State<App>, headers: HeaderMap, Query
             .collect::<String>()
     };
 
+    let at_first = if page <= 1 { " disabled" } else { "" };
+    let at_last = if page >= pages { " disabled" } else { "" };
     let pager = format!(
         r#"<div class="tablenav-pages"><span class="displaying-num">{total} items</span>
 <span class="pagination-links">
-<a class="first-page button" href="/admin/media?{q1}"><span>«</span></a>
-<a class="prev-page button" href="/admin/media?{qp}"><span>‹</span></a>
+<a class="first-page button{at_first}" href="/admin/media?{q1}"><span>«</span></a>
+<a class="prev-page button{at_first}" href="/admin/media?{qp}"><span>‹</span></a>
 <span class="paging-input"><span class="tablenav-paging-text">{page} of <span class="total-pages">{pages}</span></span></span>
-<a class="next-page button" href="/admin/media?{qn}"><span>›</span></a>
-<a class="last-page button" href="/admin/media?{ql}"><span>»</span></a>
+<a class="next-page button{at_last}" href="/admin/media?{qn}"><span>›</span></a>
+<a class="last-page button{at_last}" href="/admin/media?{ql}"><span>»</span></a>
 </span></div>"#,
         q1 = mqs(&[("paged", "1")]),
         qp = mqs(&[("paged", &(page - 1).max(1).to_string())]),

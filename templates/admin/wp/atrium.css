@@ -322,7 +322,7 @@ body.wp-admin::before, body.login::before {
   margin-top: 0 !important; /* common.min.js writes inline margin-top */
   min-width: 168px;
   padding: 6px;
-  background: oklch(98% 0.006 90 / 0.94);
+  background: oklch(98% 0.006 90 / 0.97); /* near-solid: page text must not bleed through */
   background: var(--glass-strong);
   -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
   border: 1px solid var(--glass-border);
@@ -357,25 +357,41 @@ body.wp-admin::before, body.login::before {
 #adminmenu .wp-submenu a,
 #adminmenu .wp-submenu li.wp-first-item a {
   display: block;
+  position: relative;
   margin: 0;
-  padding: 7px 12px;
+  padding: 6px 12px 6px 18px;
   font-family: var(--font-ui);
   font-size: 12.5px;
   font-weight: 500;
-  line-height: 1.3;
+  line-height: 1.35;
   color: var(--ink-2);
   background: transparent;
   border-radius: var(--r-sm);
   box-shadow: none;
   white-space: nowrap;
 }
+#adminmenu .wp-submenu a::before {
+  content: "";
+  position: absolute;
+  left: 7px; top: 50%;
+  translate: 0 -50%;
+  width: 3px; height: 0;
+  border-radius: 2px;
+  background: var(--accent);
+  transition: height var(--dur-micro) var(--ease-out);
+}
+#adminmenu .wp-submenu a:hover::before,
+#adminmenu .wp-submenu li.current a::before { height: 12px; }
 #adminmenu .wp-submenu a:hover,
-#adminmenu .wp-submenu a:focus,
+#adminmenu .wp-submenu a:focus {
+  background: var(--paper-2);
+  color: var(--ink);
+}
 #adminmenu .wp-submenu li.current a {
   background: var(--paper-2);
   color: var(--accent);
+  font-weight: 600;
 }
-
 /* section icon tints */
 #menu-posts .wp-menu-image { --icon-tint: var(--accent); }
 #menu-media .wp-menu-image { --icon-tint: var(--violet); }
@@ -696,9 +712,14 @@ ul.subsubsub .count { font-family: var(--font-num); font-size: 10px; font-weight
   -webkit-box-orient: vertical;
 }
 }
+/* title owns the widest column so "Edit | Quick Edit | … | New Draft"
+   stays on one line under the title */
+.wp-list-table.posts .column-title, .wp-list-table.pages .column-title { width: 42%; }
 .wp-list-table .row-actions {
   opacity: 0;
   transition: opacity var(--dur-micro) var(--ease-out);
+  white-space: nowrap;
+  margin-top: 3px;
 }
 .wp-list-table tr:hover .row-actions, .wp-list-table tr:focus-within .row-actions { opacity: 1; }
 .wp-list-table .row-actions a, .wp-list-table .row-actions span a { color: var(--ink-2); font-weight: 500; }
