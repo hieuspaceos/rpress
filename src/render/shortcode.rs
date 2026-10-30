@@ -441,12 +441,88 @@ fn metaslider_html(conn: &Connection, id: i64, site_url: &str) -> Option<String>
         return None;
     }
     Some(format!(
-        "<div id=\"metaslider-id-{id}\" style=\"width: 100%; margin: 0 auto;\" class=\"ml-slider-3-113-1 metaslider metaslider-flex metaslider-{id} ml-slider{carousel_cls} {theme_cls}{nav_hidden}{nav_hidden2}{extra_cls}\" role=\"region\" aria-label=\"{}\" data-height=\"{}\" data-width=\"{}\">\n    <div id=\"metaslider_container_{id}\">\n        <div id=\"metaslider_{id}\">\n            <ul class='slides'>\n                {}\n            </ul>\n        </div>\n        \n    </div>\n</div>",
+        "<div id=\"metaslider-id-{id}\" style=\"width: 100%; margin: 0 auto;\" class=\"ml-slider-3-113-1 metaslider metaslider-flex metaslider-{id} ml-slider{carousel_cls} {theme_cls}{nav_hidden}{nav_hidden2}{extra_cls}\" role=\"region\" aria-label=\"{}\" data-height=\"{}\" data-width=\"{}\">\n    <div id=\"metaslider_container_{id}\">\n        <div id=\"metaslider_{id}\">\n            <ul class='slides'>\n                {}\n            </ul>\n        </div>\n        \n    </div>\n</div>{assets}",
         esc_attr(&title),
         esc_attr(&sh),
         esc_attr(&sw),
         lis.join("\n                "),
+        assets = metaslider_assets(id, site, &sget),
     ))
+}
+
+/// Enqueue + init block the plugin prints via `wp_enqueue_script` +
+/// `wp_add_inline_script` (WP hardcodes `metaslider-flex-slider-js-after`
+/// per slider). We have no enqueue pipeline — the shortcode emits the tags
+/// inline right after the markup, which is equivalent since jQuery is
+/// already loaded in <head>.
+fn metaslider_assets(id: i64, site: &str, sget: &dyn Fn(&str) -> String) -> String {
+    let a = "/wp-content/plugins/ml-slider/assets";
+    let bool_ = |v: &str| -> &'static str { if v == "true" { "true" } else { "false" } };
+    // WP option → flexslider option (flex type only; other slider types
+    // never reach here — slides query is flex-only).
+    let navigation = bool_(&sget("navigation"));
+    let (control_nav, direction_nav) = if navigation == "false" {
+        ("true", "false") // plugin hides the filmstrip, keeps direction nav
+    } else {
+        ("false", "true")
+    };
+    let carousel = sget("carouselMode") == "true";
+    let carousel_opts = if carousel {
+        format!(
+            ",\n                itemWidth:{},\n                minItems:2,\n                maxItems:0,\n                move:1,\n                itemMargin:{}",
+            sget("width"),
+            sget("carouselMargin")
+        )
+    } else {
+        String::new()
+    };
+    format!(
+        "<link rel='stylesheet' id='metaslider-flex-slider-css' href='{site}{a}/sliders/flexslider/flexslider.css?ver=3.113.1' media='all' property='stylesheet' />\n\
+         <script id=\"metaslider-public-js\" src=\"{site}{a}/metaslider/script.min.js?ver=3.113.1\"></script>\n\
+         <script id=\"metaslider-easing-js\" src=\"{site}{a}/easing/jQuery.easing.min.js?ver=3.113.1\"></script>\n\
+         <script id=\"metaslider-flex-slider-js\" src=\"{site}{a}/sliders/flexslider/jquery.flexslider.min.js?ver=3.113.1\"></script>\n\
+         <script id=\"metaslider-flex-slider-js-after\">\n\
+         var metaslider_{id} = function($) {{$('#metaslider_{id}').addClass('flexslider');\n\
+         \x20   $('#metaslider_{id}').flexslider({{\n\
+         \x20       slideshowSpeed:{delay},\n\
+         \x20       animation:'{anim}',\n\
+         \x20       controlNav:{control_nav},\n\
+         \x20       directionNav:{direction_nav},\n\
+         \x20       pauseOnHover:{hover},\n\
+         \x20       direction:'{dir}',\n\
+         \x20       reverse:{rev},\n\
+         \x20       keyboard:{kbd},\n\
+         \x20       touch:{touch},\n\
+         \x20       animationSpeed:{speed},\n\
+         \x20       prevText:\"Previous\",\n\
+         \x20       nextText:\"Next\",\n\
+         \x20       smoothHeight:{smooth},\n\
+         \x20       fadeFirstSlide:{fade},\n\
+         \x20       easing:\"{easing}\",\n\
+         \x20       slideshow:{auto},\n\
+         \x20       pausePlay:false{carousel}\n\
+         \x20   }});\n\
+         \x20   $(document).trigger('metaslider/initialized', '#metaslider_{id}');\n\
+         }};\n\
+         var timer_metaslider_{id} = function() {{\n\
+         \x20   var slider = !window.jQuery ? window.setTimeout(timer_metaslider_{id}, 100) : !jQuery.isReady ? window.setTimeout(timer_metaslider_{id}, 1) : metaslider_{id}(window.jQuery);\n\
+         }};\n\
+         timer_metaslider_{id}();\n\
+         </script>",
+        delay = sget("delay"),
+        anim = if carousel { "slide" } else { "fade" },
+        hover = bool_(&sget("hoverPause")),
+        dir = sget("direction"),
+        rev = bool_(&sget("reverse")),
+        kbd = bool_(&sget("keyboard")),
+        touch = bool_(&sget("touch")),
+        speed = sget("animationSpeed"),
+        smooth = bool_(&sget("smoothHeight")),
+        fade = bool_(&sget("firstSlideFadeIn")),
+        easing = sget("easing"),
+        auto = bool_(&sget("autoPlay")),
+        carousel = carousel_opts,
+    )
 }
 
 /// `[embed]` — YouTube/Vimeo/Spotify URL → iframe, matching wp_oembed output
