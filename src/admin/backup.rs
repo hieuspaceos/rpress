@@ -3,12 +3,12 @@
 //! this is the thin HTTP shell: page, "Backup now" POST, basename-guarded
 //! download.
 
-use super::{check_csrf, esc, need_auth, App, SiteCtx};
+use super::{check_csrf, esc, html_page, need_auth, App, SiteCtx};
 use axum::{
     body::Body,
     extract::{Form, Path as AxPath, State},
     http::{header, HeaderMap, StatusCode},
-    response::{Html, IntoResponse, Redirect, Response},
+    response::{IntoResponse, Redirect, Response},
 };
 use serde::Deserialize;
 
@@ -48,7 +48,7 @@ pub(crate) async fn backup_page(State(app): State<App>, headers: HeaderMap) -> R
 {table}"#,
         esc(&sc.slug), esc(&sc.slug), esc(&s.csrf)
     );
-    Html(format!("{}{}{}", super::chrome("tools", &s), body, super::chrome_end(&s))).into_response()
+    html_page(&s, "Backup", &format!("{}{}", super::chrome("tools", &s), body), false).into_response()
 }
 
 #[derive(Deserialize)]

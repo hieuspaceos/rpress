@@ -7,11 +7,11 @@
 
 use super::index::{save_settings_fields, settings_form_html, FieldKind, FieldSpec, SettingsForm};
 use super::{Backend, KindDef, PluginAdapter, PluginDescriptor, ScreenDef, ScreenFuture};
-use crate::admin::{chrome, chrome_end, App, Sess, SiteCtx};
+use crate::admin::{chrome, html_page, App, Sess, SiteCtx};
 use axum::{
     extract::{Form, FromRequest, Request},
     http::{HeaderMap, Method, StatusCode},
-    response::{Html, IntoResponse, Redirect},
+    response::{IntoResponse, Redirect},
 };
 
 pub(crate) struct Chaty;
@@ -150,7 +150,7 @@ fn settings<'a>(
                         1,
                     ));
                 }
-                Html(format!("{}{}{}", chrome("plugins", s), body, chrome_end(s))).into_response()
+                html_page(s, "Chaty", &format!("{}{}", chrome("plugins", s), body), false).into_response()
             }
         }
     })

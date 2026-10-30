@@ -7,7 +7,7 @@
 
 use super::{adapters, Backend};
 use crate::admin::{
-    check_csrf, chrome, chrome_end, esc, need_auth, App, Sess, SiteCtx,
+    check_csrf, chrome, chrome_end, esc, html_page, need_auth, App, Sess, SiteCtx,
 };
 use anyhow::Result;
 use axum::{
@@ -91,7 +91,7 @@ pub(crate) async fn index_page(State(app): State<App>, headers: HeaderMap) -> Re
         return StatusCode::FORBIDDEN.into_response();
     }
     let body = plugins_index_html(&s, &sc);
-    Html(format!("{}{}", chrome("plugins", &s), body)).into_response()
+    html_page(&s, "Plugins", &format!("{}{}", chrome("plugins", &s), body), true).into_response()
 }
 
 fn plugins_index_html(_s: &Sess, sc: &SiteCtx) -> String {
