@@ -217,3 +217,12 @@ Functional gate (phase-04): all actions green — create/save/quickedit/trash/re
 comments approve↔pending cycle, menus locations save, widget save round-trip (sidebar preserved),
 settings discussion save persisted, search/filters 200, zero console errors on 8 screens, 1024px
 layout holds. Diff scope: 2 CSS files only.
+
+## Code-review pass (post-commit, code-reviewer)
+
+| Ref | Verdict |
+|---|---|
+| `#att-modal` lost `left:50%` during token swap | **CRITICAL — fixed** (modal rendered off-screen left; restored + deduped shadow; verified centered cx=720/1440) |
+| `td.column-description` on mobile | **fixed** — clamp scoped `@media (min-width:783px)` so the card layout keeps `display:block;width:100%` |
+| `.ui-sortable-placeholder` rule | dead CSS — widgets screen has no jQuery sortable init; harmless, kept as stub |
+| 17 other named checks | OK — see agent review (pta specificity, focus rings, subsubsub, check-column, flyout keyframes, adminbar 32px, login switcher, no markup/JS in diff) |

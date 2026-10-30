@@ -38,11 +38,11 @@
 #att-modal > div {
     inset: auto !important;
     top: 50% !important;
-    box-shadow: var(--shadow-dock, 0 5px 30px rgba(0,0,0,.4));
+    left: 50% !important;
     transform: translate(-50%, -50%);
     width: min(920px, 92vw);
     max-height: 82vh;
-    box-shadow: 0 5px 30px rgba(0,0,0,.4);
+    box-shadow: var(--shadow-dock, 0 5px 30px rgba(0,0,0,.4));
 }
 #att-modal #am-preview img {
     max-height: 52vh;

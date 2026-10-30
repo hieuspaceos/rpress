@@ -665,13 +665,17 @@ ul.subsubsub .count { font-family: var(--font-num); font-size: 10px; font-weight
 }
 .wp-list-table .check-column { width: 2.4em; }
 /* long taxonomy descriptions: clamp to ~7 lines so a row can't own the page */
+@media screen and (min-width: 783px) {
 .wp-list-table td.column-description {
   max-width: 30vw;
   overflow: hidden;
+  /* -webkit-box on a td wraps it in an anonymous table-cell — borders/padding
+     land on the wrapper. Desktop-only: the <782px card layout keeps display:block. */
   display: -webkit-box;
   -webkit-line-clamp: 7;
   line-clamp: 7;
   -webkit-box-orient: vertical;
+}
 }
 .wp-list-table .row-actions {
   opacity: 0;
