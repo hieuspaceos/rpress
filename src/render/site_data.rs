@@ -1109,63 +1109,131 @@ fn lang_flags_sticky_html(conn: &Connection, site_url: &str) -> String {
 }
 
 /// Chaty widget: `cht_*`/`chaty_*` options → the plugin's inline
-/// `chaty_settings` object + script tags. Absent options → empty string
-/// (no chat markup on sites without the plugin).
+/// `chaty_settings` object + script tags. Every active widget
+/// (`cht_active{sfx}="1"` for suffix "" and "_1") emits its full
+/// settings map + channel records — the vendored script.js applies
+/// traffic/date rules client-side exactly like WP.
 fn chaty_js(conn: &Connection, site_url: &str) -> String {
     let get = |k: &str| -> String {
         conn.query_row("SELECT value FROM settings WHERE key=?1", [k], |r| r.get::<_, String>(0))
             .unwrap_or_default()
     };
-    let total = get("chaty_total_settings").parse::<i64>().unwrap_or(0);
-    if total == 0 {
-        return String::new();
-    }
-    // Channel list: cht_social_{n}_{Name} serialized rows.
-    let mut channels = Vec::new();
-    for n in 0..total.max(1) {
-        let mut st = match conn.prepare(
-            "SELECT key, value FROM settings WHERE key LIKE ?1",
-        ) {
+    let g = |k: &str, d: &str| -> String {
+        let v = get(k);
+        if v.is_empty() { d.to_string() } else { v }
+    };
+
+    // Widget suffixes: "" is widget 0, "_1", "_2"… follow. Emit only
+    // widgets the site marked active.
+    let mut widgets = Vec::new();
+    for sfx in ["", "_1", "_2", "_3"] {
+        if get(&format!("cht_active{sfx}")) != "1" {
+            continue;
+        }
+        // Channels: `cht_numb_slug{sfx}` is the comma-separated
+        // selection ("Whatsapp" or ",Phone,Whatsapp") — only those
+        // `cht_social{_sfx}_{Name}` rows emit; the catalog (empty
+        // keys) stays dormant. Record emitted verbatim + `channel` +
+        // `value` normalized to `full_number` for WhatsApp (origin
+        // emits the digits form, not the display one).
+        let wanted: Vec<String> = get(&format!("cht_numb_slug{sfx}"))
+            .split(',')
+            .map(|s| s.trim().to_lowercase())
+            .filter(|s| !s.is_empty())
+            .collect();
+        let pat = format!("cht_social{sfx}_%");
+        let sql = if sfx.is_empty() {
+            // suffixless widget — exclude `cht_social_<N>_*` rows that
+            // belong to widgets 1+.
+            "SELECT key, value FROM settings WHERE key LIKE ?1 AND key NOT GLOB 'cht_social_[0-9]_*'"
+        } else {
+            "SELECT key, value FROM settings WHERE key LIKE ?1"
+        };
+        let mut st = match conn.prepare(sql) {
             Ok(s) => s,
             _ => return String::new(),
         };
-        let pat = format!("cht_social_{n}_%");
         let rows: Vec<(String, String)> = st
             .query_map(rusqlite::params![pat], |r| {
                 Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
             })
             .map(|it| it.flatten().collect())
             .unwrap_or_default();
-        if !rows.is_empty() {
-            for (k, v) in rows {
-                let name = k.rsplit('_').next().unwrap_or("");
-                if let Ok(v) = crate::php_serialize::unserialize(v.as_bytes()) {
-                    channels.push(json!({"id": name, "value": v.get("value").cloned().unwrap_or(Value::Null)}));
-                }
+        let mut channels = Vec::new();
+        for (k, v) in rows {
+            let name = k.rsplit('_').next().unwrap_or("").to_string();
+            if !wanted.is_empty() && !wanted.iter().any(|w| w == &name.to_lowercase()) {
+                continue;
             }
+            let Ok(rec) = crate::php_serialize::unserialize(v.as_bytes()) else { continue };
+            let Some(obj) = rec.as_object() else { continue };
+            if obj.is_empty() || obj.get("value").map(|v| v.is_null() || v == "").unwrap_or(true) {
+                continue; // catalog row the site never configured
+            }
+            let mut ch = serde_json::Map::new();
+            ch.insert("channel".into(), Value::String(name));
+            for (fk, fv) in obj {
+                ch.insert(fk.clone(), fv.clone());
+            }
+            if let Some(full) = obj.get("full_number").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+                ch.insert("value".into(), Value::String(full.to_string()));
+            }
+            channels.push(Value::Object(ch));
         }
+
+        let s = |k: &str, d: &str| g(&format!("{k}{sfx}"), d);
+        widgets.push(json!({
+            "id": widgets.len(),
+            "identifier": widgets.len(),
+            "settings": {
+                "cta_type": "simple-view",
+                "cta_body": "",
+                "cta_head": "",
+                "cta_head_bg_color": "",
+                "cta_head_text_color": "",
+                "show_close_button": if s("cht_close_button", "yes") == "yes" { 1 } else { 0 },
+                "position": s("cht_position", "right"),
+                "custom_position": 1,
+                "bottom_spacing": s("cht_bottom_spacing", "25"),
+                "side_spacing": s("cht_side_spacing", "25"),
+                "icon_view": s("chaty_icons_view", "vertical"),
+                "default_state": s("chaty_default_state", "click"),
+                "cta_text": s("cht_cta", ""),
+                "cta_text_color": s("cht_cta_text_color", "#202020"),
+                "cta_bg_color": s("cht_cta_bg_color", "rgb(255, 255, 255)"),
+                "show_cta": "first_click",
+                "is_pending_mesg_enabled": s("cht_pending_messages", "off"),
+                "pending_mesg_count": s("cht_number_of_messages", "1"),
+                "pending_mesg_count_color": s("cht_number_color", "#ffffff"),
+                "pending_mesg_count_bgcolor": s("cht_number_bg_color", "#dd0000"),
+                "widget_icon": "chat-base",
+                "widget_icon_url": "",
+                "font_family": "-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Oxygen-Sans,Ubuntu,Cantarell,Helvetica Neue,sans-serif",
+                "widget_size": s("cht_widget_size", "54"),
+                "custom_widget_size": s("cht_widget_size", "54"),
+                "is_google_analytics_enabled": s("cht_google_analytics", "off"),
+                "close_text": s("cht_close_button_text", "Hide"),
+                "widget_color": s("cht_color", "RGB(90, 147, 109)"),
+                "widget_icon_color": s("cht_icon_color", "#ffffff"),
+                "widget_rgb_color": "0,0,0",
+                "has_custom_css": 0,
+                "custom_css": s("chaty_custom_css", ""),
+                "widget_token": s("cht_token", ""),
+                "widget_index": sfx.trim_start_matches('_'),
+                "attention_effect": s("chaty_attention_effect", "waggle"),
+            },
+            "channels": channels,
+        }));
     }
-    let widget = json!({
-        "id": 0,
-        "identifier": 0,
-        "settings": {
-            "cta_type": "simple-view",
-            "default_state": get("chaty_default_state").if_empty("click".into()),
-            "position": get("cht_position").if_empty("right".into()),
-            "cta_text": get("cht_cta"),
-            "cta_bg_color": get("cht_cta_bg_color"),
-            "icon_view": get("chaty_icons_view").if_empty("vertical".into()),
-            "bottom_spacing": get("cht_bottom_spacing").if_empty("25".into()),
-            "side_spacing": get("cht_side_spacing").if_empty("25".into()),
-        },
-        "channels": channels,
-    });
+    if widgets.is_empty() {
+        return String::new();
+    }
     let settings = json!({
         "ajax_url": format!("{site_url}/wp-admin/admin-ajax.php"),
         "analytics": "0",
         "capture_analytics": "0",
         "token": get("cht_token"),
-        "chaty_widgets": [widget],
+        "chaty_widgets": widgets,
     });
     format!(
         "<script id=\"chaty-front-end-js-extra\">\nvar chaty_settings = {};\n</script>\n\
@@ -1177,7 +1245,7 @@ fn chaty_js(conn: &Connection, site_url: &str) -> String {
 }
 fn chaty_css(conn: &Connection, site_url: &str) -> String {
     let has: bool = conn
-        .query_row("SELECT 1 FROM settings WHERE key='chaty_total_settings' LIMIT 1", [], |r| {
+        .query_row("SELECT 1 FROM settings WHERE key='cht_active' OR key LIKE 'cht_active_%' LIMIT 1", [], |r| {
             r.get::<_, i64>(0)
         })
         .is_ok();
@@ -1186,9 +1254,4 @@ fn chaty_css(conn: &Connection, site_url: &str) -> String {
     } else {
         String::new()
     }
-}
-
-trait IfEmpty2 { fn if_empty(self, f: String) -> String; }
-impl IfEmpty2 for String {
-    fn if_empty(self, f: String) -> String { if self.is_empty() { f } else { self } }
 }

@@ -35,6 +35,7 @@ pub(crate) mod tourmaster;
 pub(crate) mod goodlayers;
 /// `/admin/plugins` index + shared settings-screen helpers.
 pub(crate) mod index;
+pub(crate) mod chaty;
 /// Everything a kind editor needs — the four hooks the old `EditorPlugin`
 /// carried, verbatim. `KindDef.editor` is `None` for kinds with no plugin
 /// editor (core post/page use the classic editor).
@@ -406,6 +407,7 @@ static ADAPTERS: &[&'static dyn PluginAdapter] = &[
     &theme_traveltour::ADAPTER,
     &theme_tevily::ADAPTER,
     &goodlayers::ADAPTER,
+    &chaty::ADAPTER,
 ];
 
 /// Indexed view over `ADAPTERS` + `CORE_KINDS`, built once.

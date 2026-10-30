@@ -11,7 +11,7 @@ use crate::admin::{
 };
 use anyhow::Result;
 use axum::{
-    extract::{Form, State},
+    extract::State,
     http::{HeaderMap, StatusCode},
     response::{Html, IntoResponse, Redirect, Response},
 };
@@ -94,7 +94,7 @@ pub(crate) async fn index_page(State(app): State<App>, headers: HeaderMap) -> Re
     Html(format!("{}{}", chrome("plugins", &s), body)).into_response()
 }
 
-fn plugins_index_html(s: &Sess, sc: &SiteCtx) -> String {
+fn plugins_index_html(_s: &Sess, sc: &SiteCtx) -> String {
     let mut rows = String::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
 
