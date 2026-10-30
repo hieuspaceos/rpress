@@ -31,6 +31,15 @@ if ($tok !== '' && !hash_equals($tok, $got)) {
     exit;
 }
 
+/* Identity probe: rpress verifies the process answering on the bridge port
+ * is OUR child, not a foreign listener that took the port after a restart.
+ * Sits after the token fence — the bearer is already proven here. */
+if (isset($_SERVER['REQUEST_URI']) && strpos($_SERVER['REQUEST_URI'], '/__rpress_ident') === 0) {
+    http_response_code(204);
+    header('X-Rpress-Ident: bridge');
+    exit;
+}
+
 /* Identity: admin requests run as uid 1 (see header note 2). Also mint a
  * real nonce for gdlr ajax calls — our admin page can't hold a WP nonce,
  * and `check_ajax_referer('gdlr_core_page_builder')` would die('-1').

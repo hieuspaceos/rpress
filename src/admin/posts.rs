@@ -809,11 +809,20 @@ pub(crate) async fn edit_post(State(app): State<App>, headers: HeaderMap, Path(i
     let Ok((s, sc)) = need_auth(&app, &headers) else {
         return Redirect::to("/admin/login").into_response();
     };
-    match crud::load_post(&sc.db, id) {
-        Ok(Some(f)) => html_admin(&s, "Edit", &edit_html(sc, &s, &f), true, "post-php").into_response(),
-
-        _ => StatusCode::NOT_FOUND.into_response(),
-    }
+    // Sync DB load + editor render off the reactor — gdlr builds are
+    // 20-40ms of blocking work that would stall public traffic.
+    let (s2, sc2) = (s.clone(), sc.clone());
+    tokio::task::spawn_blocking(move || {
+        match crud::load_post(&sc2.db, id) {
+            Ok(Some(f)) => html_admin(&s2, "Edit", &edit_html(&sc2, &s2, &f), true, "post-php").into_response(),
+            _ => StatusCode::NOT_FOUND.into_response(),
+        }
+    })
+    .await
+    .unwrap_or_else(|e| {
+        eprintln!("edit_post join: {e:#}");
+        StatusCode::INTERNAL_SERVER_ERROR.into_response()
+    })
 }
 
 /// WP classic TinyMCE editor (`#content` textarea + Visual/Code tabs).

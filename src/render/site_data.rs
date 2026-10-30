@@ -82,16 +82,28 @@ pub(crate) fn site_data(
                 r.get::<_, String>(5)?,
             ))
         })?;
-        for row in rows {
-            let (id, slug, title, excerpt, fid, date) = row?;
-            let mut cats = Vec::new();
-            let mut cstmt = conn.prepare(
-                "SELECT slug, name FROM post_terms WHERE post_id=?1 AND taxonomy='category'",
-            )?;
-            let crows = cstmt.query_map([id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
-            for c in crows.flatten() {
-                cats.push(json!({"slug": c.0, "name": c.1}));
+        // One query for every post's categories — the per-row `prepare`
+        // was the classic N+1 (a prepare + a query per published post).
+        let post_rows: Vec<(i64, String, String, String, Option<i64>, String)> =
+            rows.flatten().collect();
+        let ids: Vec<i64> = post_rows.iter().map(|r| r.0).collect();
+        let mut cats: HashMap<i64, Vec<Value>> = HashMap::new();
+        if !ids.is_empty() {
+            let marks = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let q = format!("SELECT post_id, slug, name FROM post_terms WHERE taxonomy='category' AND post_id IN ({marks})");
+            let params = rusqlite::params_from_iter(ids.iter());
+            if let Ok(mut cstmt) = conn.prepare(&q) {
+                if let Ok(crows) = cstmt.query_map(params, |r| {
+                    Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+                }) {
+                    for c in crows.flatten() {
+                        cats.entry(c.0).or_default().push(json!({"slug": c.1, "name": c.2}));
+                    }
+                }
             }
+        }
+        for (id, slug, title, excerpt, fid, date) in post_rows {
+            let cats = cats.remove(&id).unwrap_or_default();
             posts.push(json!({
                 "id": id, "slug": slug, "title": title, "excerpt": excerpt,
                 "date": date, "url": url("post", &slug), "image": img(fid),

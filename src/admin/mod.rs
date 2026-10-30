@@ -6,7 +6,7 @@ use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::{Form, Router};
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use rand::RngCore;
 use rusqlite::Connection;
 use serde::Deserialize;
@@ -55,7 +55,69 @@ pub(crate) struct SiteCtx {
     /// spawn lazily on the first proxied admin request.
     pub(crate) bridges: bridge::Bridges,
     pub(crate) generating: Arc<AtomicBool>,
+    /// Settings snapshot (key→value) — a full-table read replaces dozens
+    /// of per-call `setting_value` conn opens. Loaded lazily, refreshed
+    /// after TTL (bounded staleness for out-of-band writes like bridge
+    /// pull), busted eagerly by `bust_cache` (every admin settings save
+    /// already funnels through it).
+    pub(crate) settings_cache: Arc<RwLock<Option<(Instant, Arc<HashMap<String, String>>)>>>,
+    /// `publish_due` last run — the future-scan inside get_sess would hit
+    /// every authed request otherwise; 30s granularity matches minute-level
+    /// schedule semantics.
+    pub(crate) publish_due_at: Arc<Mutex<Option<Instant>>>,
 }
+
+/// How long a cached settings snapshot stays trusted without a DB check —
+/// covers writers that bypass `bust_cache` (bridge pull, plugin adapters).
+const SETTINGS_TTL: Duration = Duration::from_secs(30);
+
+/// `publish_due` min gap per site.
+const PUBLISH_DUE_GAP: Duration = Duration::from_secs(30);
+
+impl SiteCtx {
+    /// Settings map, memory-resident within the TTL. The snapshot is a
+    /// single `SELECT key,value` — cheaper than N single-key lookups even
+    /// on a warm connection.
+    pub(crate) fn settings(&self) -> Arc<HashMap<String, String>> {
+        {
+            let g = self.settings_cache.read();
+            if let Some((at, map)) = g.as_ref() {
+                if at.elapsed() < SETTINGS_TTL {
+                    return map.clone();
+                }
+            }
+        }
+        let mut fresh = HashMap::new();
+        if let Ok(c) = crate::db::conn(&self.db) {
+            if let Ok(mut s) = c.prepare("SELECT key, value FROM settings") {
+                if let Ok(rows) = s.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))) {
+                    for r in rows.flatten() {
+                        fresh.insert(r.0, r.1);
+                    }
+                }
+            }
+        }
+        let fresh = Arc::new(fresh);
+        *self.settings_cache.write() = Some((Instant::now(), fresh.clone()));
+        fresh
+    }
+
+    /// Cached `setting_value` — misses and empties return `default`.
+    pub(crate) fn setting(&self, key: &str, default: &str) -> String {
+        self.settings()
+            .get(key)
+            .filter(|s| !s.is_empty())
+            .cloned()
+            .unwrap_or_else(|| default.to_string())
+    }
+
+    /// Drop the settings snapshot — call from `bust_cache` after any admin
+    /// write that can change a setting.
+    pub(crate) fn settings_bust(&self) {
+        *self.settings_cache.write() = None;
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct App {
     pub(crate) sites: Arc<HashMap<String, SiteCtx>>,
@@ -79,6 +141,7 @@ pub(crate) fn tour_base(sc: &SiteCtx) -> &str {
 }
 
 
+#[derive(Clone)]
 pub(crate) struct Sess {
     pub(crate) site: String,
     pub(crate) site_name: String,
@@ -131,6 +194,8 @@ pub async fn serve(db: PathBuf, templates: PathBuf, out: PathBuf, www: PathBuf, 
         www,
         bridges: bridge::Bridges::default(),
         generating: Arc::new(AtomicBool::new(false)),
+        settings_cache: Arc::new(RwLock::new(None)),
+        publish_due_at: Arc::new(Mutex::new(None)),
     };
     let mut sites = HashMap::new();
     sites.insert(host.clone(), site);
@@ -289,18 +354,34 @@ pub async fn serve(db: PathBuf, templates: PathBuf, out: PathBuf, www: PathBuf, 
     let sites_down = state.sites.clone();
     axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
         .with_graceful_shutdown(async move {
-            let _ = tokio::signal::ctrl_c().await;
-            /* Ctrl-C: kill every spawned bridge before exiting — otherwise
-               each restart leaks a ~900MB wp-playground child (the idle
-               reaper only covers in-process timeouts). */
-            for sc in sites_down.values() {
-                for k in bridge::reap(&sc.bridges, Duration::ZERO) {
-                    eprintln!("bridge: shutdown kill {k}");
+            // Ctrl-C or SIGTERM (deploy/systemd) — either must kill every
+            // spawned bridge before exit or each restart leaks ~900MB
+            // children (the idle reaper only covers in-process timeouts).
+            #[cfg(unix)]
+            {
+                let mut term = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+                    Ok(s) => s,
+                    Err(_) => { let _ = tokio::signal::ctrl_c().await; return reap_all(&sites_down); }
+                };
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = term.recv() => {}
                 }
             }
+            #[cfg(not(unix))]
+            let _ = tokio::signal::ctrl_c().await;
+            reap_all(&sites_down);
         })
         .await?;
     Ok(())
+}
+
+fn reap_all(sites_down: &Arc<HashMap<String, SiteCtx>>) {
+    for sc in sites_down.values() {
+        for k in bridge::reap(&sc.bridges, Duration::ZERO) {
+            eprintln!("bridge: shutdown kill {k}");
+        }
+    }
 }
 
 /// One-time upgrade sweep (audit remediation, phase 1): pre-301 alias
@@ -351,7 +432,7 @@ async fn health() -> &'static str {
 async fn public_root(State(app): State<App>, headers: HeaderMap) -> Response {
     let sc = site_for(&app, &headers);
     if let Some(b) = read_out(sc, "index.html") {
-        return html_response(b);
+        return file_response(&headers, "text/html; charset=utf-8".to_string(), b);
     }
     let Ok(conn) = crate::db::conn(&sc.db) else {
         return StatusCode::NOT_FOUND.into_response();
@@ -424,12 +505,7 @@ async fn public_page(State(app): State<App>, headers: HeaderMap, ConnectInfo(pee
             let rel = format!("{bare}.html");
             if let Some(b) = read_out(sc, &rel) {
                 let mime = public_mime(&rel).to_string();
-                // `no-cache` (not `no-store`): browser may cache but must
-                // revalidate before reuse — keeps rebuilt css/js fresh on
-                // plain reloads; no header meant heuristic caching could
-                // pin a stale stylesheet for days.
-                return ([(header::CONTENT_TYPE, mime), (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()), (header::CACHE_CONTROL, "no-cache".to_string())], b)
-                    .into_response();
+                return file_response(&headers, mime, b);
             }
         }
         let target = if bare.is_empty() { "/".to_string() } else { format!("/{bare}/") };
@@ -457,13 +533,10 @@ async fn public_page(State(app): State<App>, headers: HeaderMap, ConnectInfo(pee
     // above — as a default candidate it would shadow the on-demand HTML
     // render whenever the md is cached.
     if md_path.is_some() { candidates.push(format!("{clean}/index.md")); }
-    candidates.push(format!("{clean}/index.xml"));
-    candidates.push(clean.to_string());
     for cand in candidates {
         if let Some(b) = read_out(sc, &cand) {
             let mime = if cand.ends_with(".md") { "text/markdown; charset=utf-8".to_string() } else { public_mime(&cand).to_string() };
-            return ([(header::CONTENT_TYPE, mime), (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()), (header::CACHE_CONTROL, "no-cache".to_string())], b)
-                .into_response();
+            return file_response(&headers, mime, b);
         }
     }
     // Cache missed — resolve what this URL is allowed to become before
@@ -716,11 +789,25 @@ fn write_cache(sc: &SiteCtx, rel: &str, html: &str) {
     }
 }
 
+/// Canonicalized lookup roots, memoized — `canonicalize` is a syscall per
+/// component on every request otherwise (hot under `read_out`). Roots are
+/// process-stable paths (out/www/templates); entries live for the process.
+fn canonical_root(root: &std::path::Path) -> Option<PathBuf> {
+    static CACHE: std::sync::LazyLock<Mutex<HashMap<PathBuf, Option<PathBuf>>>> =
+        std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+    if let Some(v) = CACHE.lock().get(root) {
+        return v.clone();
+    }
+    let v = root.canonicalize().ok();
+    CACHE.lock().insert(root.to_path_buf(), v.clone());
+    v
+}
+
 pub fn safe_read_under(root: &std::path::Path, rel: &str) -> Option<Vec<u8>> {
     if rel.contains("..") || rel.starts_with('/') || rel.contains('\\') {
         return None;
     }
-    let root = root.canonicalize().ok()?;
+    let root = canonical_root(root)?;
     let candidate = root.join(rel);
     let metadata = std::fs::symlink_metadata(&candidate).ok()?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {
@@ -731,6 +818,41 @@ pub fn safe_read_under(root: &std::path::Path, rel: &str) -> Option<Vec<u8>> {
         return None;
     }
     std::fs::read(candidate).ok()
+}
+
+/// Weak ETag (FNV-1a over bytes) — per-request hash cost is trivial vs the
+/// disk read already paid; conditional GET then lets repeat hits answer
+/// 304 instead of re-sending the whole file.
+fn etag_of(b: &[u8]) -> String {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for &x in b {
+        h = (h ^ x as u64).wrapping_mul(0x100000001b3);
+    }
+    format!("W/\"{h:x}\"")
+}
+
+/// 304 when the client's validator matches; else the full body with the
+/// validator attached. `no-cache` stays — the point is revalidation.
+fn file_response(headers: &HeaderMap, mime: String, b: Vec<u8>) -> Response {
+    let etag = etag_of(&b);
+    let hit = headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.split(',').any(|t| t.trim() == etag))
+        .unwrap_or(false);
+    if hit {
+        return ([(header::ETAG, etag), (header::CACHE_CONTROL, "no-cache".to_string())], StatusCode::NOT_MODIFIED).into_response();
+    }
+    (
+        [
+            (header::CONTENT_TYPE, mime),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
+            (header::CACHE_CONTROL, "no-cache".to_string()),
+            (header::ETAG, etag),
+        ],
+        b,
+    )
+        .into_response()
 }
 
 fn read_out(sc: &SiteCtx, rel: &str) -> Option<Vec<u8>> {
@@ -932,6 +1054,16 @@ pub(crate) fn get_sess<'a>(app: &'a App, sc: &'a SiteCtx, headers: &HeaderMap) -
 /// when nothing is due; a flip spawns one background thread that writes
 /// each post's output file via the single-post regen path.
 fn publish_due(sc: &SiteCtx) {
+    // Throttle: the UPDATE is cheap but it still opens a write tx + a
+    // status='future' scan on *every authed request*. 30s granularity is
+    // well inside WP's minute-level schedule semantics.
+    {
+        let mut at = sc.publish_due_at.lock();
+        if at.map(|t| t.elapsed() < PUBLISH_DUE_GAP).unwrap_or(false) {
+            return;
+        }
+        *at = Some(Instant::now());
+    }
     let Ok(flipped) = crud::publish_due(&sc.db) else { return };
     if flipped.is_empty() {
         return;
@@ -1000,14 +1132,14 @@ pub(crate) fn allowed_origins(sc: &SiteCtx) -> Vec<String> {
 }
 
 pub(crate) fn site_url(sc: &SiteCtx) -> String {
-    crate::db::setting_value(&sc.db, "site_url", "/")
+    sc.setting("site_url", "/")
 }
 
 /// Origin for assets we don't hold locally (CSS/JS/fonts/uploads) —
 /// `settings.asset_origin`, falling back to `site_url`. Keeps a local
 /// `rpress serve` preview fully styled while the files still live on the WP box.
 pub(crate) fn asset_origin(sc: &SiteCtx) -> String {
-    let v = crate::db::setting_value(&sc.db, "asset_origin", "");
+    let v = sc.setting("asset_origin", "");
     if v.is_empty() { site_url(sc) } else { v }
 }
 

@@ -27,6 +27,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use parking_lot::Mutex;
+use std::process::Command;
 use std::time::{Duration, Instant};
 
 pub(crate) mod http;
@@ -55,6 +56,9 @@ pub(crate) struct BridgeState {
     pub(crate) token: String,
     /// The runtime's disposable WP database (pull source).
     pub(crate) wp_db: PathBuf,
+    /// `<www>/bridge/<slug>.pid` — records the live child pid + port so a
+    /// later `serve` process can reap orphans a crash left behind.
+    pub(crate) pidfile: PathBuf,
 }
 
 /// A spawned PHP runtime. Owns transport details; the manager owns
@@ -69,10 +73,15 @@ pub(crate) trait PhpRuntime: Send {
         headers: &[(String, String)],
         body: &[u8],
     ) -> Result<BridgeResponse>;
-    /// Runtime is answering (post-spawn probe + reaper liveness).
-    fn healthy(&mut self) -> bool;
+    /// Runtime is answering (post-spawn probe + reaper liveness). Must
+    /// verify identity with the spawn-time `token` — a bare TCP reply only
+    /// proves *something* listens, not that it is our child.
+    fn healthy(&mut self, token: &str) -> bool;
     /// Terminate the child process; idempotent.
     fn kill(&mut self);
+    /// Child pid (the wrapper's pid for sandboxed/npx spawns — best-effort
+    /// for pidfile orphan sweep).
+    fn pid(&self) -> u32;
 }
 
 #[allow(dead_code)]
@@ -111,6 +120,33 @@ pub(crate) fn opt_in(env_list: &str, slug: &str) -> bool {
 /// Spawn the runtime for `slug` at `site`, projecting `post_id`'s context
 /// into a fresh `wp.db` under `www/bridge/<slug>/`. Errors when the
 /// runtime binary is missing — caller renders the degrade screen.
+/// `<www>/bridge/<slug>.pid` — the runtime dir itself is wiped on respawn,
+/// so the pidfile sits one level up, out of the wipe path.
+fn pidfile_path(www: &std::path::Path, slug: &str) -> PathBuf {
+    www.join("bridge").join(format!("{slug}.pid"))
+}
+
+/// Reap the bridge a *previous* serve process left behind (crash before
+/// Drop/SIGTERM). `pid:port` in the file; the pid must still be alive to
+/// die — a stale file is just removed. Command-line check keeps a
+/// PID-recycled process (post boot) safe from a stray kill.
+fn reap_stale_pidfile(www: &std::path::Path, slug: &str) {
+    let pf = pidfile_path(www, slug);
+    let Ok(raw) = std::fs::read_to_string(&pf) else { return };
+    let pid: Option<u32> = raw.split(':').next().and_then(|s| s.trim().parse().ok());
+    if let Some(pid) = pid {
+        let ps = Command::new("ps").args(["-p", &pid.to_string(), "-o", "comm="]).output();
+        if let Ok(o) = ps {
+            let comm = String::from_utf8_lossy(&o.stdout);
+            if o.status.success() && (comm.contains("php") || comm.contains("node") || comm.contains("npx") || comm.contains("sandbox-exec")) {
+                let _ = Command::new("kill").arg(pid.to_string()).status();
+                eprintln!("bridge: reaped orphan {slug} pid {pid}");
+            }
+        }
+    }
+    let _ = std::fs::remove_file(&pf);
+}
+
 fn spawn(
     site: &str,
     slug: &str,
@@ -121,18 +157,41 @@ fn spawn(
     plugin_file: &str,
     templates: &std::path::Path,
 ) -> Result<BridgeState> {
-    match kind {
-        RuntimeKind::Playground => playground::spawn(site, slug, www, rpress_db, post_id, plugin_file, templates),
-        RuntimeKind::PhpCgi => php_cgi::spawn(site, slug, www, rpress_db, post_id, plugin_file, templates),
+    reap_stale_pidfile(www, slug);
+    let pidfile = pidfile_path(www, slug);
+    let mut st = match kind {
+        RuntimeKind::Playground => playground::spawn(site, slug, www, rpress_db, post_id, plugin_file, templates)?,
+        RuntimeKind::PhpCgi => php_cgi::spawn(site, slug, www, rpress_db, post_id, plugin_file, templates)?,
+    };
+    // Post-spawn identity check: the port must answer OUR token, not just
+    // reply — a recycled port behind a foreign listener fails here and the
+    // half-built runtime is killed rather than adopted.
+    let mut rt = std::mem::replace(&mut st.rt, Box::new(DeadRuntime));
+    if !rt.healthy(&st.token) {
+        rt.kill();
+        anyhow::bail!("bridge {slug}: identity probe failed after spawn");
     }
+    st.rt = rt;
+    st.pidfile = pidfile.clone();
+    let _ = std::fs::write(&pidfile, format!("{}\n", st.rt.pid()));
+    Ok(st)
+}
+
+/// Placeholder runtime swapped in while `healthy()` verifies a spawn —
+/// `BridgeState.rt` can't be empty mid-check.
+struct DeadRuntime;
+impl PhpRuntime for DeadRuntime {
+    fn request(&mut self, _m: &str, _p: &str, _h: &[(String, String)], _b: &[u8]) -> Result<BridgeResponse> {
+        anyhow::bail!("dead runtime")
+    }
+    fn healthy(&mut self, _t: &str) -> bool { false }
+    fn kill(&mut self) {}
+    fn pid(&self) -> u32 { 0 }
 }
 
 /// Per-bridge handle — the map entry. The outer `Bridges` lock guards the
 /// map only; the inner mutex serializes this bridge's runtime.
 pub(crate) type BridgeHandle = Arc<Mutex<BridgeState>>;
-
-/// Get-or-spawn the bridge for `slug`; resets `last_used` on hit.
-///
 /// No blocking I/O under the map lock — the map only hands out/clones
 /// entry handles. All slow work (probe, request, spawn, kill) runs under
 /// the *entry's own* mutex, so a busy or dead bridge stalls only its own
@@ -161,15 +220,18 @@ pub(crate) fn bridge_for(
     if let Some(h) = handle {
         {
             let mut st = h.lock();
-            if !st.rt.healthy() {
+            let tok = st.token.clone();
+            if !st.rt.healthy(&tok) {
                 if st.spawned_at.elapsed() < RESPAWN_COOLDOWN {
                     anyhow::bail!("bridge {key} died <60s after spawn — not respawning");
                 }
                 let _ = st.rt.kill();
+                let _ = std::fs::remove_file(&st.pidfile);
                 let fresh = spawn(site, slug, kind, www, rpress_db, post_id, plugin_file, templates)?;
                 st.rt = fresh.rt;
                 st.token = fresh.token;
                 st.wp_db = fresh.wp_db;
+                st.pidfile = fresh.pidfile;
                 st.spawned_at = Instant::now();
             }
             st.last_used = Instant::now();
@@ -186,6 +248,7 @@ pub(crate) fn bridge_for(
         drop(map);
         let mut loser = st;
         let _ = loser.rt.kill();
+        let _ = std::fs::remove_file(&loser.pidfile);
         out.lock().last_used = Instant::now();
         return Ok(out);
     }
@@ -195,31 +258,39 @@ pub(crate) fn bridge_for(
 }
 
 /// Drop bridges idle past `ttl`; returns the killed keys (for logging).
-/// Kill itself runs outside the map lock — `kill()` is blocking wait.
+/// Non-blocking: `try_lock` skips a busy entry (in-flight proxy traffic
+/// proves it alive anyway) so the periodic sweep never queues behind a
+/// long request, and the map lock is never held across a blocking lock.
+/// Kill runs outside the map lock — `kill()` is blocking wait.
 pub(crate) fn reap(bridges: &Bridges, ttl: Duration) -> Vec<String> {
     let dead: Vec<(String, BridgeHandle)> = {
         let mut map = bridges.lock();
-        let keys: Vec<String> = map
-            .iter()
-            .filter(|(_, st)| st.lock().last_used.elapsed() > ttl)
-            .map(|(k, _)| k.clone())
-            .collect();
-        keys.iter()
-            .filter_map(|k| map.remove(k).map(|h| (k.clone(), h)))
-            .collect()
+        let mut out = Vec::new();
+        map.retain(|k, st| {
+            let idle = st.try_lock().map(|g| g.last_used.elapsed() > ttl).unwrap_or(false);
+            if idle {
+                out.push((k.clone(), st.clone()));
+            }
+            !idle
+        });
+        out
     };
     let mut out = Vec::with_capacity(dead.len());
     for (k, h) in dead {
-        let mut st = h.lock();
-        st.rt.kill();
-        out.push(k);
+        match h.try_lock() {
+            Some(mut st) => {
+                st.rt.kill();
+                let _ = std::fs::remove_file(&st.pidfile);
+                out.push(k);
+            }
+            // Race with the eligibility pass — a request arrived between
+            // drain and now. Drop the map handle only; the bridge's Drop
+            // still kills the child, so the idle kill stays effective.
+            None => out.push(k),
+        }
     }
     out
 }
-
-/// Shared per-site map: `{site}:{slug}` → live bridge.
-/// Lock order: `Bridges` (map) → entry `Mutex` — never the reverse, and
-/// never blocking I/O under the map lock.
 pub(crate) type Bridges = Arc<Mutex<HashMap<String, BridgeHandle>>>;
 
 #[cfg(test)]

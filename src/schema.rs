@@ -272,6 +272,10 @@ CREATE INDEX IF NOT EXISTS idx_comments_post ON comments(post_id);
 CREATE INDEX IF NOT EXISTS idx_comments_parent ON comments(parent_id);
 CREATE INDEX IF NOT EXISTS idx_revisions_post ON revisions(post_id);
 CREATE INDEX IF NOT EXISTS idx_posts_kind_status_lang ON posts(kind, status, lang);
+-- Slug equality is the hottest lookup: every permalink render + menu item.
+CREATE INDEX IF NOT EXISTS idx_posts_slug_lang ON posts(slug, lang);
+-- publish_due scans `status='future' AND published_at<=now` per admin request.
+CREATE INDEX IF NOT EXISTS idx_posts_status_pub ON posts(status, published_at);
 "#;
 
 

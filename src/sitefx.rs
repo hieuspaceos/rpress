@@ -166,4 +166,33 @@ pub fn purge_duties(db: &Path, out: &Path, tour_base: &str) {
     if let Err(e) = crate::db::purge_old_trash(db) {
         eprintln!("purge_old_trash: {e:#}");
     }
+    // Data-lifecycle prune (phase 6): the rows below only grow — every save
+    // writes a revision blob, every login a session row, every spam catch a
+    // comment/submission. Caps keep the db bounded on a long-running box.
+    if let Ok(c) = crate::db::conn(db) {
+        // Revisions: latest 50 per post survive (body_json snapshots are the
+        // top growth vector on builder pages — hundreds of KB per save).
+        let _ = c.execute_batch(
+            "DELETE FROM revisions WHERE id IN (\
+               SELECT id FROM (\
+                 SELECT id, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY saved_at DESC, id DESC) rn\
+                 FROM revisions\
+               ) WHERE rn > 50);",
+        );
+        // Expired admin sessions — dead rows linger forever otherwise.
+        let _ = c.execute(
+            "DELETE FROM sessions WHERE expires_at > 0 AND expires_at < unixepoch()",
+            [],
+        );
+        // Spam comments + spam/trash submissions past 30 days (same horizon
+        // as post/comment trash above).
+        let _ = c.execute(
+            "DELETE FROM comments WHERE status='spam' AND created_at < datetime('now','-30 days')",
+            [],
+        );
+        let _ = c.execute(
+            "DELETE FROM submissions WHERE status IN ('spam','trash') AND created_at < datetime('now','-30 days')",
+            [],
+        );
+    }
 }

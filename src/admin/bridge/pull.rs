@@ -106,6 +106,10 @@ pub(crate) fn pull(wp_db: &Path, rpress_db: &Path, specs: &[WriteSpec]) -> Resul
         s.validate()?;
     }
     let src = Connection::open_with_flags(wp_db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    // wp.db is concurrently written by the php -S sidecar — without a
+    // timeout a pull during a PHP-side write fails BUSY and the caller
+    // silently drops it (`let _ =` in mod.rs).
+    src.busy_timeout(std::time::Duration::from_millis(3000))?;
     let dst = crate::db::conn(rpress_db)?;
     let tx = dst.unchecked_transaction()?;
     let mut copied = 0u64;

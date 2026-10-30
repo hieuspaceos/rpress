@@ -383,6 +383,17 @@ pub(crate) async fn dashboard(State(app): State<App>, headers: HeaderMap) -> Res
     let Ok((s, sc)) = need_auth(&app, &headers) else {
         return Redirect::to("/admin/login").into_response();
     };
+    // Blocking: the box queries + render build are sync SQLite + string
+    // work that would stall the public-serving event loop; same pattern as
+    // the bridge proxy.
+    let (s2, sc2) = (s.clone(), sc.clone());
+    return tokio::task::spawn_blocking(move || dashboard_sync(&s2, &sc2)).await.unwrap_or_else(|e| {
+        eprintln!("dashboard join: {e:#}");
+        StatusCode::INTERNAL_SERVER_ERROR.into_response()
+    });
+}
+
+fn dashboard_sync(s: &Sess, sc: &SiteCtx) -> Response {
     let Ok(c) = crate::db::conn(&sc.db) else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
@@ -417,7 +428,7 @@ pub(crate) async fn dashboard(State(app): State<App>, headers: HeaderMap) -> Res
 
     // Widget edits are DB-only until the next full build — surface the
     // pending state WP's immediate-publish model can't on a static site.
-    let widgets_dirty = crate::db::setting_value(&sc.db, "widgets_dirty", "0") == "1";
+    let widgets_dirty = sc.setting("widgets_dirty", "0") == "1";
     let pending_notice = if widgets_dirty {
         r#"<div class="notice notice-warning"><p><strong>Widget changes are pending publish.</strong> Run Generate to update the site.</p></div>"#
     } else {

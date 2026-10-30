@@ -39,12 +39,38 @@ pub use menus::*;
 
 /// Open `db` with a 3s busy timeout — every write/reader in the project
 /// goes through this so a concurrent `save_post` doesn't turn a public
-/// render into SQLITE_BUSY.
+/// render into SQLITE_BUSY. Transactions are BEGIN IMMEDIATE: the write
+/// lock is taken up front, inside SQLite's busy-handler, so a concurrent
+/// writer *waits out* the timeout instead of the BEGIN DEFERRED
+/// read→write upgrade racing a peer and returning SQLITE_BUSY/
+/// BUSY_SNAPSHOT immediately — busy_timeout does not cover
+/// mid-transaction lock upgrades (parallel admin saves surfaced
+/// "database is locked" 400s). Readers are unaffected: a tx that never
+/// writes commits without ever needing the lock.
 pub(crate) fn conn(db: &std::path::Path) -> Result<Connection> {
-    let c = Connection::open(db)?;
+    let mut c = Connection::open(db)?;
     c.busy_timeout(std::time::Duration::from_millis(3000))?;
+    c.set_transaction_behavior(rusqlite::TransactionBehavior::Immediate);
+    // Runtime pragmas (phase-4): NORMAL is the standard WAL-safe mode —
+    // corruption-proof, only the last commit can be lost on power fail.
+    // temp_store keeps sorts in RAM; a 20MB page cache covers the working
+    // set; mmap lets reads bypass page-cache copies on the ~100MB db;
+    // a larger autocheckpoint amortizes WAL merge I/O during regen bursts.
+    c.pragma_update(None, "synchronous", "NORMAL")?;
+    c.pragma_update(None, "temp_store", "MEMORY")?;
+    c.pragma_update(None, "cache_size", -20000i64)?;
+    c.pragma_update(None, "mmap_size", 268_435_456i64)?;
+    c.pragma_update(None, "wal_autocheckpoint", 4000i64)?;
     Ok(c)
 }
+
+/// Alias of `conn` — kept so write-path call sites read intent. All
+/// transactions are IMMEDIATE since phase-2.
+#[allow(dead_code)]
+pub(crate) fn conn_write(db: &std::path::Path) -> Result<Connection> {
+    conn(db)
+}
+
 
 /// ASCII slugifier shared by quick-edit, tax save, and tag creation.
 pub fn slugify(s: &str) -> String {

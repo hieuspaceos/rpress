@@ -30,12 +30,15 @@ impl PhpRuntime for Playground {
     fn request(&mut self, method: &str, path: &str, headers: &[(String, String)], body: &[u8]) -> Result<BridgeResponse> {
         http::request(self.port, method, path, headers, body)
     }
-    fn healthy(&mut self) -> bool {
-        self.child.try_wait().map(|s| s.is_none()).unwrap_or(false) && http::probe(self.port)
+    fn healthy(&mut self, token: &str) -> bool {
+        self.child.try_wait().map(|s| s.is_none()).unwrap_or(false) && http::probe_identity(self.port, token)
     }
     fn kill(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+    fn pid(&self) -> u32 {
+        self.child.id()
     }
 }
 
@@ -236,6 +239,7 @@ pub(crate) fn spawn(
         spawned_at: Instant::now(),
         token,
         wp_db,
+        pidfile: PathBuf::new(), // filled by mod::spawn
     })
 }
 

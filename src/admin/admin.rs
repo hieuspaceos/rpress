@@ -4,14 +4,23 @@ use super::*;
 pub(crate) async fn htmx(State(app): State<App>, headers: HeaderMap) -> Response {
     let sc = site_for(&app, &headers);
     let p = sc.templates.join("admin/vendor/htmx.min.js");
-    match std::fs::read(&p) {
-        Ok(b) => (
-            [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
-            b,
-        )
-            .into_response(),
-        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    // Vendored asset: read + memoize once — same bytes for the process
+    // lifetime; `immutable` so the browser never revalidates.
+    let b = {
+        static CACHED: std::sync::LazyLock<Mutex<Option<Arc<Vec<u8>>>>> =
+            std::sync::LazyLock::new(|| Mutex::new(None));
+        let mut g = CACHED.lock();
+        g.get_or_insert_with(|| Arc::new(std::fs::read(&p).unwrap_or_default())).clone()
+    };
+    if b.is_empty() {
+        return StatusCode::NOT_FOUND.into_response();
     }
+    let body = axum::body::Body::from((*b).clone());
+    (
+        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8".to_string()), (header::CACHE_CONTROL, "public, max-age=31536000, immutable".to_string())],
+        body,
+    )
+        .into_response()
 }
 
 #[derive(Deserialize)]
@@ -1137,6 +1146,7 @@ pub(crate) fn regen_posts_with_terms(sc: &SiteCtx, ids: &[i64], extra_terms: &[(
 /// re-renders lazily on the next request. Called after changes that affect
 /// *every* page: menu/widget/settings/taxonomy saves.
 pub(crate) fn bust_cache(sc: &SiteCtx) {
+    sc.settings_bust();
     bust_cache_dir(&sc.out);
 }
 

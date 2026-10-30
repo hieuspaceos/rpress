@@ -92,7 +92,7 @@ pub fn render_slug(
     let Some((id, lang, title, body_json, seo_title, seo_desc, kind, status)) = row else {
         let clean = slug.trim_matches('/');
         // "{lang}" / "{lang}/" → that language's front page.
-        let (alang_s, path) = crate::lang::split_path(&lang_cfg, clean);
+        let (alang_s, path) = if clean.is_empty() { (lang.to_string(), "") } else { crate::lang::split_path(&lang_cfg, clean) };
         if path.is_empty() && alang_s != lang_cfg.primary {
             if let Some(front_id) = front_id_for_lang(&conn, &alang_s) {
                 let (h, s) = render_slug_by_id_public(&conn, templates, front_id, site_url, tour_base)?;

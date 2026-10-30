@@ -113,6 +113,30 @@ pub(crate) fn probe(port: u16) -> bool {
         .unwrap_or(false)
 }
 
+/// Identity probe — GET `/__rpress_ident` with the spawn-time bearer.
+/// `true` only when the endpoint answers 204 with our header, which no
+/// foreign listener (or a bridge holding a *different* token) can fake:
+/// the mu-plugin 403s unknown tokens before this route ever runs.
+pub(crate) fn probe_identity(port: u16, token: &str) -> bool {
+    TcpStream::connect(("127.0.0.1", port))
+        .map(|mut s| {
+            let _ = s.set_read_timeout(Some(Duration::from_secs(2)));
+            let _ = s.set_write_timeout(Some(Duration::from_secs(2)));
+            let req = format!(
+                "GET /__rpress_ident HTTP/1.1\r\nHost: x\r\nConnection: close\r\nX-Rpress-Bridge: {token}\r\n\r\n"
+            );
+            let _ = s.write_all(req.as_bytes());
+            let mut buf = [0u8; 512];
+            match s.read(&mut buf) {
+                Ok(n) if n > 0 => std::str::from_utf8(&buf[..n])
+                    .map(|h| h.starts_with("HTTP/1.1 204") || h.starts_with("HTTP/1.0 204"))
+                    .unwrap_or(false),
+                _ => false,
+            }
+        })
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

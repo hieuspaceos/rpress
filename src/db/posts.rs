@@ -1005,7 +1005,7 @@ const POWER_WORDS: &[&str] = &[
 /// translations, terms, and Rank Math metas commit or roll back together —
 /// a meta failure can never leave a half-saved post.
 pub fn save_post(db: &Path, f: &PostForm) -> Result<i64> {
-    let mut c = crate::db::conn(db)?;
+    let mut c = crate::db::conn_write(db)?;
     let tx = c.transaction()?;
     let id = save_post_on(db, &tx, f)?;
     // Rank Math meta save joins the same transaction (reads the just-written
