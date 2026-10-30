@@ -1049,8 +1049,9 @@ async fn plugin_screen(
     // `role != "admin"` made every metabox AJAX post 403 for editors.
     if let Some((_a, screen)) = plugins::screen_for(&slug, &rest) {
         let ok = match screen.min_role {
-            "admin" => s.role == "admin",
-            _ => s.role == "admin" || s.role == "editor",
+            "editor" => s.role == "admin" || s.role == "editor",
+            // Unknown/future values stay admin-only (deny by default).
+            _ => s.role == "admin",
         };
         if !ok {
             return StatusCode::FORBIDDEN.into_response();

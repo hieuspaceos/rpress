@@ -382,7 +382,7 @@ pub(crate) async fn media_page(State(app): State<App>, headers: HeaderMap, Query
     // row Edit links can open it via `att_open(id)`.
     let modal = grid_modal(&rows, &s.csrf);
     let list_markup = format!(
-        r##"<form method="post" action="/admin/media">
+        r##"<form method="get" action="/admin/media">
 <input type="hidden" name="mode" value="list">
 <div class="tablenav top">
 <div class="alignleft actions bulkactions">
@@ -426,7 +426,7 @@ pub(crate) async fn media_page(State(app): State<App>, headers: HeaderMap, Query
 
     let content = if mode == "grid" {
         format!(
-            r##"<form method="post" action="/admin/media">
+            r##"<form method="get" action="/admin/media">
 <input type="hidden" name="mode" value="grid">
 <div class="tablenav top">
 {view_switch}
@@ -534,9 +534,10 @@ if(bulkBtn){{
 }
 
 /// WP `#screen-meta` + `#screen-meta-links` for the media screen: "Screen
-/// Options" tab toggling a GET form of `hide_*` checkboxes + per_page. A GET
-/// submit re-enters `media_page` with `screen_options=1`, which persists to
-/// `settings.media_screen_{user_id}` — no dedicated route needed.
+/// Options" tab toggling a POST form of `hide_*` checkboxes + per_page +
+/// CSRF, submitted to `media_screen_options` (`POST /admin/media`). It
+/// round-trips the active filters as hidden inputs so the redirect lands
+/// back on the same view.
 fn media_screen_meta(hide: &[String], per_page: i64, csrf: &str, mime: &str, month: &str, search: &str, sort: &str, mode: &str) -> String {
     let cb = |name: &str, label: &str| {
         let on = !hide.iter().any(|h| h == name);
@@ -619,7 +620,13 @@ pub(crate) async fn media_screen_options(
     let per = f.get("per_page").and_then(|v| v.parse::<i64>().ok()).unwrap_or(20).clamp(1, 500);
     let json = serde_json::json!({"hide": hide, "per_page": per}).to_string();
     let _ = crud::comments::setting_set(&sc.db, &format!("media_screen_{}", s.user_id), &json);
-    Redirect::to("/admin/media").into_response()
+    // Preserve active filters — the form round-trips them as hidden inputs.
+    let qs = ["type", "m", "s", "sort", "mode"]
+        .iter()
+        .filter_map(|k| f.get(*k).filter(|v| !v.is_empty()).map(|v| format!("{k}={}", urlenc(v))))
+        .collect::<Vec<_>>()
+        .join("&");
+    Redirect::to(&format!("/admin/media?{qs}")).into_response()
 }
 
 /// WP `/wp-admin/media-new.php` — multi-file drop zone page.

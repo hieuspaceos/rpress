@@ -1367,6 +1367,7 @@ fn toc_anchor(text: &str) -> String {
         match c {
             ' ' => out.push('_'),
             '\'' | '’' | '?' | '!' | '‘' | ',' | '.' | ':' | ';' | '(' | ')' | '«' | '»' | '"' | '<' | '>' | '&' => {}
+            c if c.is_ascii() => out.push(c),
             c => {
                 let mut buf = [0u8; 4];
                 for b in c.encode_utf8(&mut buf).as_bytes() {

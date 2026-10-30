@@ -76,10 +76,14 @@ impl SiteEnv {
                 continue;
             }
             if let Some((k, v)) = line.split_once('=') {
-                kv.insert(
-                    k.trim().to_string(),
-                    v.trim().trim_matches('"').trim_matches('\'').to_string(),
-                );
+                // Unquote then unescape — save() writes `"` as `\"` inside
+                // double quotes; load must give the same value back.
+                let raw = v.trim();
+                let inner = raw
+                    .strip_prefix('"')
+                    .and_then(|r| r.strip_suffix('"'))
+                    .unwrap_or_else(|| raw.trim_matches('\''));
+                kv.insert(k.trim().to_string(), inner.replace("\\\"", "\""));
             }
         }
         let get = |k: &str| kv.get(k).cloned().unwrap_or_default();

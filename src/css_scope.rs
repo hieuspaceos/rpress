@@ -28,8 +28,9 @@ fn strip_comments(css: &str) -> String {
             out.push_str(&css[start..i]);
             match css[i + 2..].find("*/") {
                 Some(j) => i += 2 + j + 2,
-                // Unterminated comment: keep the remainder verbatim
-                // (parity with the previous behaviour).
+                // Unterminated comment: drop the tail — a comment that never
+                // closes swallows the rest of the sheet anyway. Deliberate
+                // change from the byte-wise baseline (which kept the tail).
                 None => i = b.len(),
             }
             start = i;
