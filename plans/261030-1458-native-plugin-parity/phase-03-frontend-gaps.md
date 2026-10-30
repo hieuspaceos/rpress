@@ -8,6 +8,16 @@
   `[country-phone]` gets a country select; CF7 honeypot; verify
   `auhfc_*` injection points.
 
+**Audit additions (found during cook):**
+- `forms_markup::KNOWN` lacks `phonetext`/`countrytext`/
+  `cf7sr-turnstile`/`hidden`/`dynamictext` — `parse()` errors →
+  `submit_form` returns `bad markup` for EVERY form carrying them
+  (submissions table: 0 rows). Parser must accept these types first.
+- `[contact-form-7]` is hardcoded to one captured template
+  (`cf7_78de6b9.html`) — 7 different forms all render Rappel Gratuit.
+  Replace with a dynamic `forms.markup` → inputs renderer keyed by
+  the shortcode `id` → `forms.slug`/`wp_id`.
+
 ## Requirements
 ### Metaslider
 

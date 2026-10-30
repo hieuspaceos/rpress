@@ -582,6 +582,19 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path) -> Result<()> {
                                 msgs_json, meta1(p, "_additional_settings").unwrap_or_default()
                             ],
                         ).map_err(|e| rep.log(format!("cf7 import {} failed: {e}", p.id)));
+                        // `[contact-form-7 id="…"]` carries the first 7
+                        // chars of the form's `_hash` postmeta (CF7 ≥5.9
+                        // switched shortcode ids off numeric post ids).
+                        // Store hash7 → slug so render resolves it.
+                        if let Some(h) = meta1(p, "_hash").filter(|h| h.len() >= 7) {
+                            let _ = stmt_set.execute(params![
+                                format!("cf7hash:{}", &h[..7]), slug
+                            ]);
+                        }
+                        // Legacy numeric-id shortcodes resolve on wp_id.
+                        let _ = stmt_set.execute(params![
+                            format!("cf7hash:{}", p.id), slug
+                        ]);
                         rep.log(format!("cf7 form {} → {}", p.id, slug));
                     }
                     continue;

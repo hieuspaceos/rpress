@@ -111,12 +111,35 @@ pub fn submit_form(db: &Path, slug: &str, fields: &HashMap<String, String>, ip: 
     let tags = crate::forms_markup::parse(&form.markup)
         .map_err(|e| anyhow::anyhow!("bad markup: {e}"))?;
     for t in &tags {
-        if t.type_ == "submit" { continue; }
-        let v = fields.get(&t.name).cloned().unwrap_or_default();
+        // Captcha markers + hidden fields don't validate.
+        if matches!(t.type_.as_str(), "submit" | "cf7sr-turnstile" | "turnstile" | "hidden" | "dynamictext") {
+            continue;
+        }
+        // Quiz: CF7 `[quiz name "question|answer"]` — accept when the
+        // posted value matches the answer (case-insensitive); the
+        // tag's last quoted opt carries `question|answer`.
+        if t.type_ == "quiz" {
+            let v = fields.get(&t.name).cloned().unwrap_or_default();
+            // Quoted opts carry "question|answer" — answers may span
+            // whitespace-split tokens ("... (indice: P**s)|Paris"), so
+            // join opts and take the text after the last '|'.
+            let joined = t.opts.join(" ");
+            let want = joined.rsplit('|').next().unwrap_or("").trim_matches('"').trim().to_string();
+            if !want.is_empty() && !v.trim().eq_ignore_ascii_case(&want) {
+                anyhow::bail!("quiz_failed:{}", t.name);
+            }
+            continue;
+        }
+        // checkboxes/radios post as `name[]`; everything else as `name`.
+        let v = fields.get(&t.name)
+            .or_else(|| fields.get(&format!("{}[]", t.name)))
+            .cloned().unwrap_or_default();
         if t.required && v.is_empty() {
             anyhow::bail!("required:{}", t.name);
         }
-        if let Some(key) = crate::forms_markup::check_value(&t.type_, &v) {
+        // phonetext validates like tel; countrytext is free text.
+        let vtype = if t.type_ == "phonetext" { "tel" } else { t.type_.as_str() };
+        if let Some(key) = crate::forms_markup::check_value(vtype, &v) {
             anyhow::bail!("{key}:{}", t.name);
         }
     }

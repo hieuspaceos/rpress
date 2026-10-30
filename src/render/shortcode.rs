@@ -85,11 +85,24 @@ pub(crate) fn expand_shortcodes(s: &str, site_url: &str, conn: Option<&Connectio
                         continue;
                     }
                     "contact-form-7" => {
-                        let html = include_str!("../../templates/elements/cf7_78de6b9.html")
-                            .replace("{{ site_url }}", site_url);
-                        out.extend_from_slice(html.as_bytes());
-                        i += end + 1;
-                        continue;
+                        let a = sc_attrs(head);
+                        let id = a.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                        // CF7 ≥5.9 ids are the first 7 chars of the form's
+                        // `_hash` meta; older dumps may carry numeric wp_ids.
+                        // `cf7hash:<id>` → forms.slug (seeded at import).
+                        let slug = conn.and_then(|c| c.query_row(
+                            "SELECT value FROM settings WHERE key=?1",
+                            [format!("cf7hash:{id}")], |r| r.get::<_, String>(0)).ok())
+                            .unwrap_or_else(|| id.to_string());
+                        let markup = conn.and_then(|c| c.query_row(
+                            "SELECT markup FROM forms WHERE slug=?1",
+                            [&slug], |r| r.get::<_, String>(0)).ok());
+                        if let Some(m) = markup {
+                            let html = crate::forms_markup::form_html(&m, &slug, site_url);
+                            out.extend_from_slice(html.as_bytes());
+                            i += end + 1;
+                            continue;
+                        }
                     }
                     "gdlr_core_button" => {
                         let a = sc_attrs(head);
