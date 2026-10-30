@@ -131,9 +131,7 @@ body.wp-admin::before, body.login::before {
 #wpadminbar .ab-top-menu > li > .ab-item:hover { color: var(--accent) !important; background: transparent; }
 #wpadminbar .menupop .ab-sub-wrapper {
   background: var(--glass-solid);
-  background: var(--glass-strong);
-  -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
-  border: 1px solid var(--glass-border);
+  border: 1px solid var(--rule-2);
   border-radius: var(--r-md);
   box-shadow: var(--shadow-float);
   padding: 0;
@@ -329,10 +327,8 @@ body.wp-admin::before, body.login::before {
   margin-top: 0 !important; /* common.min.js writes inline margin-top */
   min-width: 168px;
   padding: 6px;
-  background: oklch(98% 0.006 90 / 0.97); /* near-solid: page text must not bleed through */
-  background: var(--glass-strong);
-  -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
-  border: 1px solid var(--glass-border);
+  background: var(--glass-solid); /* fully opaque — page text must not bleed through */
+  border: 1px solid var(--rule-2);
   border-radius: var(--r-md);
   box-shadow: var(--shadow-float);
   list-style: none;
@@ -362,6 +358,7 @@ body.wp-admin::before, body.login::before {
 #adminmenu .wp-submenu .wp-submenu-head { display: none; }
 #adminmenu .wp-submenu li { margin: 0; padding: 0; float: none; }
 #adminmenu .wp-submenu a,
+#adminmenu .wp-has-current-submenu .wp-submenu a,
 #adminmenu .wp-submenu li.wp-first-item a {
   display: block;
   position: relative;
@@ -371,7 +368,7 @@ body.wp-admin::before, body.login::before {
   font-size: 12.5px;
   font-weight: 500;
   line-height: 1.35;
-  color: var(--ink-2);
+  color: var(--ink) !important; /* colors.min pins rgb(187,187,187) on a stronger selector */
   background: transparent;
   border-radius: var(--r-sm);
   box-shadow: none;
@@ -391,12 +388,12 @@ body.wp-admin::before, body.login::before {
 #adminmenu .wp-submenu li.current a::before { height: 12px; }
 #adminmenu .wp-submenu a:hover,
 #adminmenu .wp-submenu a:focus {
-  background: var(--paper-2);
-  color: var(--ink);
+  background: var(--paper-2) !important;
+  color: var(--ink) !important;
 }
 #adminmenu .wp-submenu li.current a {
   background: var(--paper-2);
-  color: var(--accent);
+  color: var(--accent) !important;
   font-weight: 600;
 }
 /* section icon tints */
