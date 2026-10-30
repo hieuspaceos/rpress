@@ -159,3 +159,61 @@ Severity legend: **VA** = visual annoyance (user-visible defect), **P** = polish
 8. **Drop italic-on-hover** for row titles; add `transition:filter` to `.button-primary`.
 9. **`.language-switcher` flex row** on login (fixes the floating globe + 54px select).
 10. **adminbar 32 vs 33px** — `box-sizing` or pin-offset correction (1px seam on every pinned toolbar).
+
+---
+
+## Resolution pass (261030 — phase-02/03, commit d260cf4)
+
+| Ref | Status |
+|---|---|
+| A1/B1/C2.1/C8.2/C12.2 pta blue | **fixed** — `.wp-admin .wrap a.page-title-action` joins the button system (verified: br 9px, paper bg) |
+| A2/A9 focus rings | **fixed** — `--focus-ring` token; global `a:focus-visible`; checkbox/radio `:focus`→`:focus-visible` |
+| A3 italic hover | **fixed** |
+| A4/C2.3 `\|` pills | **fixed** — `ul.subsubsub{font-size:0}`, `li a{font-size:13px}` |
+| A5 button-primary transition | **fixed** |
+| A6 duplicate fallbacks | kept (intentional no-blur fallback pattern) |
+| A7 cms-overrides literals | **fixed** — tokens with literal fallbacks |
+| A8 MOTION pass misalign | **fixed** — block removed |
+| A10 grain z-index | kept (pointer-events:none already; below flyouts) |
+| B2 button heights | kept — `.button-large` 40px is deliberate hierarchy |
+| B3 disabled pager | **fixed** — opacity .45 + default cursor |
+| B4/C4.1/C12.1 empty states | **markup flag** — needs `tr.no-items` emission; CSS cannot conjure text |
+| B5/C11.1 desc clamp | **fixed** — `-webkit-line-clamp:7` (2600px → ≤160px row, verified) |
+| B6 tall rows | partially — `column-description` clamp helps tax; SEO cell left (data, acceptable) |
+| B7 zebra-kill contrast | kept (deliberate flat + hover) |
+| B8 check-column | **fixed** — 2.4em (1368px → 27px verified) |
+| B9 row-actions | **fixed** — `--ink-2` |
+| B10/B12 disabled | **fixed** — locked surface on `:disabled`/`[readonly]` |
+| B11 checkbox | **fixed** — muted border + drawn check (login + admin) |
+| B13 search pill variants | declined — responsive redesign is intentional |
+| B14 notice chip | **fixed** — `vertical-align:-1px` |
+| B16 dock overlap | declined — glass is readable by design; padding-bottom:120px reserves space |
+| B17/C3.1 1px seam | **fixed** — adminbar `box-sizing:border-box; height:32px` (verified 32) |
+| B18 flyout anim | **fixed** — `atrium-flyout` keyframes |
+| B19 collapse focus | **fixed** |
+| B20 footer gutter | **fixed** — 24px |
+| B21 pager size | **fixed** — 12px mono, input 30px |
+| B22 active tab | **fixed** — `--glass` |
+| C1.1 postbox header 14px | declined — consistent across widgets, spec difference is invisible |
+| C1.4 postbox gap | declined — card rhythm reads fine at both widths |
+| C2.2 dual `.current` | **markup flag** — template emits it (posts.rs `on("","")` twice) |
+| C3.2 toolbar row | partially — literals tokenized; size gap is WP parity |
+| C3.3 title input | **fixed** — radius + padding |
+| C3.4 publish box | ok as-is |
+| C3.5 flag baseline | ok — flags are emoji, radios aligned (verified) |
+| C3.6 RM chip | kept — vendored plugin accent |
+| C5.x media | ok as-is |
+| C6.1 menu-name baseline | **fixed** — `.menu-item-bar` cards; save row reads clean (screenshot) |
+| C6.2 item bars | **fixed** |
+| C7.1 widgets flat panels | **fixed** — glass + r-lg (verified) |
+| C7.3 widget titles 15px | **fixed** — 13px |
+| C9.x settings | **fixed** via B10 |
+| C10.1 lang switcher | **fixed** — flex row (verified) |
+| C10.3 login dead gap | kept — logo block layout |
+| C11.2 col widths | declined — form widths are WP parity |
+| C11.3/C11.5 typos/placeholder | **markup flags** — template copy |
+
+Functional gate (phase-04): all actions green — create/save/quickedit/trash/restore/bulk/empty-trash,
+comments approve↔pending cycle, menus locations save, widget save round-trip (sidebar preserved),
+settings discussion save persisted, search/filters 200, zero console errors on 8 screens, 1024px
+layout holds. Diff scope: 2 CSS files only.
