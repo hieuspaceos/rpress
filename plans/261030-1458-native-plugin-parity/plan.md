@@ -26,22 +26,28 @@ metaslider, site-reviews, head-footer-code — becomes native, with a
 visible settings surface.
 
 ## Current state (evidence)
-
 - `chaty_js`/`chaty_css` (`src/render/site_data.rs:1111`) emits **only
-  widget 0** (`chaty_total_settings`-indexed channel scan stops at
-  suffixless `cht_*` keys). `cht_active_1=1` + `cht_cta_1="Habla con
-  nosotros"` exists in the dump — an ES widget that never renders.
-  Origin HTML carries `popup_*` keys the emitter ignores.
+  widget 0 with 8 cherry-picked settings and `channels:[{id,value}]`** —
+  the origin emits the full ~35-key settings map and full channel
+  records (svg_icon, hover_text, nested `popup_*` CTA fields inside the
+  serialized `cht_social_*` values). Widget `_1` keys exist in the dump
+  (`cht_active_1=1`, `cht_cta_1="Habla con nosotros"`) but the origin
+  does NOT emit it on the fr page — Chaty gates per-widget via traffic
+  rules; the emitter must carry both widgets' full data and let the
+  client-side rules decide (or replicate the rule evaluation natively).
 - `[metaslider id="6426"]` appears in 4 posts; `expand_shortcodes`
   (`src/render/shortcode.rs`) passes it through verbatim → dead text on
   the generated page. `ml-slider` posts are already imported (kind
-  `ml-slider` + `ml-slide`, 29 slides).
-- wpDiscuz front-end is native (render + `/intake/comment`) but none of
-  its `wpdiscuz_*` options are imported — no settings surface exists.
-- No backup/export feature exists at all (`site_init` only *reads*
-  backups on import).
-- CF7 `country-phone-field` renders as a plain text input; `simple-
-  recaptcha` does nothing on intake.
+  `ml-slider` + `ml-slide`, 29 slides) and slides link to their slider
+  via the `ml-slider` **taxonomy** (`post_terms.slug` = slider post id),
+  ordered by `menu_order` — `post_parent` is empty.
+- wpDiscuz front-end is native (render + `/intake/comment`) but its 18
+  `wpdiscuz_*` wp_options rows are dropped at import (prefix not
+  whitelisted) — no settings surface exists.
+- CF7 intake already silently drops a `_gotcha` honeypot field
+  (`src/intake.rs:107`) — no new field name needed; the gap is the
+  markup side not emitting it and `[country-phone]` rendering as plain
+  text.
 - `/admin/plugins/<slug>` already dispatches `ScreenDef`s per adapter —
   the settings screens plug into that contract, no new router needed.
 - The adapter registry (`src/admin/plugins/mod.rs`) already has

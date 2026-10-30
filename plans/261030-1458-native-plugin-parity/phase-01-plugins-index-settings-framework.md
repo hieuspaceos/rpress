@@ -53,10 +53,12 @@
    SerializedTextarea for PHP-serialized values that round-trip
    through `php_serialize`), `choices` for selects. This is *not* a
    schema — one screen can bypass the helper for bespoke editors.
+4. `regen_site(sc)` factored out of `api_generate`'s body
+   (`src/admin/admin.rs:42-60`: `sc.generating` flag + `spawn_blocking`
+   full-site rebuild) so a settings save invalidates generated pages
+   the same way the manual button does. Do not invent a second
+   regen path.
 
-4. `regen_site(sc)` factored out of the existing `admin::regen_*`
-   plumbing so a settings save invalidates the generated cache the same
-   way a post save does.
 
 5. Index page marks `Backend::PhpBridge` rows with a badge + links to
    the adapter's existing first `ScreenDef` (tourmaster screens,

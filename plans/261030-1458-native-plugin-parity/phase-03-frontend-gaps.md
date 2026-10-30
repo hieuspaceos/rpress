@@ -9,16 +9,18 @@
   `auhfc_*` injection points.
 
 ## Requirements
-
 ### Metaslider
 
 1. Import check: `ml-slider`/`ml-slide` kinds are already in `posts`
-   (29 slides). Slides keep their `post_meta` (`ml-slider_settings`,
-   ordering via menu order/attachment).
-2. `expand_shortcodes` arm for `"metaslider"`: resolve `id` → the
-   `ml-slider` post → ordered `ml-slide` children (kind or
-   `post_parent` link — inspect actual schema; `ml-slide` rows carry
-   `post_parent=ml-slider id`) → emit:
+   (29 slides). Slide→slider linkage is the **`ml-slider` taxonomy**:
+   `post_terms` rows map each `ml-slide` to a term whose `slug` is the
+   `ml-slider` post's `wp_id` (verified: `post_terms.post_id=5914 →
+   taxonomy=ml-slider, slug='5912'`). Order = `posts.menu_order`.
+   Image = `posts.featured_media_id` (from `_thumbnail_id` meta).
+   `post_parent` is empty — do NOT join on it.
+2. `expand_shortcodes` arm for `"metaslider"`: resolve `id` →
+   `posts.wp_id` of the `ml-slider` post → its `ml-slider`-taxonomy
+   term members, ordered by `menu_order` → emit:
 
    ```html
    <div class="metaslider metaslider-6426 ml-slider">
@@ -44,10 +46,12 @@
 
 ### CF7 simple-recaptcha → honeypot
 
-1. Markup render appends `<input name="_wpcf7_honey" style="display:none">`.
-2. `/intake/form`: if `_wpcf7_honey` non-empty → return 200 (silent
-   drop, bots get no signal).
-3. Settings key `cf7_honeypot_enabled` (new, default on) — surfaced in
+1. `submit_form` (`src/intake.rs:107`) already silently drops
+   submissions posting a non-empty `_gotcha` — the intake side is done.
+   The gap is the **markup side**: form render must append
+   `<input name="_gotcha" style="display:none">` (the field name is
+   fixed by the existing intake check — do NOT invent `_wpcf7_*`).
+2. Settings key `cf7_honeypot_enabled` (new, default on) — surfaced in
    the phase-4 CF7 settings screen.
 
 ### head-footer-code audit
@@ -63,7 +67,7 @@
   containing `metaslider id="6426"`).
 - A CF7 form page containing `[country-phone]` renders a `<select>`
   with the same name the plugin uses.
-- POST `/intake/form` with `_wpcf7_honey=bot` → 200, no `submissions`
+- POST `/intake/form` with `_gotcha=bot` → 200, no `submissions`
   row. Clean POST → row lands.
 - `parity` still ≥ 0.8.
 - No change on pages without these shortcodes (byte-identical output
@@ -71,8 +75,8 @@
 
 ## Risk
 
-- `ml-slide` linkage may live in `post_meta` (`_thumbnail_id`, ordered
-  via `menu_order`) — inspect the actual rows before writing the
-  resolver; do NOT guess the join.
-- Honeypot field name must not collide with real CF7 field names —
-  prefix `_wpcf7_` reserved.
+- `ml-slider` taxonomy term `slug` stores the slider's `wp_id` (not
+  `posts.id` — they coincide on this site but JOIN on `wp_id` to
+  be safe).
+- `[country-phone]` tag syntax in `forms.markup` may carry per-form
+  country lists — parse attrs before falling back to the default list.
