@@ -22,6 +22,7 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 similar = "2"
 flate2 = "1"
 toml = "0.8"
+qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
 
 [workspace]
 

@@ -72,7 +72,9 @@ WordPress or integrate a specialized provider.
   revisions, trash, preview (session-gated, `noindex`).
 - **Comments** — moderation queue, reply, quick-edit, spam/trash, auto-approved
   comments trigger background re-render of the post.
-- **Users** — roles, application passwords, profile, self/last-admin guards.
+- **Users** — roles, application passwords, profile, self/last-admin guards,
+  optional TOTP two-factor per account (QR enrollment on the profile page,
+  second factor prompted at login once enabled).
 - **Media** — library, attachment editor, canvas replace, regenerate sizes.
 - **Menus / Taxonomies / Widgets** — WP-parity editors; widget html accepts
   `{{ site_url }}`/`{{ lang }}` jinja.

@@ -77,6 +77,8 @@ fn notice_html(msg: &str, n: i64, skipped: i64) -> String {
         "err-appdup" => ("notice-error", "An application password with that name already exists.".to_string()),
         "apprevoked" => ("notice-success", "Application password revoked.".to_string()),
         "sessrevoked" => ("notice-success", "Session logged out.".to_string()),
+        "2fa-bad" => ("notice-error", "That code doesn't match — check the app's clock and try again.".to_string()),
+        "2fa-off" => ("notice-success", "Two-factor authentication disabled.".to_string()),
         _ => ("", String::new()),
     };
     if !text.is_empty() {
@@ -775,6 +777,7 @@ fn user_edit_html(s: &Sess, u: &udb::UserRow, profile: bool, last_admin: bool, b
 <p class="submit"><input type="submit" class="button button-primary" value="{submit}"></p>
 </form>
 {app_passwords}
+<h2>Two-Factor Authentication</h2><p><a class="button" href="/admin/profile/2fa">Manage 2FA</a> <span class="description">{twofa_state}</span></p>
 <form method="post" action="/admin/users/logout-others" id="logout-others-form">
 <input type="hidden" name="csrf" value="{csrf}">
 <input type="hidden" name="id" value="{id}">
@@ -800,6 +803,7 @@ fn user_edit_html(s: &Sess, u: &udb::UserRow, profile: bool, last_admin: bool, b
         website = esc(&u.website),
         sessions_row = sessions_row,
         app_passwords = app_passwords,
+        twofa_state = if udb::totp_get(&s.db, u.id).map(|(_, en, _, _)| en).unwrap_or(false) { "enabled" } else { "disabled" },
         submit = if profile { "Update Profile" } else { "Update User" },
         pw_js = PW_JS,
     )
@@ -1236,4 +1240,119 @@ pub(crate) async fn users_app_pass_revoke(State(app): State<App>, headers: Heade
     let id = f.get("id").and_then(|v| v.parse::<i64>().ok()).unwrap_or(0);
     let _ = udb::app_pass_revoke(&sc.db, id, user_id);
     Redirect::to(&format!("/admin/user-edit/{user_id}?msg=updated")).into_response()
+}
+
+/// GET `/admin/profile/2fa` — status + setup/confirm/disable UI for the
+/// signed-in user only (2FA is per-account; admins manage users via
+/// reset, not their factors).
+pub(crate) async fn profile_2fa_page(State(app): State<App>, headers: HeaderMap, axum::extract::Query(q): axum::extract::Query<HashMap<String, String>>) -> Response {
+    let Ok((s, sc)) = need_auth(&app, &headers) else {
+        return Redirect::to("/admin/login").into_response();
+    };
+    let notice = notice_html(q.get("msg").map(|s| s.as_str()).unwrap_or(""), 0, 0);
+    let (secret, enabled, _last, codes_json) = udb::totp_get(&sc.db, s.user_id).unwrap_or_default();
+    let mut inner = String::from("<h2>Two-Factor Authentication</h2>");
+    if enabled {
+        let n_codes = serde_json::from_str::<Vec<String>>(&codes_json).map(|v| v.len()).unwrap_or(0);
+        inner.push_str(&format!(
+            r#"<p><strong>Status:</strong> enabled — {n_codes} backup code(s) left.</p>
+<table class="form-table"><tr><th scope="row">Backup codes</th><td>
+<form method="post" action="/admin/users/2fa/regen"><input type="hidden" name="csrf" value="{csrf}"><button class="button">Generate new backup codes</button></form>
+<p class="description">Generating new codes invalidates every unused one.</p></td></tr>
+<tr><th scope="row">Disable</th><td>
+<form method="post" action="/admin/users/2fa/disable"><input type="hidden" name="csrf" value="{csrf}"><button class="button button-secondary" onclick="return confirm('Disable two-factor authentication for this account?')">Disable 2FA</button></form>
+<p class="description">Anyone who knows your password will then be able to log in — re-enable with a new secret.</p></td></tr></table>"#,
+            n_codes = n_codes,
+            csrf = esc(&s.csrf)
+        ));
+    } else if secret.is_empty() {
+        inner.push_str(&format!(
+            r#"<p><strong>Status:</strong> disabled.</p>
+<form method="post" action="/admin/users/2fa/setup"><input type="hidden" name="csrf" value="{csrf}"><button class="button button-primary">Set up two-factor authentication</button></form>
+<p class="description">Adds a TOTP second factor (Google Authenticator, Aegis, 1Password…). You'll verify a live code before it activates.</p>"#,
+            csrf = esc(&s.csrf)
+        ));
+    } else {
+        // Pending secret — show QR + manual entry + confirm form.
+        let issuer = pct_encode(&s.site_name);
+        let uri = format!("otpauth://totp/{iss}:{email}?secret={secret}&issuer={iss}&algorithm=SHA256&period=30",
+            iss = issuer, email = pct_encode(&s.email), secret = secret);
+        let qr = qrcode::QrCode::new(uri.as_bytes())
+            .and_then(|q| Ok(q.render::<qrcode::render::svg::Color>().min_dimensions(200, 200).build()))
+            .unwrap_or_default();
+        inner.push_str(&format!(
+            r#"<p><strong>Status:</strong> setup pending — scan with your authenticator, then enter a code to confirm.</p>
+<div>{qr}</div>
+<p>Manual entry: <code>{secret}</code> (SHA-256, 30s)</p>
+<form method="post" action="/admin/users/2fa/confirm"><input type="hidden" name="csrf" value="{csrf}">
+<p><label>Authentication code<br><input name="code" inputmode="numeric" autocomplete="one-time-code" autofocus></label> <button class="button button-primary">Confirm and enable</button></p>
+</form>"#,
+            qr = qr,
+            secret = esc(&secret),
+            csrf = esc(&s.csrf)
+        ));
+    }
+    html_admin(&s, "Two-Factor Authentication", &format!("<div class=\"wrap\"><h1>Two-Factor Authentication</h1>{notice}{inner}<p><a href=\"/admin/profile\">&larr; Back to Profile</a></p></div>"), true, "profile-php").into_response()
+}
+
+/// Percent-encode for the otpauth URI label (byte-wise UTF-8).
+fn pct_encode(s: &str) -> String {
+    s.bytes().map(|b| match b {
+        b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => (b as char).to_string(),
+        b => format!("%{b:02X}"),
+    }).collect()
+}
+
+/// POST setup — generate a pending secret and show the QR. Re-posting
+/// rotates the pending secret (harmless — nothing enabled yet).
+pub(crate) async fn totp_setup(State(app): State<App>, headers: HeaderMap, Form(f): Form<HashMap<String, String>>) -> Response {
+    let Ok((s, sc)) = need_auth(&app, &headers) else { return Redirect::to("/admin/login").into_response(); };
+    if !ct_eq(s.csrf.as_bytes(), f.get("csrf").map(|x| x.as_str()).unwrap_or("").as_bytes()) { return StatusCode::FORBIDDEN.into_response(); }
+    let secret = crate_auth::totp_secret_new();
+    let _ = udb::totp_secret_set(&sc.db, s.user_id, &secret);
+    Redirect::to("/admin/profile/2fa").into_response()
+}
+
+/// POST confirm — verify one live TOTP against the pending secret, then
+/// enable + issue backup codes (shown once).
+pub(crate) async fn totp_confirm(State(app): State<App>, headers: HeaderMap, Form(f): Form<HashMap<String, String>>) -> Response {
+    let Ok((s, sc)) = need_auth(&app, &headers) else { return Redirect::to("/admin/login").into_response(); };
+    if !ct_eq(s.csrf.as_bytes(), f.get("csrf").map(|x| x.as_str()).unwrap_or("").as_bytes()) { return StatusCode::FORBIDDEN.into_response(); }
+    let code = f.get("code").map(|v| v.trim()).unwrap_or("");
+    let Some((secret, enabled, last_step, _)) = udb::totp_get(&sc.db, s.user_id) else {
+        return Redirect::to("/admin/profile/2fa").into_response();
+    };
+    if enabled || secret.is_empty() {
+        return Redirect::to("/admin/profile/2fa").into_response();
+    }
+    let now_secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let Some(step) = crate_auth::totp_verify(&secret, code, now_secs, last_step) else {
+        return Redirect::to("/admin/profile/2fa?msg=2fa-bad").into_response();
+    };
+    let (codes, hashes_json) = crate_auth::backup_codes_new();
+    let _ = udb::totp_enable(&sc.db, s.user_id, step, &hashes_json);
+    let codes_html = codes.iter().map(|c| format!("<code>{c}</code>")).collect::<Vec<_>>().join(" ");
+    let notice = format!("<div class=\"notice notice-success\"><p>Two-factor authentication enabled. Save these backup codes now — each works once and will not be shown again:<br>{codes_html}</p></div>");
+    let inner = format!("<h2>Two-Factor Authentication</h2><p><strong>Status:</strong> enabled.</p><p><a class=\"button\" href=\"/admin/profile/2fa\">Done</a></p>");
+    html_admin(&s, "Two-Factor Authentication", &format!("<div class=\"wrap\"><h1>Two-Factor Authentication</h1>{notice}{inner}</div>"), true, "profile-php").into_response()
+}
+
+/// POST disable — CSRF'd; clears secret + codes.
+pub(crate) async fn totp_disable(State(app): State<App>, headers: HeaderMap, Form(f): Form<HashMap<String, String>>) -> Response {
+    let Ok((s, sc)) = need_auth(&app, &headers) else { return Redirect::to("/admin/login").into_response(); };
+    if !ct_eq(s.csrf.as_bytes(), f.get("csrf").map(|x| x.as_str()).unwrap_or("").as_bytes()) { return StatusCode::FORBIDDEN.into_response(); }
+    let _ = udb::totp_disable(&sc.db, s.user_id);
+    Redirect::to("/admin/profile/2fa?msg=2fa-off").into_response()
+}
+
+/// POST regen — replace backup codes (shown once).
+pub(crate) async fn totp_regen(State(app): State<App>, headers: HeaderMap, Form(f): Form<HashMap<String, String>>) -> Response {
+    let Ok((s, sc)) = need_auth(&app, &headers) else { return Redirect::to("/admin/login").into_response(); };
+    if !ct_eq(s.csrf.as_bytes(), f.get("csrf").map(|x| x.as_str()).unwrap_or("").as_bytes()) { return StatusCode::FORBIDDEN.into_response(); }
+    let (codes, hashes_json) = crate_auth::backup_codes_new();
+    let _ = udb::totp_codes_replace(&sc.db, s.user_id, &hashes_json);
+    let codes_html = codes.iter().map(|c| format!("<code>{c}</code>")).collect::<Vec<_>>().join(" ");
+    let notice = format!("<div class=\"notice notice-success\"><p>New backup codes (old ones are invalid now) — save them now, they will not be shown again:<br>{codes_html}</p></div>");
+    let inner = "<h2>Two-Factor Authentication</h2><p><a class=\"button\" href=\"/admin/profile/2fa\">Done</a></p>";
+    html_admin(&s, "Two-Factor Authentication", &format!("<div class=\"wrap\"><h1>Two-Factor Authentication</h1>{notice}{inner}</div>"), true, "profile-php").into_response()
 }

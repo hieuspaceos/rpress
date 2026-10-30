@@ -15,8 +15,28 @@ pub struct Rate {
 }
 
 /// Hard cap on tracked IPs so a spray of spoofed peers can't grow the map
-/// unboundedly; once full, *new* IPs are denied until entries age out.
+/// unboundedly. On full, evict the *stalest* key instead of denying new IPs:
+/// deny-new let a >10k-IP spray lock the whole internet out (self-inflicted
+/// DoS). For per-IP counters the evict-stalest semantics are safe — see
+/// `login_key` for the login path where eviction alone is NOT enough.
 const RATE_MAX_KEYS: usize = 10_000;
+
+/// Rate-limit key for *login attempts*: `/24` (IPv4) or `/64` (IPv6) subnet,
+/// not the bare IP. Evict-stalest without this lets a ≥10k-IP botnet evict
+/// its own entries and reset its own counter to zero — turning the 20/min
+/// cap into effectively uncapped brute force. Subnet keying makes hosts in
+/// one prefix share one budget.
+pub fn login_key(ip: &str) -> String {
+    if let Some(v4) = ip.parse::<std::net::Ipv4Addr>().ok() {
+        let o = v4.octets();
+        return format!("{}.{}.{}.0/24", o[0], o[1], o[2]);
+    }
+    if let Some(v6) = ip.parse::<std::net::Ipv6Addr>().ok() {
+        let s = v6.segments();
+        return format!("{:x}:{:x}:{:x}:{:x}::/64", s[0], s[1], s[2], s[3]);
+    }
+    ip.to_string()
+}
 
 impl Rate {
     pub fn allow(&mut self, ip: &str, max: usize, win: Duration) -> bool {
@@ -24,7 +44,15 @@ impl Rate {
         if !self.hits.contains_key(ip) && self.hits.len() >= RATE_MAX_KEYS {
             self.hits.retain(|_, ts| ts.iter().any(|t| now.duration_since(*t) < win));
             if self.hits.len() >= RATE_MAX_KEYS {
-                return false;
+                // Evict the stalest key — bounded LRU, never deny unseen IPs.
+                if let Some((old, _)) = self
+                    .hits
+                    .iter()
+                    .min_by_key(|(_, ts)| ts.iter().max().copied())
+                    .map(|(k, ts)| (k.clone(), ts.clone()))
+                {
+                    self.hits.remove(&old);
+                }
             }
         }
         let e = self.hits.entry(ip.to_string()).or_default();

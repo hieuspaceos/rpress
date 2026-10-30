@@ -124,6 +124,10 @@ pub(crate) struct App {
     pub(crate) default_site: String,
     pub(crate) sessions: Arc<Mutex<HashMap<String, Sess>>>,
     pub(crate) login_hits: Arc<Mutex<HashMap<String, Vec<Instant>>>>,
+    /// Token → (user_id, issued_at, failed_code_attempts) for the 2FA
+    /// half-state between password accept and TOTP verify. Session-less:
+    /// a valid password + stolen token still isn't a session.
+    pub(crate) pending_2fa: Arc<Mutex<HashMap<String, (i64, Instant, usize)>>>,
     pub(crate) intake_rate: Arc<Mutex<intake::Rate>>,
     /// Separate bucket for miss-render requests so bot scans can't burn
     /// the form-intake rate (or vice versa). Same in-memory semantics.
@@ -204,6 +208,7 @@ pub async fn serve(db: PathBuf, templates: PathBuf, out: PathBuf, www: PathBuf, 
         default_site: host,
         sessions: Arc::new(Mutex::new(HashMap::new())),
         login_hits: Arc::new(Mutex::new(HashMap::new())),
+        pending_2fa: Arc::new(Mutex::new(HashMap::new())),
         intake_rate: Arc::new(Mutex::new(intake::Rate::default())),
         miss_rate: Arc::new(Mutex::new(intake::Rate::default())),
     };
@@ -213,6 +218,7 @@ pub async fn serve(db: PathBuf, templates: PathBuf, out: PathBuf, www: PathBuf, 
         .route("/health", get(health))
         .route("/api/login", post(auth::login))
         .route("/api/logout", post(auth::logout))
+        .route("/admin/2fa", get(auth::two_fa_page).post(auth::two_fa_verify))
 
         .route("/admin", get(dashboard::dashboard).post(dashboard::screen_options_save))
         .route("/admin/draft", post(dashboard::save_draft))
@@ -322,6 +328,11 @@ pub async fn serve(db: PathBuf, templates: PathBuf, out: PathBuf, www: PathBuf, 
         .route("/admin/users/app-pass/add", post(users::users_app_pass_add))
         .route("/admin/users/app-pass/revoke", post(users::users_app_pass_revoke))
         .route("/admin/profile", get(users::profile_page))
+        .route("/admin/profile/2fa", get(users::profile_2fa_page))
+        .route("/admin/users/2fa/setup", post(users::totp_setup))
+        .route("/admin/users/2fa/confirm", post(users::totp_confirm))
+        .route("/admin/users/2fa/disable", post(users::totp_disable))
+        .route("/admin/users/2fa/regen", post(users::totp_regen))
         .route("/admin/settings/{section}", get(settings::settings_page).post(settings::settings_save))
         // Public site: generated file under out/ wins, else render the slug
         // on demand (mirrors `rpress render slug`), else out/404.html.
@@ -431,7 +442,7 @@ async fn health() -> &'static str {
 /// itself instead of rendering on every cold hit.
 async fn public_root(State(app): State<App>, headers: HeaderMap) -> Response {
     let sc = site_for(&app, &headers);
-    if let Some(b) = read_out(sc, "index.html") {
+    if let Some(b) = read_out_async(sc, "index.html".to_string()).await {
         return file_response(&headers, "text/html; charset=utf-8".to_string(), b);
     }
     let Ok(conn) = crate::db::conn(&sc.db) else {
@@ -444,9 +455,9 @@ async fn public_root(State(app): State<App>, headers: HeaderMap) -> Response {
                 write_cache(sc, "index.html", &h);
                 html_response(h)
             }
-            _ => not_found(sc),
+            _ => not_found(sc).await,
         },
-        None => not_found(sc),
+        None => not_found(sc).await,
     }
 }
 
@@ -484,7 +495,7 @@ async fn public_page(State(app): State<App>, headers: HeaderMap, ConnectInfo(pee
     if clean.contains("..") || clean.starts_with('/') || clean.contains('\\')
         || clean.bytes().any(|b| !matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'/' | b'_' | b'%' | b'.' | b'~' | b'-'))
     {
-        return not_found(sc);
+        return not_found(sc).await;
     }
     // ".html" permalink aliases are never canonical (M22): real static
     // .html files under the known static subtrees (.well-known ACME,
@@ -503,7 +514,7 @@ async fn public_page(State(app): State<App>, headers: HeaderMap, ConnectInfo(pee
             || bare.starts_with("wp-content/");
         if static_subtree {
             let rel = format!("{bare}.html");
-            if let Some(b) = read_out(sc, &rel) {
+            if let Some(b) = read_out_async(sc, rel.clone()).await {
                 let mime = public_mime(&rel).to_string();
                 return file_response(&headers, mime, b);
             }
@@ -533,15 +544,25 @@ async fn public_page(State(app): State<App>, headers: HeaderMap, ConnectInfo(pee
     // above — as a default candidate it would shadow the on-demand HTML
     // render whenever the md is cached.
     if md_path.is_some() { candidates.push(format!("{clean}/index.md")); }
+    // Real asset paths serve verbatim — ca07f11 dropped this candidate
+    // and every wp-content/themes/plugin css|js 404ed on any site whose
+    // asset_origin host isn't env-allowlisted. Gated by the same
+    // allowlist as wp_asset: `.php`, `.ini`, manifests et al. can never
+    // become same-origin downloads (or disclose vendored source).
+    if asset_ext_ok(clean)
+        && (redirect_prefix(clean) || matches!(clean, "front.css" | "nav.js" | "favicon.ico" | "robots.txt" | "llms.txt"))
+    {
+        candidates.push(clean.to_string());
+    }
     for cand in candidates {
-        if let Some(b) = read_out(sc, &cand) {
+        if let Some(b) = read_out_async(sc, cand.clone()).await {
             let mime = if cand.ends_with(".md") { "text/markdown; charset=utf-8".to_string() } else { public_mime(&cand).to_string() };
             return file_response(&headers, mime, b);
         }
     }
     // Cache missed — resolve what this URL is allowed to become before
     // paying for a render.
-    let conn = match crate::db::conn(&sc.db) { Ok(c) => c, Err(_) => return not_found(sc) };
+    let conn = match crate::db::conn(&sc.db) { Ok(c) => c, Err(_) => return not_found(sc).await };
     let lang_cfg = crate::lang::config(&conn);
     // Primary-lang prefix (`/fr/<slug>` on an fr-primary site): duplicate of
     // the canonical URL — 301 before any lookup. Pre-existing `{out}/fr/`
@@ -555,7 +576,7 @@ async fn public_page(State(app): State<App>, headers: HeaderMap, ConnectInfo(pee
     // Runs before the rate limiter so real lookups still count, but these
     // die cheap either way.
     if is_junk_prefix(clean) {
-        return not_found(sc);
+        return not_found(sc).await;
     }
     // WP pagination aliases `/…/page/{N}` (N all digits) 404ed while WP
     // rendered page 2+ of the archive — divergence documented in
@@ -592,7 +613,7 @@ async fn public_page(State(app): State<App>, headers: HeaderMap, ConnectInfo(pee
             return ([(header::CONTENT_TYPE, "text/markdown; charset=utf-8".to_string()),
                      (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string())], md).into_response();
         }
-        return not_found(sc);
+        return not_found(sc).await;
     }
     // A path carrying a file extension that didn't resolve above is a missing
     // asset, not a permalink — only the real WP asset trees may bounce to the
@@ -603,7 +624,7 @@ async fn public_page(State(app): State<App>, headers: HeaderMap, ConnectInfo(pee
                 return Redirect::temporary(&format!("{origin}/{clean}")).into_response();
             }
         }
-        return not_found(sc);
+        return not_found(sc).await;
     }
     // Rate-limit miss-renders: a render is ~140ms of SQLite+template work —
     // 60/min/IP caps the burn a scanner can cause without touching legit
@@ -653,7 +674,7 @@ async fn public_page(State(app): State<App>, headers: HeaderMap, ConnectInfo(pee
             // Defense in depth: only publish ever caches — and only publish
             // ever serves, even if a render path slips a status through.
             if status != "publish" {
-                return not_found(sc);
+                return not_found(sc).await;
             }
             // Canonical-rel gate (M22): only the canonical permalink may
             // write into the cache. Alias renders (old slugs, /category/x,
@@ -673,7 +694,7 @@ async fn public_page(State(app): State<App>, headers: HeaderMap, ConnectInfo(pee
             if let Some(target) = crate::render::translation_canonical(&conn, &lang_cfg, &lang_s, lookup, kind, tour_base(sc)) {
                 return moved_permanently(&target);
             }
-            not_found(sc)
+            not_found(sc).await
         }
     }
 }
@@ -871,6 +892,26 @@ fn read_out(sc: &SiteCtx, rel: &str) -> Option<Vec<u8>> {
     safe_read_under(base, rel)
 }
 
+/// `read_out` off the reactor: every candidate hit is a sync stat+read —
+/// under load (or a big-file spray) that blocks tokio workers serving
+/// other routes. Wraps the whole path in spawn_blocking; the sync variant
+/// stays for call sites already on a blocking thread (bridge proxy).
+async fn read_out_async(sc: &SiteCtx, rel: String) -> Option<Vec<u8>> {
+    let sc = sc.clone();
+    tokio::task::spawn_blocking(move || read_out(&sc, &rel))
+        .await
+        .ok()
+        .flatten()
+}
+
+/// Async `safe_read_under` — same rationale as `read_out_async`.
+async fn safe_read_async(root: PathBuf, rel: String) -> Option<Vec<u8>> {
+    tokio::task::spawn_blocking(move || safe_read_under(&root, &rel))
+        .await
+        .ok()
+        .flatten()
+}
+
 fn public_mime(rel: &str) -> &'static str {
     match PathBuf::from(rel).extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase().as_str() {
         "html" | "htm" => "text/html; charset=utf-8",
@@ -894,8 +935,8 @@ fn html_response<B: Into<Body>>(b: B) -> Response {
     ([(header::CONTENT_TYPE, "text/html; charset=utf-8"), (header::X_CONTENT_TYPE_OPTIONS, "nosniff")], b.into()).into_response()
 }
 
-fn not_found(sc: &SiteCtx) -> Response {
-    match read_out(sc, "404.html") {
+async fn not_found(sc: &SiteCtx) -> Response {
+    match read_out_async(sc, "404.html".to_string()).await {
         Some(b) => (StatusCode::NOT_FOUND, [(header::CONTENT_TYPE, "text/html; charset=utf-8"), (header::X_CONTENT_TYPE_OPTIONS, "nosniff")], b).into_response(),
         None => StatusCode::NOT_FOUND.into_response(),
     }
@@ -1702,34 +1743,66 @@ pub(crate) fn esc(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
+/// Asset extensions servable through `/admin/wp/*` — static frontend bits
+/// only. `.php/.ini/.txt/.md/.xml/.pot/.mo/.po/.scss/.ts/.html/.sql/.log`
+/// and `.json` (composer.json fingerprints) are NOT here: anything outside
+/// this list 404s so vendored plugin code/config never becomes readable.
+/// `eot/otf/cur/map` are real (fontawesome, ilightbox, tinymce maps) —
+/// the audit confirmed removing them breaks Live Mode icons.
+const ALLOWED_ASSET_EXT: &[&str] = &[
+    "css", "js", "map", "woff2", "woff", "ttf", "otf", "eot",
+    "svg", "png", "jpg", "jpeg", "gif", "ico", "webp", "cur",
+];
+
+fn asset_ext_ok(path: &str) -> bool {
+    std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| ALLOWED_ASSET_EXT.contains(&e))
+        .unwrap_or(false)
+}
+
 async fn wp_asset(State(app): State<App>, headers: HeaderMap, Path(path): Path<String>) -> Response {
     let sc = site_for(&app, &headers);
-    let mut b = safe_read_under(&sc.templates.join("admin/wp"), &path);
+    // Admin chrome under templates/admin/wp is gated by the same asset
+    // allowlist — vendored manifests/hashes are not for anonymous reads.
+    let mut b = if asset_ext_ok(&path) {
+        safe_read_async(sc.templates.join("admin/wp"), path.clone()).await
+    } else {
+        None
+    };
     // `gdlr/<rest>` is the GoodLayers asset namespace: plugin assets live in
     // the site's own wp-content (vendored, runs inside the bridge too).
     // Order: goodlayers-core first (framework/js, include/js, images), then
-    // any sibling plugin dir (tourmaster/tourmaster.css et al.).
+    // any sibling plugin dir (tourmaster/tourmaster.css et al.). Gated by
+    // the same allowlist — vendored source stays unreadable.
     if b.is_none() {
         if let Some(rest) = path.strip_prefix("gdlr/") {
-            let plugins = sc.www.join("wp-content/plugins");
-            let bundled = sc.templates.join("wp-plugins").join("goodlayers-core");
-            b = safe_read_under(&plugins.join("goodlayers-core"), rest)
-                .or_else(|| safe_read_under(&plugins, rest))
-                // `gdlr/tourmaster.css` → `plugins/tourmaster/tourmaster.css`
-                // (sibling-plugin asset emitted under the gdlr namespace).
-                .or_else(|| {
-                    let p = std::path::Path::new(rest);
-                    let stem = p.file_stem().and_then(|s| s.to_str())?;
-                    safe_read_under(&plugins.join(stem), rest)
-                        // …and its bundled twin
-                        // `templates/wp-plugins/tourmaster/tourmaster.css`.
-                        .or_else(|| {
-                            safe_read_under(&sc.templates.join("wp-plugins").join(stem), rest)
-                        })
-                })
-                // Site copy absent → the vendored bundle the bridge mounts
-                // (playground.rs mounts it for the same reason).
-                .or_else(|| safe_read_under(&bundled, rest));
+            if asset_ext_ok(rest) {
+                let plugins = sc.www.join("wp-content/plugins");
+                let bundled = sc.templates.join("wp-plugins").join("goodlayers-core");
+                // Sequential async fallbacks — each is a spawn_blocking'd
+                // stat+read; sync `.or_else(||)` can't await, so this is a
+                // plain loop over candidate roots.
+                let stem = std::path::Path::new(rest)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_string();
+                let roots = [
+                    plugins.join("goodlayers-core"),
+                    plugins.clone(),
+                    plugins.join(&stem),
+                    sc.templates.join("wp-plugins").join(&stem),
+                    bundled,
+                ];
+                for root in roots {
+                    if let Some(x) = safe_read_async(root, rest.to_string()).await {
+                        b = Some(x);
+                        break;
+                    }
+                }
+            }
         }
     }
     /* `<adapter-slug>/<rest>`: plugin asset namespace for registered
@@ -1739,16 +1812,19 @@ async fn wp_asset(State(app): State<App>, headers: HeaderMap, Path(path): Path<S
        404 so vendored plugin code never becomes downloadable. */
     if b.is_none() {
         if let Some((slug, rest)) = path.split_once('/') {
-            const ASSET_EXT: &[&str] = &["css", "js", "woff2", "woff", "ttf", "svg", "png", "jpg", "jpeg", "gif", "ico", "webp"];
-            let ext_ok = std::path::Path::new(rest)
-                .extension().and_then(|e| e.to_str())
-                .map(|e| ASSET_EXT.contains(&e)).unwrap_or(false);
-            if ext_ok && plugins::adapter_for_slug(slug).is_some() {
-                b = safe_read_under(&sc.www.join("wp-content/plugins").join(slug), rest)
+            if asset_ext_ok(rest) && plugins::adapter_for_slug(slug).is_some() {
+                for root in [
+                    sc.www.join("wp-content/plugins").join(slug),
                     // Site copy absent → the vendored bundle under
                     // templates/wp-plugins/<slug>/ (same fallback the
                     // bridge mounts; tourmaster framework css/js/img).
-                    .or_else(|| safe_read_under(&sc.templates.join("wp-plugins").join(slug), rest));
+                    sc.templates.join("wp-plugins").join(slug),
+                ] {
+                    if let Some(x) = safe_read_async(root, rest.to_string()).await {
+                        b = Some(x);
+                        break;
+                    }
+                }
             }
         }
     }
@@ -1778,7 +1854,7 @@ async fn wp_asset(State(app): State<App>, headers: HeaderMap, Path(path): Path<S
 async fn uploads(State(app): State<App>, headers: HeaderMap, Path(path): Path<String>) -> Response {
     let sc = site_for(&app, &headers);
     let root = sc.www.join("wp-content/uploads");
-    if let Some(bytes) = safe_read_under(&root, &path) {
+    if let Some(bytes) = safe_read_async(root, path.clone()).await {
         let (mime, attachment) = crud::served_upload_mime(&path);
         let mut res = Response::builder()
             .header(header::CONTENT_TYPE, mime)
@@ -1810,13 +1886,27 @@ pub(crate) fn hex(b: &[u8]) -> String {
 /// only inside the page-builder Live Mode canvas so it matches the public site.
 async fn front_css(State(app): State<App>, headers: HeaderMap, Path(path): Path<String>) -> Response {
     let sc = site_for(&app, &headers);
-    // Per-site scoped css wins: `migrate` writes `<name>.scoped.css`
-    // twins beside the site's uploads (traveltour-style-custom). Repo
-    // `front-css/` stays as the fallback for vendored non-site files.
-    match safe_read_under(&sc.www.join("wp-content/uploads"), &path)
-        .or_else(|| safe_read_under(&sc.templates.join("front-css"), &path))
+    // `.css` only — the whole uploads tree sat behind this route otherwise:
+    // svg/script/originals readable anonymously. `nosniff` pins the type.
+    // Per-site scoped css wins (`<name>.scoped.css` twins beside uploads);
+    // repo `front-css/` stays the fallback for vendored non-site files.
+    if !std::path::Path::new(&path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("css"))
+        .unwrap_or(false)
     {
-        Some(b) => ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], b).into_response(),
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    match safe_read_async(sc.www.join("wp-content/uploads"), path.clone()).await
+        .or(safe_read_async(sc.templates.join("front-css"), path.clone()).await)
+    {
+        Some(b) => (
+            [(header::CONTENT_TYPE, "text/css; charset=utf-8".to_string()),
+             (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string())],
+            b,
+        )
+            .into_response(),
         None => StatusCode::NOT_FOUND.into_response(),
     }
 }

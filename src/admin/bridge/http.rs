@@ -19,6 +19,20 @@ pub(crate) fn request(
     headers: &[(String, String)],
     body: &[u8],
 ) -> Result<BridgeResponse> {
+    // Request-line hygiene: `path` arrives percent-decoded from axum — a
+    // caller-supplied CRLF would inject headers, `..` escapes the php -S
+    // docroot, `?`/`#`/`:`/`//` smuggle query/absolute-URI shapes the proxy
+    // never legitimately emits. Reject at the transport chokepoint so every
+    // caller is covered.
+    anyhow::ensure!(
+        !path.bytes().any(|b| b < 0x20 || b == b' ' || b == 0x7f)
+            && !path.split('/').any(|s| s == "..")
+            && !path.contains('?')
+            && !path.contains('#')
+            && !path.contains(':')
+            && !path.starts_with("//"),
+        "bridge path rejected: {path:?}"
+    );
     let mut s = TcpStream::connect(("127.0.0.1", port))
         .with_context(|| format!("bridge connect 127.0.0.1:{port}"))?;
     s.set_read_timeout(Some(Duration::from_secs(120)))?;

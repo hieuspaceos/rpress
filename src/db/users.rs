@@ -362,3 +362,94 @@ pub fn app_pass_delete_user(db: &Path, user_id: i64) -> Result<()> {
     c.execute(sql!("users__app_pass_delete_user"), [user_id])?;
     Ok(())
 }
+
+/// TOTP state for a user — `None` row = 2FA never configured.
+/// `secret` is base32 (no padding); `backup_codes` is a JSON array of
+/// sha256-hex'd codes (plaintext codes never touch disk).
+pub fn totp_get(db: &Path, user_id: i64) -> Option<(String, bool, i64, String)> {
+    crate::db::conn(db).ok().and_then(|c| {
+        c.query_row(
+            "SELECT totp_secret, totp_enabled, totp_last_step, backup_codes FROM users WHERE id=?1",
+            [user_id],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? != 0, r.get::<_, i64>(2)?, r.get::<_, String>(3)?)),
+        )
+        .optional()
+        .ok()
+        .flatten()
+    })
+}
+
+/// Enable/rotate: persist the freshly generated secret + hashed backup
+/// codes, reset replay window, mark enabled.
+/// `last_step` = the step the setup-confirm code won at — replay window
+/// starts there, not at -1, so the setup code can't be replayed to log in.
+pub fn totp_enable(db: &Path, user_id: i64, last_step: i64, codes_json: &str) -> Result<()> {
+    let c = crate::db::conn(db)?;
+    c.execute(
+        "UPDATE users SET totp_enabled=1, totp_last_step=?2, backup_codes=?3 WHERE id=?1",
+        rusqlite::params![user_id, last_step, codes_json],
+    )?;
+    Ok(())
+}
+
+/// Stash a pending (unconfirmed) setup secret — `totp_enabled` stays 0 so
+/// the login gate ignores it until confirm verifies a live code.
+pub fn totp_secret_set(db: &Path, user_id: i64, secret_b32: &str) -> Result<()> {
+    let c = crate::db::conn(db)?;
+    c.execute("UPDATE users SET totp_secret=?2 WHERE id=?1", rusqlite::params![user_id, secret_b32])?;
+    Ok(())
+}
+
+/// Disable — clear secret + codes so a re-enable starts from a new secret.
+pub fn totp_disable(db: &Path, user_id: i64) -> Result<()> {
+    let c = crate::db::conn(db)?;
+    c.execute(
+        "UPDATE users SET totp_enabled=0, totp_secret='', totp_last_step=-1, backup_codes='' WHERE id=?1",
+        [user_id],
+    )?;
+    Ok(())
+}
+
+/// Regenerate backup codes (hashed) — leaves the secret + window alone.
+pub fn totp_codes_replace(db: &Path, user_id: i64, codes_json: &str) -> Result<()> {
+    let c = crate::db::conn(db)?;
+    c.execute("UPDATE users SET backup_codes=?2 WHERE id=?1", rusqlite::params![user_id, codes_json])?;
+    Ok(())
+}
+
+/// Atomically consume a backup code: UPDATE the JSON array minus the used
+/// hash only when the hash is still present — two concurrent consumes of
+/// the same code cannot both succeed (SQLite serializes writers in the
+/// same statement's tx; the row-lock makes the check-and-delete atomic).
+/// Returns true when a code was actually consumed.
+pub fn backup_code_consume(db: &Path, user_id: i64, code_hash: &str) -> Result<bool> {
+    let mut c = crate::db::conn(db)?;
+    let tx = c.transaction()?;
+    let raw: Option<String> = tx
+        .query_row("SELECT backup_codes FROM users WHERE id=?1", [user_id], |r| r.get(0))
+        .optional()?;
+    let Some(raw) = raw else { tx.rollback()?; return Ok(false) };
+    let mut codes: Vec<String> = serde_json::from_str(&raw).unwrap_or_default();
+    let Some(pos) = codes.iter().position(|c| c == code_hash) else {
+        tx.rollback()?;
+        return Ok(false);
+    };
+    codes.remove(pos);
+    tx.execute(
+        "UPDATE users SET backup_codes=?2 WHERE id=?1",
+        rusqlite::params![user_id, serde_json::to_string(&codes)?],
+    )?;
+    tx.commit()?;
+    Ok(true)
+}
+
+/// Replay-window update: `step > last` only — a code re-used inside its
+/// own 30s window fails because last_step already advanced past it.
+pub fn totp_step_update(db: &Path, user_id: i64, step: i64) -> Result<()> {
+    let c = crate::db::conn(db)?;
+    c.execute(
+        "UPDATE users SET totp_last_step=MAX(totp_last_step, ?2) WHERE id=?1",
+        rusqlite::params![user_id, step],
+    )?;
+    Ok(())
+}

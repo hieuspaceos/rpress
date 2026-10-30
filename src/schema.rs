@@ -303,6 +303,10 @@ const MIGRATIONS: &[(&str, &str, &str)] = &[
     ("menus", "auto_add", "INTEGER NOT NULL DEFAULT 0"),
     ("sessions", "expires_at", "INTEGER NOT NULL DEFAULT 0"),
     ("sessions", "csrf", "TEXT NOT NULL DEFAULT ''"),
+    ("users", "totp_secret", "TEXT NOT NULL DEFAULT ''"),
+    ("users", "totp_enabled", "INTEGER NOT NULL DEFAULT 0"),
+    ("users", "totp_last_step", "INTEGER NOT NULL DEFAULT -1"),
+    ("users", "backup_codes", "TEXT NOT NULL DEFAULT ''"),
 ];
 
 /// Pre-DDL cleanup hook: `post_meta` predates the (post_id, meta_key)

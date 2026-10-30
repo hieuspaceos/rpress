@@ -304,15 +304,25 @@ pub(crate) fn page(
     let is_post_tax = term.taxonomy == "category" || term.taxonomy == "post_tag";
     let lang = ctx.lang.as_str();
     // The taxonomy's owning adapter (its kind's KindDef.taxonomies claims
-    // the name) supplies member slug canonicalization + taxonomy bases.
-    let tax_adapter = crate::admin::plugins::kind_defs()
+    // the name) supplies member kind, slug canonicalization + URL bases.
+    let kind_defs = crate::admin::plugins::kind_defs();
+    let tax_kind_def = kind_defs
         .iter()
         .find(|d| {
             d.taxonomies
                 .iter()
                 .any(|t| t.eq_ignore_ascii_case(&term.taxonomy))
-        })
+        });
+    let tax_adapter = tax_kind_def
         .and_then(|d| crate::admin::plugins::adapter_for_kind(d.kind));
+    // Member posts carry the owning kind (`tour`, `to_book`); post-tax
+    // archives keep the post arm below instead. `member_base` is the
+    // kind's own permalink base (`booking` for to_book) — never the
+    // caller's tour_base, which belongs to `tour`.
+    let member_kind = tax_kind_def.map(|d| d.kind).unwrap_or("tour");
+    let member_base = tax_kind_def
+        .and_then(|d| d.url_base)
+        .unwrap_or(&ctx.kind_base);
     let es = lang == "es" || (!is_post_tax && matches!(term.taxonomy.as_str(), "region-es" | "perfil" | "duracion" | "estilo"));
     let meta1 = |id: i64, key: &str| -> String {
         conn.query_row(
@@ -461,7 +471,7 @@ pub(crate) fn page(
     } else {
         let mut stmt = conn.prepare(sql!("archive__select_tours"))?;
         let rows = stmt
-            .query_map(rusqlite::params![term.taxonomy, term.slug, lang], |r| {
+            .query_map(rusqlite::params![term.taxonomy, term.slug, member_kind, lang], |r| {
                 Ok((
                     r.get::<_, i64>(0)?,
                     r.get::<_, String>(1)?,
@@ -510,7 +520,7 @@ pub(crate) fn page(
             let display = tax_adapter
                 .and_then(|a| a.display_slug(conn, *id, slug, title))
                 .unwrap_or_else(|| slug.clone());
-            let url = format!("{site_url}{prefix}/{}/{display}/", ctx.kind_base);
+            let url = format!("{site_url}{prefix}/{}/{display}/", member_base);
             let image = fid
                 .and_then(|m| crate::render::media_lookup(conn, m))
                 .map(|(p, _)| format!("{site_url}/wp-content/uploads/{p}"))

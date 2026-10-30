@@ -42,9 +42,16 @@ from the origin so nothing needs the fallback:
 .askpass/rsync-pull.sh ct4 /var/www/aucoeurtest_usr/data/www/test.aucoeurvietnam.com/wp-content/themes/  rpress/www/wp-content/themes/
 ```
 
-Local legacy uploads are served inline only for safe media/document/font types.
-Scriptable restored files such as SVG, XML, HTML, JS, and CSS are forced to
-`application/octet-stream` downloads with `nosniff`.
+On-disk files under `www/` are served verbatim only when the extension is a
+safe asset type (`.css .js .map .mjs .woff .woff2 .ttf .otf .eot .png .jpg
+.jpeg .webp .gif .ico .avif .svg .pdf .mp4 .mp3 .webm .txt .webmanifest`)
+**and** the path sits under a real asset prefix (`wp-content/`,
+`wp-includes/`, `uploads/`, `assets/`). A cached HTML page at the same path
+wins over the raw file (`{clean}.html`, `index.html` tried first). Anything
+outside that gate — `.php`, `.ini`, `.xml`, arbitrary restored artifacts —
+falls through to the miss path (redirect allowlist or 404). Scriptable
+restored files such as SVG, XML, HTML, JS, and CSS in legacy uploads are
+forced to `application/octet-stream` downloads with `nosniff`.
 
 No password-reset email. Failed logins print `login fail email=… ip=…` on stderr.
 Rate limit: 20 POSTs `/api/login` per IP per minute. Uploads are capped at 25 MB.

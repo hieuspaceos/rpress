@@ -102,18 +102,29 @@ pub(crate) async fn login(
     let email = form.log.trim().to_lowercase();
     let password = form.pwd.trim().to_string();
     let ip = client_ip(&headers, Some(peer));
+    // Subnet-keyed (`/24`/`/64`): evict-stalest alone lets a ≥10k-IP spray
+    // evict its own entries and reset its counter to zero — a shared
+    // prefix budget is the counter to that self-eviction.
+    let key = intake::login_key(&ip);
     {
         let mut hits = app.login_hits.lock();
         let now = Instant::now();
         // Evict dead entries and cap the map — a rotating-source spray must
-        // not grow memory unboundedly (A3).
-        if !hits.contains_key(&ip) && hits.len() >= 10_000 {
+        // not grow memory unboundedly (A3). On full, evict the stalest key
+        // rather than deny the newcomer (deny-new = attacker locks out all).
+        if !hits.contains_key(&key) && hits.len() >= 10_000 {
             hits.retain(|_, v| v.iter().any(|t| now.duration_since(*t) < Duration::from_secs(60)));
             if hits.len() >= 10_000 {
-                return login_html(sc, "Too many attempts, wait a minute").into_response();
+                if let Some(old) = hits
+                    .iter()
+                    .min_by_key(|(_, v)| v.iter().max().copied())
+                    .map(|(k, _)| k.clone())
+                {
+                    hits.remove(&old);
+                }
             }
         }
-        let e = hits.entry(ip.clone()).or_default();
+        let e = hits.entry(key).or_default();
         e.retain(|t| now.duration_since(*t) < Duration::from_secs(60));
         if e.len() >= 20 {
             return login_html(sc, "Too many attempts, wait a minute").into_response();
@@ -144,6 +155,51 @@ pub(crate) async fn login(
         return login_html(sc, "Invalid credentials").into_response();
 
     }
+    // TOTP gate (phase 4): user with 2FA enabled gets a short-lived
+    // pending token instead of a session — the second factor verifies at
+    // /admin/2fa before anything is minted. The pending token is the only
+    // path to a session from here; no alternate mint exists on this flow.
+    if let Some((secret, enabled, last_step, _codes)) = udb::totp_get(&sc.db, id) {
+        if enabled && !secret.is_empty() {
+            let mut tok = [0u8; 32];
+            rand::thread_rng().fill_bytes(&mut tok);
+            let tok = hex(&tok);
+            let mut pend = app.pending_2fa.lock();
+            // Cap: an attacker holding valid passwords (the exact threat
+            // model 2FA exists for) must not grow this map unboundedly.
+            if pend.len() >= 1000 {
+                let now = Instant::now();
+                pend.retain(|_, v| now.duration_since(v.1) < PENDING_TTL);
+                if pend.len() >= 1000 {
+                    if let Some(old) = pend.iter().min_by_key(|(_, v)| v.1).map(|(k, _)| k.clone()) {
+                        pend.remove(&old);
+                    }
+                }
+            }
+            pend.insert(tok.clone(), (id, Instant::now(), 0usize));
+            return Redirect::to(&format!("/admin/2fa?p={tok}")).into_response();
+        }
+        let _ = (secret, last_step);
+    }
+    mint_session(&app, sc, &headers, id, &form.log, &role, form.rememberme.as_deref() == Some("forever"), &ip)
+}
+
+/// TTL for a pending 2FA token — short enough that a stolen password
+/// can't sit half-authenticated; long enough to open the app and type.
+const PENDING_TTL: Duration = Duration::from_secs(300);
+
+/// Shared session mint — login (post-password or post-TOTP) and future
+/// paths funnel through here so cookie/session/db stay in lockstep.
+fn mint_session(
+    app: &App,
+    sc: &SiteCtx,
+    headers: &HeaderMap,
+    id: i64,
+    email_raw: &str,
+    role: &str,
+    forever: bool,
+    ip: &str,
+) -> Response {
     // Session invalidation on login (M20): the cookie's prior session dies
     // before the new one is issued — a stale cookie can never be pinned to
     // a different user, and re-login rotates the csrf.
@@ -157,20 +213,15 @@ pub(crate) async fn login(
     let mut csrf = [0u8; 16];
     rand::thread_rng().fill_bytes(&mut csrf);
     let csrf = hex(&csrf);
-    let ttl: u64 = if form.rememberme.as_deref() == Some("forever") {
-        14 * 24 * 3600
-    } else {
-        12 * 3600
-    };
+    let ttl: u64 = if forever { 14 * 24 * 3600 } else { 12 * 3600 };
     app.sessions.lock().insert(
         tok.clone(),
         Sess {
             site: sc.slug.clone(),
             site_name: sc.name.clone(),
             user_id: id,
-            email: form.log.clone(),
-
-            role,
+            email: email_raw.to_string(),
+            role: role.to_string(),
             db: sc.db.clone(),
             csrf: csrf.clone(),
             exp: Instant::now() + Duration::from_secs(ttl),
@@ -185,7 +236,7 @@ pub(crate) async fn login(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_string();
-    let _ = udb::session_put(&sc.db, &tok, id, &ua, &ip, &csrf, ttl as i64);
+    let _ = udb::session_put(&sc.db, &tok, id, &ua, ip, &csrf, ttl as i64);
     Response::builder()
         .status(StatusCode::SEE_OTHER)
         .header(header::LOCATION, "/admin")
@@ -195,6 +246,99 @@ pub(crate) async fn login(
         )
         .body(Body::empty())
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+/// GET `/admin/2fa?p=<pending>` — second-factor form. Invalid/expired
+/// pending tokens get a bare redirect to /admin/login (no form), so the
+/// endpoint can't be enumerated to learn whether an account has 2FA.
+pub(crate) async fn two_fa_page(
+    State(app): State<App>,
+    axum::extract::Query(q): axum::extract::Query<HashMap<String, String>>,
+) -> Response {
+    let Some(p) = q.get("p") else { return Redirect::to("/admin/login").into_response() };
+    let alive = app.pending_2fa.lock().get(p).map(|v| v.1.elapsed() < PENDING_TTL).unwrap_or(false);
+    if !alive {
+        return Redirect::to("/admin/login").into_response();
+    }
+    let body = format!(
+        r##"<div class="wrap"><h1>Two-factor authentication</h1>
+<form method="post" action="/admin/2fa">
+<input type="hidden" name="p" value="{p}">
+<p><label>Authentication code<br><input name="code" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" autofocus style="font-size:24px;width:10em"></label></p>
+<p class="description">6-digit code from your authenticator app, or a backup code (xxxx-xxxx).</p>
+<p><button class="button button-primary">Verify</button></p>
+</form></div>"##,
+        p = esc(p)
+    );
+    Html(format!("<!DOCTYPE html><html><head><meta charset=utf-8><title>2FA</title></head><body>{body}</body></html>")).into_response()
+}
+
+/// POST `/admin/2fa` — verify TOTP or backup code against the pending
+/// token's user, then mint the real session. Atomic against concurrent
+/// submits: the user row is re-read at verify (role may have changed
+/// mid-flow), and backup-code consumption is a check-and-delete inside
+/// one write tx — two parallel POSTs can't both consume the same code.
+pub(crate) async fn two_fa_verify(
+    State(app): State<App>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Form(f): Form<HashMap<String, String>>,
+) -> Response {
+    let p = f.get("p").cloned().unwrap_or_default();
+    let code = f.get("code").cloned().unwrap_or_default();
+    let sc = site_for(&app, &headers);
+    let (user_id, fails) = {
+        let pend = app.pending_2fa.lock();
+        match pend.get(&p) {
+            Some(v) if v.1.elapsed() < PENDING_TTL => (v.0, v.2),
+            _ => {
+                drop(pend);
+                return Redirect::to("/admin/login").into_response();
+            }
+        }
+    };
+    if fails >= 5 {
+        app.pending_2fa.lock().remove(&p);
+        return Redirect::to("/admin/login").into_response();
+    }
+    let Some((secret, enabled, last_step, _)) = udb::totp_get(&sc.db, user_id) else {
+        return Redirect::to("/admin/login").into_response();
+    };
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    // TOTP first (the normal path); backup codes are the recovery path —
+    // consume is atomic so a raced double-submit can't both win.
+    let ok = enabled
+        && !secret.is_empty()
+        && (crate_auth::totp_verify(&secret, &code, now_secs, last_step)
+            .map(|step| {
+                let _ = udb::totp_step_update(&sc.db, user_id, step);
+            })
+            .is_some()
+            || udb::backup_code_consume(&sc.db, user_id, &sha256_hex(&code.replace(' ', ""))).unwrap_or(false));
+    if !ok {
+        app.pending_2fa.lock().entry(p.clone()).and_modify(|v| v.2 += 1);
+        eprintln!("2fa fail user={user_id} ip={}", client_ip(&headers, Some(peer)));
+        return Redirect::to(&format!("/admin/2fa?p={p}&err=1")).into_response();
+    }
+    // Verified — drop the pending token and mint as usual. `login_hits`
+    // was already charged at the password step.
+    app.pending_2fa.lock().remove(&p);
+    let row: Option<(String, String)> = crate::db::conn(&sc.db)
+        .ok()
+        .and_then(|c| {
+            c.query_row("SELECT email, role FROM users WHERE id=?1", [user_id], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })
+            .ok()
+        });
+    let Some((email, role)) = row else {
+        return Redirect::to("/admin/login").into_response();
+    };
+    let ip = client_ip(&headers, Some(peer));
+    mint_session(&app, sc, &headers, user_id, &email, &role, false, &ip)
 }
 
 pub(crate) async fn logout(
