@@ -340,6 +340,7 @@ pub(crate) fn render_list(
             format!(
                 r#"<div>
 <span class="title inline-edit-categories-label">Categories</span>
+<input type="search" id="qe-cat-search" placeholder="Filter categories…" style="width:100%;max-width:240px;margin-bottom:4px">
 <ul id="qe-cats" class="categorychecklist" style="max-height:180px;overflow:auto;margin:4px 0;border:1px solid #ddd;padding:6px;min-width:240px">{cat_checks}</ul>
 </div>
 <div>
@@ -434,6 +435,17 @@ pub(crate) fn render_list(
 (function(){{
 var qe=document.getElementById('qe-row');if(!qe)return;
 var origTr=null;
+  // live filter inside the checklist (respects lang-scope via dataset.langHidden)
+  var cs = qe.querySelector('#qe-cat-search');
+  if (cs) {{
+    cs.addEventListener('input', function() {{
+      var q = cs.value.toLowerCase();
+      qe.querySelectorAll('#qe-cats li').forEach(function(li) {{
+        if (li.dataset.langHidden === '1') return;
+        li.style.display = li.textContent.toLowerCase().includes(q) ? '' : 'none';
+      }});
+    }});
+  }}
 document.addEventListener('click',function(e){{
   var a=e.target.closest('a.editinline');
   if(a){{
@@ -448,6 +460,15 @@ document.addEventListener('click',function(e){{
     var tagsEl = qe.querySelector('#qe-tags');
     if(tagsEl)tagsEl.value='';
     fetch('/admin/postdata/'+id).then(function(r){{return r.json()}}).then(function(d){{
+      var allowed = d.allowed_cats ? new Set(d.allowed_cats) : null;
+      if(allowed){{
+        qe.querySelectorAll('#qe-cats li').forEach(function(li){{
+          var inp = li.querySelector('input');
+          var hide = !(inp && allowed.has(inp.value));
+          li.dataset.langHidden = hide ? '1' : '';
+          li.style.display = hide ? 'none' : '';
+        }});
+      }}
       (d.cats||[]).forEach(function(s){{var c=qe.querySelector('#qe-cats input[value="'+s+'"]');if(c)c.checked=true}});
       if(tagsEl)tagsEl.value=(d.tags||[]).join(', ');
       if(d.lang)qe.querySelector('#qe-lang').value=d.lang;
@@ -771,7 +792,25 @@ pub(crate) async fn post_data(State(app): State<App>, headers: HeaderMap, Path(i
     let cats = crud::term_slugs_for(&sc.db, id, "category").unwrap_or_default();
     let tag_names = crud::tag_names_for(&sc.db, id).unwrap_or_default();
     let lang = crud::lang_of(&sc.db, id).unwrap_or_default();
-    let body = format!(r#"{{"cats":{:?},"tags":{:?},"lang":"{}"}}"#, cats, tag_names, lang);
+    /* Category checklist scope = the post's language: a term stays visible
+       when (a) it is attached to this post, (b) a post of the same lang
+       uses it, or (c) nothing uses it yet. */
+    let allowed_cats: Vec<String> = (|| {
+        let c = crate::db::conn(&sc.db).ok()?;
+        let mut st = c.prepare(
+            "SELECT slug FROM terms WHERE taxonomy='category' AND (\
+               slug IN (SELECT slug FROM post_terms WHERE taxonomy='category' AND post_id=?2) OR \
+               slug IN (SELECT pt.slug FROM post_terms pt JOIN posts p ON p.id=pt.post_id \
+                        WHERE pt.taxonomy='category' AND p.lang=?1) OR \
+               slug NOT IN (SELECT slug FROM post_terms WHERE taxonomy='category'))",
+        ).ok()?;
+        let rows = st
+            .query_map(rusqlite::params![lang, id], |r| r.get::<_, String>(0))
+            .ok()?;
+        rows.collect::<Result<Vec<String>, _>>().ok()
+    })()
+    .unwrap_or_default();
+    let body = format!(r#"{{"cats":{:?},"tags":{:?},"lang":"{}","allowed_cats":{:?}}}"#, cats, tag_names, lang, allowed_cats);
     ([(header::CONTENT_TYPE, "application/json")], body).into_response()
 }
 
