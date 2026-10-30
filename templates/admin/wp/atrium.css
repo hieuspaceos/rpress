@@ -31,6 +31,10 @@
   --focus: oklch(60% 0.2 38);
   /* one ring everywhere — buttons, links, inputs, checkboxes */
   --focus-ring: 2px solid color-mix(in oklab, var(--focus) 45%, transparent);
+  /* scheme note: per-user admin-color-* classes only recolor vendored accents
+     via --wp-admin-theme-color. Atrium is a designed skin — the coral accent
+     is intentional and does NOT follow the scheme; vendored theme-color
+     leaks are neutralized per-component (see checkbox :focus reset). */
 
   /* opaque fallbacks first — glass values layer over them */
   --glass-solid: oklch(96.5% 0.007 90);
@@ -585,6 +589,21 @@ a.page-title-action { margin-left: 8px; }
 }
 .wp-admin input[type="radio"]:checked::before { content: none; }
 .wp-admin input[type="radio"]:focus-visible { outline: var(--focus-ring); outline-offset: 1px; }
+/* vendored forms.min.css paints a scheme-colored box-shadow halo on :focus
+   (click AND keyboard) — neutralize it; the :focus-visible outline is ours */
+.wp-admin input[type="checkbox"]:focus, .wp-admin input[type="radio"]:focus {
+  border-color: var(--muted);
+  box-shadow: none;
+}
+/* same vendored halo family on text inputs/selects + tag autocomplete —
+   atrium draws its own ring + autocomplete tint instead of scheme color */
+.wp-admin input:focus, .wp-admin textarea:focus, .wp-admin select:focus {
+  box-shadow: none;
+}
+.wp-tags-autocomplete .ui-state-focus, .wp-tags-autocomplete [aria-selected="true"] {
+  background-color: var(--accent-soft);
+  color: var(--ink);
+}
 
 /* ═══════════ views pills + tablenav ═══════════ */
 
@@ -614,7 +633,7 @@ ul.subsubsub .count { font-family: var(--font-num); font-size: 10px; font-weight
   padding: 4px 9px;
 }
 .tablenav-pages { font-family: var(--font-num); font-size: 12px; color: var(--muted); }
-.tablenav-pages input#current-page-selector { height: 30px; }
+.tablenav-pages input.current-page { height: 30px; }
 .tablenav-pages .button { min-width: 28px; text-align: center; }
 .tablenav .view-switch a { color: var(--muted); }
 .tablenav .view-switch a:hover, .tablenav .view-switch a.current { color: var(--accent); }

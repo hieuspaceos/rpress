@@ -226,3 +226,14 @@ layout holds. Diff scope: 2 CSS files only.
 | `td.column-description` on mobile | **fixed** — clamp scoped `@media (min-width:783px)` so the card layout keeps `display:block;width:100%` |
 | `.ui-sortable-placeholder` rule | dead CSS — widgets screen has no jQuery sortable init; harmless, kept as stub |
 | 17 other named checks | OK — see agent review (pta specificity, focus rings, subsubsub, check-column, flyout keyframes, adminbar 32px, login switcher, no markup/JS in diff) |
+
+## Second deep audit (code-reviewer, 15-item hunt)
+
+| Ref | Verdict |
+|---|---|
+| vendored `checkbox/radio:focus` scheme-colored box-shadow halo | **fixed** — reset to `border-color:--muted; box-shadow:none`; same for text inputs/selects |
+| `input#current-page-selector` dead rule | **fixed** — retargeted to emitted `.current-page` class |
+| vendored `select:focus` + `.wp-tags-autocomplete` theme-color leak | **fixed** — box-shadow killed; autocomplete → `--accent-soft`/`--ink` |
+| admin-color-* scheme strategy | **documented** — coral accent is the skin's brand; per-scheme remapping declined, leaks neutralized per-component |
+| dead `.ui-sortable-placeholder` | kept as stub (no sortable init on widgets yet) |
+| everything else (widget columns, menu bars, mask centering, flyout refire, readonly intent, check-column thead/tfoot, TinyMCE iframe vars, 783/782 boundary, subsubsub a11y) | OK / OK-with-note — see agent report |
