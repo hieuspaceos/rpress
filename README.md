@@ -61,7 +61,7 @@ WordPress or integrate a specialized provider.
 | Request path | PHP boot → 50–200 MySQL queries → plugin hooks | `fs::read` one cached HTML file |
 | Render | Every request | Once on publish / first hit (render-on-miss safety net) |
 | Deploy | PHP-FPM + WP + MySQL/MariaDB + themes/plugins | One binary + one `.db` file |
-| Attack surface | ~60k plugin CVEs, `wp-admin`, `xmlrpc` | Rust binary, persistent SQLite sessions, argon2, CSRF per session, hardened local asset serving |
+| Attack surface | ~60k plugin CVEs, `wp-admin`, `xmlrpc` | Rust binary, persistent SQLite sessions, argon2, CSRF per session, TOTP 2FA, multi-header/stale-cookie tolerant auth, hardened local asset serving |
 | Memory | ~500 MB+ (PHP workers + MySQL) | ~30 MB |
 | Plugin ecosystem | 60k+ plugins | What is ported in `src/`; gap is real |
 | Dynamic public pages | Yes | No — by design |

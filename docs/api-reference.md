@@ -6,12 +6,17 @@ the router, the router wins.
 
 Auth: every `/admin/*` route needs the `rpress_session` cookie scoped to the
 current site's `SiteCtx.slug` — a token minted on one host is rejected on
-another. Every mutating route, including logout, needs the session CSRF token (`name="csrf"`).
+another. `Cookie:` may arrive on several header lines and a browser may carry
+stale duplicate tokens; `get_sess` iterates every `rpress_session` value
+(`cookie_all`) until a live session resolves, so a dead first token cannot
+bounce a valid user to `/admin/login`. Every mutating route, including
+logout, needs the session CSRF token (`name="csrf"`).
 ## Admin screens (HTML)
 
 | Route | Handler (`admin/`) | Purpose |
 |---|---|---|
 | `GET /admin/login`, `POST /api/login`, `POST /api/logout` | `auth.rs` | login/logout (rate-limited 20/min/IP; logout is POST-only) |
+| `GET/POST /admin/2fa` | `auth.rs` | TOTP/backup-code challenge after password auth — pending token in `App.pending_2fa` (TTL), page renders through the login shell |
 | `GET /admin`, `POST /admin` (screen options) | `auth.rs::dashboard`, `::screen_options_save` | WP dashboard |
 | `POST /admin/draft`, `GET /admin/health` | `dashboard.rs` | editor autosave draft, admin health page |
 | `GET /admin/{section}` | `posts.rs::section` | list screen — `posts`, `pages`, `tours`; views All/Published/Pending/Drafts/Trash, `?status=`, `?lang=`, `?tax=`, `?cat=`, `?s=`, `?paged=` |
