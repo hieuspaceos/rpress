@@ -136,7 +136,17 @@ pub(crate) fn spawn(
     std::fs::create_dir_all(&db_dir)?;
     let wp_db = db_dir.clone();
     if let Some(id) = post_id {
-        project_post(rpress_db, &wp_content, id)?;
+        // Seed lands in the disposable bridge dir, then mounts into the
+        // VFS explicitly — writing under www/wp-content would both be
+        // unmounted here (enumeration already ran) AND world-readable via
+        // the public static server.
+        let seed_src = dir.join("seed");
+        if project_post(rpress_db, &seed_src, id)? {
+            mounts.push((
+                seed_src.join("rpress-seed/post.json"),
+                "/wordpress/wp-content/rpress-seed/post.json".into(),
+            ));
+        }
     }
 
     let token = format!("{:x}", rand::random::<u128>());
@@ -261,6 +271,7 @@ pub(crate) fn spawn(
         token,
         wp_db,
         pidfile,
+        seeded_post: post_id,
     })
 }
 
@@ -268,7 +279,8 @@ pub(crate) fn spawn(
 /// the mu-plugin `wp_insert_post`s it on first admin request (WP must
 /// create its own tables first; direct SQLite projection would fight
 /// the installer). wp.db stays disposable; rpress.db is the only truth.
-pub(crate) fn project_post(rpress_db: &Path, wp_content: &Path, post_id: i64) -> Result<()> {
+/// Returns false when the post isn't in rpress.db — no seed file then.
+pub(crate) fn project_post(rpress_db: &Path, wp_content: &Path, post_id: i64) -> Result<bool> {
     let src = crate::db::conn(rpress_db).context("open rpress.db for projection")?;
     let post: Option<serde_json::Value> = src
         .query_row(
@@ -291,7 +303,7 @@ pub(crate) fn project_post(rpress_db: &Path, wp_content: &Path, post_id: i64) ->
             },
         )
         .ok();
-    let Some(post) = post else { return Ok(()) };
+    let Some(post) = post else { return Ok(false) };
     let mut st = src.prepare(sql!("bridge_playground__select_post_meta"))?;
     let meta: serde_json::Map<String, serde_json::Value> = st
         .query_map([post_id], |r| {
@@ -309,7 +321,7 @@ pub(crate) fn project_post(rpress_db: &Path, wp_content: &Path, post_id: i64) ->
             "post": post, "meta": meta,
         }))?,
     )?;
-    Ok(())
+    Ok(true)
 }
 
 #[cfg(test)]

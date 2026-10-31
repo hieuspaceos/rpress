@@ -22,7 +22,7 @@
 //! sites' traffic, and concurrent dead-bridge hits cannot double-spawn
 //! (identity re-check under the map lock + per-key respawn cooldown).
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -59,6 +59,9 @@ pub(crate) struct BridgeState {
     /// `<www>/bridge/<slug>.pid` — records the live child pid + port so a
     /// later `serve` process can reap orphans a crash left behind.
     pub(crate) pidfile: PathBuf,
+    /// Last post projected into `rpress-seed/post.json` — lets dispatch
+    /// reseed a live bridge instead of respawning it per post switch.
+    pub(crate) seeded_post: Option<i64>,
 }
 
 /// A spawned PHP runtime. Owns transport details; the manager owns
@@ -270,6 +273,7 @@ pub(crate) fn bridge_for(
                 st.token = fresh.token;
                 st.wp_db = fresh.wp_db;
                 st.pidfile = fresh.pidfile;
+                st.seeded_post = fresh.seeded_post;
                 st.spawned_at = Instant::now();
             }
             st.last_used = Instant::now();
@@ -331,6 +335,34 @@ pub(crate) fn reap(bridges: &Bridges, ttl: Duration) -> Vec<String> {
         }
     }
     out
+}
+
+/// Switch the projected post inside a LIVE bridge: the seed file is only
+/// written at spawn, so an `action=elementor` for a different post would
+/// otherwise bounce to `edit.php` (post missing in wp.db). Writes the new
+/// `post.json` into the bridge-owned docroot and clears
+/// `rpress_post_seeded` so the mu-plugin's `admin_init` hook re-inserts
+/// on this request. Serialized by the caller's entry mutex.
+/// Returns false when nothing was seeded (post absent from rpress.db, or
+/// the runtime isn't the PhpCgi layout — the Playground WASM docroot has
+/// no host-writable wp-content; a post switch there needs a respawn).
+pub(crate) fn reseed_post(www: &std::path::Path, slug: &str, wp_db: &std::path::Path, rpress_db: &std::path::Path, post_id: i64) -> Result<bool> {
+    // Only the PhpCgi docroot wp-content is reachable + private: writing
+    // to www/wp-content would (a) never reach the WASM VFS for Playground
+    // and (b) leak seed data through the public static server.
+    let wp_content = www.join("bridge").join(slug).join("docroot").join("wp-content");
+    if !wp_content.is_dir() {
+        return Ok(false);
+    }
+    if !playground::project_post(rpress_db, &wp_content, post_id)? {
+        return Ok(false);
+    }
+    if let Some(db_file) = pull::locate(wp_db) {
+        let conn = crate::db::conn(&db_file).context("open wp.db for reseed")?;
+        conn.execute("DELETE FROM wp_options WHERE option_name = 'rpress_post_seeded'", [])
+            .context("clear rpress_post_seeded")?;
+    }
+    Ok(true)
 }
 pub(crate) type Bridges = Arc<Mutex<HashMap<String, BridgeHandle>>>;
 

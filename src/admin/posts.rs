@@ -236,6 +236,22 @@ pub(crate) fn render_list( // gate-allow: blocking by contract — only called i
     };
     let head = spec_for_section(section).map(|k| k.head).unwrap_or("");
     let mut body = String::new();
+    // Site-level: does this site actually BUILD with Elementor? The
+    // import detector's signal is `_elementor_data` post meta — a site
+    // where no post was ever Elementor-edited hides the row action
+    // entirely (opt-in alone isn't usage). One query for the list page.
+    let site_uses_elementor: bool = crate::admin::bridge::opt_in(&sc.plugins_php, "elementor")
+        && crate::db::conn(&sc.db)
+            .ok()
+            .and_then(|c| {
+                c.query_row(
+                    "SELECT 1 FROM post_meta WHERE meta_key = '_elementor_data' LIMIT 1",
+                    [],
+                    |_| Ok(true),
+                )
+                .ok()
+            })
+            .unwrap_or(false);
     for r in rows {
         let title = if r.title.is_empty() {
             "(no title)".into()
@@ -255,11 +271,20 @@ pub(crate) fn render_list( // gate-allow: blocking by contract — only called i
         } else {
             ("trash", "Trash")
         };
+        let el_action = if site_uses_elementor {
+            format!(
+                r#"<span class="elementor"><a href="/admin/plugins/elementor/wp-admin/post.php?post={0}&amp;action=elementor">Edit with Elementor</a> | </span>"#,
+                r.id
+            )
+        } else {
+            String::new()
+        };
         let actions = format!(
-            r##"<div class="row-actions"><span class="edit"><a href="/admin/edit/{0}">Edit</a> | </span><span class="inline hide-if-no-js"><a href="#{0}" class="editinline" data-id="{0}">Quick Edit</a> | </span><span class="trash"><form method="post" action="/admin/trash" style="display:inline"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="id" value="{0}"><input type="hidden" name="status" value="{next_status}"><button class="button-link">{act}</button></form> | </span><span class="view"><a href="{preview}" target="_blank">{view_label}</a> | </span><span class="clone"><form method="post" action="/admin/clone" style="display:inline"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="id" value="{0}"><button class="button-link">Clone</button></form> | </span><span class="new-draft"><form method="post" action="/admin/clone" style="display:inline"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="id" value="{0}"><input type="hidden" name="draft" value="1"><button class="button-link">New Draft</button></form></span></div>"##,
+            r##"<div class="row-actions"><span class="edit"><a href="/admin/edit/{0}">Edit</a> | </span>{elementor}<span class="inline hide-if-no-js"><a href="#{0}" class="editinline" data-id="{0}">Quick Edit</a> | </span><span class="trash"><form method="post" action="/admin/trash" style="display:inline"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="id" value="{0}"><input type="hidden" name="status" value="{next_status}"><button class="button-link">{act}</button></form> | </span><span class="view"><a href="{preview}" target="_blank">{view_label}</a> | </span><span class="clone"><form method="post" action="/admin/clone" style="display:inline"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="id" value="{0}"><button class="button-link">Clone</button></form> | </span><span class="new-draft"><form method="post" action="/admin/clone" style="display:inline"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="id" value="{0}"><input type="hidden" name="draft" value="1"><button class="button-link">New Draft</button></form></span></div>"##,
             r.id,
             csrf = s.csrf,
             preview = esc(&preview),
+            elementor = el_action,
         );
         let extra = format!(
             "{}{}",
@@ -1246,7 +1271,25 @@ window.deleteUserSetting = window.deleteUserSetting || function(n) {{ try {{ loc
             classic = classic_editor(&f.content, true),
         )
     } else {
-        classic_editor(&f.content, true)
+        let mut html = classic_editor(&f.content, true);
+        let pid = f.id.unwrap_or(0);
+        if pid > 0 && crate::admin::bridge::opt_in(&sc.plugins_php, "elementor") {
+            if let Ok(c) = crate::db::conn(&sc.db) {
+                let has = c
+                    .query_row(
+                        sql!("rankmath__select_post_meta_exists"),
+                        rusqlite::params![pid, "_elementor_data"],
+                        |_| Ok(true),
+                    )
+                    .unwrap_or(false);
+                if has {
+                    html.push_str(&format!(
+                        r#"<p><a class="button button-primary" href="/admin/plugins/elementor/wp-admin/post.php?post={pid}&amp;action=elementor">Edit with Elementor</a></p>"#
+                    ));
+                }
+            }
+        }
+        html
     };
     let tag_cloud = {
         let mut c = String::new();

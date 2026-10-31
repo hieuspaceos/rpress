@@ -39,6 +39,137 @@ if (isset($_SERVER['REQUEST_URI']) && strpos($_SERVER['REQUEST_URI'], '/__rpress
     header('X-Rpress-Ident: bridge');
     exit;
 }
+/* auth_redirect() (wp-admin/admin.php) requires a cookie; we have the
+   bearer instead. Override pluggable fn from mu-plugin (loads first).
+   admin-ajax (GDLR) never calls auth_redirect. */
+function auth_redirect() {
+    if (function_exists('wp_set_current_user')) {
+        wp_set_current_user(1);
+    }
+}
+
+/* Force-load the bridge plugin on THIS request. `activate_plugin` during
+   WP_INSTALLING leaves active_plugins=a:0:{}; `option_active_plugins` +
+   file_exists() can miss because WP_PLUGIN_DIR is not always set yet.
+   `pre_option_*` short-circuits the DB. GDLR still listed via
+   RPRESS_BRIDGE_PLUGIN. */
+add_filter('pre_option_active_plugins', static function () {
+    $v = [];
+    if (defined('RPRESS_BRIDGE_PLUGIN') && RPRESS_BRIDGE_PLUGIN !== '') {
+        $v[] = RPRESS_BRIDGE_PLUGIN;
+    }
+    if (defined('RPRESS_BRIDGE_PLUGINS')) {
+        foreach ((array) json_decode(RPRESS_BRIDGE_PLUGINS, true) as $p) {
+            if (is_string($p) && $p !== '') {
+                $v[] = $p;
+            }
+        }
+    }
+    return $v;
+});
+
+/* get_bloginfo('version') reads raw $wp_version (filter `bloginfo` skipped).
+   Elementor 4.3.5 requires WP 6.8; vendored core is 6.7.11. GDLR ignores this. */
+if (isset($GLOBALS['wp_version'])) {
+    $GLOBALS['wp_version'] = '6.8.3';
+}
+
+add_action('elementor/init', static function () {
+    if (class_exists('\Elementor\Core\Kits\Manager')) {
+        \Elementor\Core\Kits\Manager::create_default_kit();
+    }
+}, 0);
+
+/* Frontend (`elementor-preview`) never hits admin_init / auth_redirect.
+   Guest WP_Query 404s the iframe → editor stays on LOADING. Token already
+   passed; uid 1 on every request. GDLR ajax still sets the same user. */
+add_action('init', static function () {
+    if (function_exists('wp_set_current_user')) {
+        wp_set_current_user(1);
+    }
+}, 0);
+
+add_filter('user_has_cap', static function ($caps) {
+    $caps['edit_posts'] = true;
+    $caps['edit_pages'] = true;
+    $caps['edit_others_posts'] = true;
+    $caps['edit_others_pages'] = true;
+    $caps['edit_published_pages'] = true;
+    $caps['edit_published_posts'] = true;
+    return $caps;
+}, 0);
+
+add_action('template_redirect', static function () {
+    if (empty($_GET['elementor-preview'])) {
+        return;
+    }
+    if (function_exists('wp_set_current_user')) {
+        wp_set_current_user(1);
+    }
+    $line = wp_json_encode([
+        'uid' => get_current_user_id(),
+        'the_id' => get_the_ID(),
+        'get' => $_GET['elementor-preview'],
+        'admin' => is_admin(),
+        'can' => current_user_can('edit_post', (int) $_GET['elementor-preview']),
+    ]);
+    if (defined('FQDB')) {
+        @file_put_contents(dirname(FQDB) . '/preview-debug.json', $line);
+    }
+}, 0);
+
+/* Tevily page.php uses GVA_Layout_Frontend, never `the_content`, so
+   Elementor's builder_wrapper never injects `.elementor-edit-area` and
+   the editor iframe stays on LOADING. Force the classic loop for preview. */
+add_filter('template_include', static function ($template) {
+    if (empty($_GET['elementor-preview']) || !defined('FQDB')) {
+        return $template;
+    }
+    $file = dirname(FQDB) . '/elementor-preview.php';
+    if (!is_file($file)) {
+        @file_put_contents(
+            $file,
+            "<?php\nget_header();\nif (have_posts()) { the_post(); the_content(); }\nget_footer();\n"
+        );
+    }
+    return is_file($file) ? $file : $template;
+}, 99);
+
+add_action('elementor/editor/footer', static function () {
+    echo <<<'JS'
+<script>
+(function () {
+  function hideLoader() {
+    var l = document.getElementById('elementor-loading');
+    if (l) l.style.display = 'none';
+    var w = document.querySelector('.elementor-loader-wrapper');
+    if (w) w.style.display = 'none';
+  }
+  function iframeReady() {
+    var f = document.getElementById('elementor-preview-iframe');
+    try {
+      return !!(f && f.contentDocument && f.contentDocument.querySelector('[data-elementor-id], .elementor'));
+    } catch (e) { return false; }
+  }
+  var n = 0;
+  var t = setInterval(function () {
+    n += 1;
+    if (iframeReady() || n > 15) { hideLoader(); clearInterval(t); }
+  }, 1000);
+})();
+</script>
+JS;
+});
+
+add_action('wp_enqueue_scripts', static function () {
+    if (empty($_GET['elementor-preview'])) {
+        return;
+    }
+    // Elementor preview enqueue does jQuery.holdReady(true) until the parent
+    // editor releases it. Parent attach can't reach iframe jQuery → deadlock,
+    // canvas spinner forever. Release ready on the preview document itself.
+    wp_add_inline_script('jquery-migrate', 'if (window.jQuery) { jQuery.holdReady(false); }', 'after');
+}, 100);
 
 /* Identity: admin requests run as uid 1 (see header note 2). Also mint a
  * real nonce for gdlr ajax calls — our admin page can't hold a WP nonce,
@@ -46,6 +177,11 @@ if (isset($_SERVER['REQUEST_URI']) && strpos($_SERVER['REQUEST_URI'], '/__rpress
  * Runs after the token fence, so nonce-fakeability is bounded by the token. */
 add_action('admin_init', function () {
     wp_set_current_user(1);
+    if (!empty($_POST['action']) && $_POST['action'] === 'elementor_ajax') {
+        $n = wp_create_nonce('elementor_ajax');
+        $_POST['_nonce'] = $n;
+        $_REQUEST['_nonce'] = $n;
+    }
     if (!empty($_POST['action']) && strpos($_POST['action'], 'gdlr_core_') === 0) {
         $n = wp_create_nonce('gdlr_core_page_builder');
         $_POST['security'] = $n;

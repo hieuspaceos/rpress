@@ -18,6 +18,16 @@ use super::{need_auth_peer, App, SiteCtx, Sess};
 /// `/admin/plugins/{slug}/{*rest}` — dispatch to the adapter's
 /// `ScreenDef`. Registered before `/admin/{section}`; `"plugins"` is a
 /// reserved section name (no KindDef may claim it — red-team R5).
+pub(super) async fn plugin_screen_root(
+    State(app): State<App>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Path(slug): Path<String>,
+    req: axum::extract::Request,
+) -> Response {
+    plugin_screen(State(app), ConnectInfo(peer), headers, Path((slug, String::new())), req).await
+}
+
 pub(super) async fn plugin_screen(
     State(app): State<App>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -157,6 +167,7 @@ async fn bridge_dispatch(
         )
         .into_response();
     }
+    let query = req.uri().query().map(str::to_owned);
     let method = req.method().to_string();
     let body = match axum::body::to_bytes(req.into_body(), 8 * 1024 * 1024).await {
         Ok(b) => b,
@@ -179,14 +190,32 @@ async fn bridge_dispatch(
         .iter()
         .flat_map(|a| a.write_specs().iter().copied())
         .collect();
-    let path = adapter.bridge_path(rest);
+    let mut path = adapter.bridge_path(rest);
+    if let Some(q) = query.as_deref().filter(|q| !q.is_empty()) {
+        path.push('?');
+        path.push_str(q);
+    }
     let bridges = sc.bridges.clone();
-    // T25: the post being edited is the last numeric path segment
-    // (e.g. `/admin/plugins/goodlayers/page-builder/edit/42` → 42). No match
-    // → empty wp.db: the plugin screens that need no post context.
-    let post_id = rest
-        .rsplit('/')
-        .find_map(|seg| seg.parse::<i64>().ok());
+    // post= / p= query (Elementor post.php / preview) or an edit/post/<id>
+    // tail segment (GDLR edit screens). Any other numeric tail — asset
+    // URLs like uploads/2025/11/x.jpg — must NOT trigger a reseed.
+    let post_id = query
+        .as_deref()
+        .and_then(|q| {
+            q.split('&').find_map(|pair| {
+                pair.strip_prefix("post=")
+                    .or_else(|| pair.strip_prefix("p="))
+                    .and_then(|v| v.parse().ok())
+            })
+        })
+        .or_else(|| {
+            let mut segs = rest.rsplit('/');
+            let tail = segs.next()?;
+            let head = segs.next()?;
+            matches!(head, "edit" | "post")
+                .then(|| tail.parse::<i64>().ok())
+                .flatten()
+        });
     let resp = tokio::task::spawn_blocking(move || {
         // Prefer native php -S (~100MB, sandbox-exec confined) over the
         // ~1.2GB WASM playground; fall back when php isn't installed.
@@ -199,6 +228,21 @@ async fn bridge_dispatch(
         // Entry mutex serializes this bridge's runtime; the global map
         // lock is already released — other sites' bridge traffic flows.
         let mut st = h.lock();
+        // Post switch on a live bridge: respawning per post would cost a
+        // full WP install each time; reseed instead (post.json + clear the
+        // seeded flag; the mu-plugin re-inserts on this very request).
+        if let Some(pid) = post_id {
+            if st.seeded_post != Some(pid) {
+                match bridge::reseed_post(&www, slug, &st.wp_db, &db, pid) {
+                    // Only claim seeded when the file+flag actually landed;
+                    // false (absent post / non-CGI runtime) leaves the
+                    // marker so a later request can retry or respawn.
+                    Ok(true) => st.seeded_post = Some(pid),
+                    Ok(false) => {}
+                    Err(e) => eprintln!("bridge reseed {site}/{slug} post {pid}: {e:#}"),
+                }
+            }
+        }
         let token = st.token.clone();
         let mut fwd: Vec<(String, String)> = hdrs
             .iter()
@@ -267,25 +311,69 @@ async fn bridge_dispatch(
                 b = b.header(n, val);
             }
         }
-        // HTML bodies carry absolute asset/link URLs built on WP_HOME
-        // (http://127.0.0.1:<port>) — rewrite through the mount so the
-        // browser never sees the raw bridge port (same `upstream` string
-        // as the Location rewrite above).
-        let body = if r
-            .headers
-            .iter()
-            .any(|(k, v)| k.eq_ignore_ascii_case("content-type") && v.contains("text/html"))
-        {
-            // WP also JSON-escapes host URLs in inline script settings
-            // (127.0.0.1\/:port/...) — rewrite both shapes.
-            let upstream_esc = upstream.replace('/', "\\/");
-            let mount_esc = mount.replace('/', "\\/");
-            String::from_utf8_lossy(&r.body)
-                .replace(&upstream, &mount)
-                .replace(&upstream_esc, &mount_esc)
-                .into_bytes()
-        } else {
-            r.body
+        // HTML/JSON/JS: absolute WP_HOME → mount, then root-relative
+        // `/wp-admin/` `/wp-json/` (Elementor ajaxurl). GDLR ajax JSON
+        // does not contain those prefixes — rewrite is a no-op there.
+        let body = {
+            let ct = r.headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("content-type")).map(|(_, v)| v.as_str()).unwrap_or("");
+            if ct.contains("text/html") || ct.contains("json") || ct.contains("javascript") {
+                let upstream_esc = upstream.replace('/', "\\/");
+                let mount_esc = mount.replace('/', "\\/");
+                let mut s = String::from_utf8_lossy(&r.body).into_owned();
+                s = s.replace(&format!("{upstream}/wp-content/"), "/wp-content/");
+                s = s.replace(&format!("{upstream}/wp-includes/"), "/wp-includes/");
+                s = s.replace(&format!("{upstream_esc}\\/wp-content\\/"), "\\/wp-content\\/");
+                s = s.replace(&format!("{upstream_esc}\\/wp-includes\\/"), "\\/wp-includes\\/");
+                s = s.replace(&upstream, &mount).replace(&upstream_esc, &mount_esc);
+                s = s.replace("\"/wp-admin/", &format!("\"{mount}/wp-admin/"));
+                s = s.replace("'/wp-admin/", &format!("'{mount}/wp-admin/"));
+                s = s.replace("\\/wp-admin\\/", &format!("{mount_esc}\\/wp-admin\\/"));
+                s = s.replace("\"/wp-json/", &format!("\"{mount}/wp-json/"));
+                s = s.replace("'/wp-json/", &format!("'{mount}/wp-json/"));
+                s = s.replace("\\/wp-json\\/", &format!("{mount_esc}\\/wp-json\\/"));
+                // `/wp-admin/` also matches inside `{mount}/wp-admin/` →
+                // doubled path. Only collapse when the double is a rewrite
+                // artifact — followed by `/wp-`, a query/quote, or EOS —
+                // never two legit adjacent mount URLs.
+                let twice = format!("{mount}{mount}");
+                let mut out = String::with_capacity(s.len());
+                let mut rest_s = s.as_str();
+                while let Some(i) = rest_s.find(&twice) {
+                    out.push_str(&rest_s[..i]);
+                    let after = &rest_s[i + twice.len()..];
+                    if after.is_empty()
+                        || after.starts_with("/wp-")
+                        || after.starts_with(['?', '&', '"', '\'', ')', ']', '\\'])
+                    {
+                        out.push_str(&mount);
+                    } else {
+                        out.push_str(&twice);
+                    }
+                    rest_s = after;
+                }
+                out.push_str(rest_s);
+                let s_tmp = out;
+                let twice_esc = format!("{mount_esc}{mount_esc}");
+                let mut out = String::with_capacity(s_tmp.len());
+                let mut rest_s = s_tmp.as_str();
+                while let Some(i) = rest_s.find(&twice_esc) {
+                    out.push_str(&rest_s[..i]);
+                    let after = &rest_s[i + twice_esc.len()..];
+                    if after.is_empty()
+                        || after.starts_with("\\\\/wp-")
+                        || after.starts_with(['?', '&', '"', '\'', ')', ']'])
+                    {
+                        out.push_str(&mount_esc);
+                    } else {
+                        out.push_str(&twice_esc);
+                    }
+                    rest_s = after;
+                }
+                out.push_str(rest_s);
+                out.into_bytes()
+            } else {
+                r.body
+            }
         };
         Ok::<_, anyhow::Error>(b.body(Body::from(body)).unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()))
     })

@@ -66,9 +66,11 @@ pub(crate) fn php_bin() -> Option<PathBuf> {
     None
 }
 
-/// Materialize `src` → `dst`: hardlinks for regular files (shared inode
-/// with `templates/wp-core` — zero copy cost per spawn, WP never rewrites
-/// core files), dirs created. Falls back to copy across filesystems.
+/// Materialize `src` → `dst`: plain copies for regular files. Hard links
+/// were tried for zero-copy spawn, but every docroot file shared an inode
+/// with `templates/wp-core` — anything truncating a docroot file (a stray
+/// MU write, an editor save, a zero-fill on crash) silently zeroed the
+/// vendored source. Copies cost ~40MB per spawn; correctness wins.
 fn cp_r(src: &Path, dst: &Path) -> Result<()> {
     std::fs::create_dir_all(dst)?;
     for e in std::fs::read_dir(src)?.flatten() {
@@ -77,22 +79,29 @@ fn cp_r(src: &Path, dst: &Path) -> Result<()> {
         if ft.is_dir() {
             cp_r(&s, &d)?;
         } else if ft.is_file() {
-            if std::fs::hard_link(&s, &d).is_err() {
-                std::fs::copy(&s, &d)?;
-            }
+            std::fs::copy(&s, &d)?;
         }
     }
     Ok(())
 }
 
 fn symlink_dir(src: &Path, dst: &Path) -> Result<()> {
+    // Idempotent: a previous half-built docroot (or a racing second
+    // request while the entry mutex hands off) can leave dst in place —
+    // drop it rather than fail the whole spawn with EEXIST.
+    match std::fs::symlink_metadata(dst) {
+        Ok(m) if m.is_dir() && !m.file_type().is_symlink() => {
+            std::fs::remove_dir_all(dst).ok();
+        }
+        Ok(_) => {
+            std::fs::remove_file(dst).ok();
+        }
+        Err(_) => {}
+    }
     #[cfg(unix)]
     std::os::unix::fs::symlink(src, dst)?;
     Ok(())
 }
-
-/// Rendered `wp-config.php` — constants the playground passes via
-/// `--define`/consts.json plus sqlite + URL wiring.
 fn wp_config(token: &str, plugin_file: &str, theme: Option<&str>, plugins_json: Option<&str>, port: u16, db_dir: &Path, secret: &str) -> String {
     let theme = theme.map(|t| format!("define('RPRESS_BRIDGE_THEME', {});", php_str(t))).unwrap_or_default();
     let plugins = plugins_json.map(|p| format!("define('RPRESS_BRIDGE_PLUGINS', {});", php_str(p))).unwrap_or_default();
@@ -125,6 +134,7 @@ define('WP_DEBUG_LOG', true);
 define('WP_DEBUG_DISPLAY', false);
 define('AUTOMATIC_UPDATER_DISABLED', true);
 define('DISALLOW_FILE_MODS', true);
+define('FS_METHOD', 'direct');
 define('CONCATENATE_SCRIPTS', false);
 define('WP_ENVIRONMENT_TYPE', 'local');
 define('WP_SQLITE_AST_DRIVER', true);
@@ -356,9 +366,14 @@ pub(crate) fn spawn(
     templates: &Path,
 ) -> Result<BridgeState> {
     let _t0 = Instant::now();
+    // Canonicalize: sandbox profile rules and `php -S -t` both resolve
+    // against the child's cwd — relative `--www`/`--templates` silently
+    // deny the docroot or spawn a dead docroot.
+    let www = &std::fs::canonicalize(www).unwrap_or_else(|_| www.to_path_buf());
+    let rpress_db = &std::fs::canonicalize(rpress_db).unwrap_or_else(|_| rpress_db.to_path_buf());
+    let templates = &std::fs::canonicalize(templates).unwrap_or_else(|_| templates.to_path_buf());
     let php = php_bin().ok_or_else(|| anyhow::anyhow!("php not on PATH — install php-cli or keep RuntimeKind::Playground"))?;
     let wp_core = templates.join("wp-core");
-    anyhow::ensure!(wp_core.join("wp-load.php").is_file(), "templates/wp-core missing — vendor WP core first");
 
     let dir = www.join("bridge").join(slug);
     // Per-site+slug nonce secret persisted OUTSIDE <slug> — the dir below
@@ -396,7 +411,9 @@ pub(crate) fn spawn(
             symlink_dir(&s, &d)?;
         } else if e.file_type()?.is_dir() {
             cp_r(&s, &d)?;
-        } else if std::fs::hard_link(&s, &d).is_err() {
+        } else {
+            // Copy — never hard link: see cp_r; a shared inode lets docroot
+            // writes truncate the vendored template.
             std::fs::copy(&s, &d)?;
         }
     }
@@ -486,8 +503,14 @@ pub(crate) fn spawn(
     let wp_db = db_dir.clone();
 
     if let Some(id) = post_id {
-        project_post(rpress_db, &wp_content, id)?;
+        // Seed goes into the DOCROOT's wp-content — never `www/wp-content`
+        // (the site static server exposes that tree verbatim; a seed
+        // there would leak draft content + builder meta unauthenticated).
+        let _ = project_post(rpress_db, &content, id)?;
     }
+    // Housekeeping: older builds wrote the seed into the PUBLIC
+    // wp-content tree — remove any leftover so it stops being served.
+    let _ = std::fs::remove_dir_all(www.join("wp-content/rpress-seed"));
 
     let token = format!("{:x}", rand::random::<u128>());
     std::fs::write(dir.join("bridge-token"), &token)?;
@@ -533,11 +556,17 @@ pub(crate) fn spawn(
     let cfg = wp_config(&token, plugin_file, theme.as_deref(), plugins_json.as_deref(), port, &db_dir, &secret)
         .replace("{DOCROOT}", &docroot.display().to_string());
     std::fs::write(docroot.join("wp-config.php"), cfg)?;
+    // Identity probe must be a real .php file: php -S does not run
+    // extensionless `/__rpress_ident` through WP (empty reply → spawn fail).
+    // Token compared here so a stolen port still 403s. GDLR uses the same probe.
+    std::fs::write(
+        docroot.join("__rpress_ident.php"),
+        format!(
+            "<?php\n$tok={tok};\n$got=$_SERVER['HTTP_X_RPRESS_BRIDGE']??'';\nif($tok===''||!hash_equals($tok,$got)){{http_response_code(403);exit;}}\nheader('X-Rpress-Ident: bridge');\nhttp_response_code(204);\n",
+            tok = php_str(&token),
+        ),
+    )?;
 
-    // Hot-path tuning: `php -S` reloads every PHP file per request — OPcache
-    // + JIT cut WP boot from ~1.1s to ~300ms on a single worker. Memory-only
-    // cache — wp-config carries a per-spawn token, and a shared file_cache
-    // would serve stale constants across respawns.
     let php_args = [
         "-d".to_string(), "opcache.enable_cli=1".to_string(),
         "-d".to_string(), "opcache.jit=tracing".to_string(),
@@ -545,11 +574,6 @@ pub(crate) fn spawn(
         "-d".to_string(), "opcache.validate_timestamps=0".to_string(),
         "-d".to_string(), "realpath_cache_size=2M".to_string(),
         "-d".to_string(), "realpath_cache_ttl=600".to_string(),
-        // FATAL/parse errors land in php.log (stderr above); keep them off
-        // the wire too — a PHP warning mid-response corrupts ajax JSON.
-        // error_log lives under {db} (sandbox write allowlist): pointing it
-        // at bridge/<slug>/php.log is denied by file-write* — the ini
-        // writer opens its own fd, the inherited stderr fd doesn't help.
         "-d".to_string(), format!("error_log={}", db_dir.join("php-errors.log").display()),
         "-d".to_string(), "display_errors=0".to_string(),
         "-S".to_string(), format!("127.0.0.1:{port}"), "-t".to_string(), docroot.display().to_string(),
@@ -604,103 +628,101 @@ pub(crate) fn spawn(
     let fqdb = php_str(&format!("{}/wp.db", db_dir.display()));
     let token_php = php_str(&token); // quoted PHP literal for the install snippet — the header token stays raw
     let install_php = format!(
-        "define('DB_ENGINE','sqlite'); define('FQDB',{fqdb}); \
-         define('DB_NAME','wordpress'); define('DB_USER',''); define('DB_PASSWORD',''); define('DB_HOST','localhost'); \
-         define('DB_CHARSET','utf8'); define('DB_COLLATE',''); \
-         define('WP_HOME','http://127.0.0.1:{port}'); define('WP_SITEURL','http://127.0.0.1:{port}'); \
-         define('WP_CONTENT_DIR',{docroot} . '/wp-content'); \
-         define('WP_CONTENT_URL','http://127.0.0.1:{port}/wp-content'); \
-         define('WP_PLUGIN_DIR',WP_CONTENT_DIR.'/plugins'); define('WP_PLUGIN_URL','http://x'); \
-         define('WPMU_PLUGIN_DIR',WP_CONTENT_DIR.'/mu-plugins'); define('WPMU_PLUGIN_URL','x'); \
-         define('UPLOADS','wp-content/uploads'); \
-         define('RPRESS_BRIDGE_TOKEN',{token_php}); define('RPRESS_BRIDGE_PLUGIN',{plugin}); \
-         define('RPRESS_BRIDGE_THEME',{theme}); \
-         define('WP_INSTALLING',true); \
-         $table_prefix='wp_'; \
-         $_SERVER['HTTP_X_RPRESS_BRIDGE']={token_php}; \
-         define('ABSPATH',{docroot} . '/'); \
-         require ABSPATH.'wp-settings.php'; \
-         if (get_option('siteurl') !== WP_HOME || get_option('blogname') === '') {{ \
-             require_once ABSPATH.'wp-admin/includes/upgrade.php'; \
-             wp_install('rpress bridge','admin','admin@bridge.local',false,'',RPRESS_BRIDGE_TOKEN); \
-         }} \
-         /* Seed HERE, not on the first admin request: activation hooks + the \
-            post insert used to run inside the first admin-ajax call and made \
-            it die (400/redirect) — the editor's first element click after a \
-            spawn or idle-reap showed \"An error occurs\". */ \
-         require_once ABSPATH.'wp-admin/includes/plugin.php'; \
-         if (RPRESS_BRIDGE_PLUGIN !== '' && file_exists(WP_PLUGIN_DIR . '/' . RPRESS_BRIDGE_PLUGIN)) {{ \
-             activate_plugin(RPRESS_BRIDGE_PLUGIN); \
-         }} \
-         if (defined('RPRESS_BRIDGE_PLUGINS')) {{ \
-             foreach ((array) json_decode(RPRESS_BRIDGE_PLUGINS, true) as $rpress_p2) {{ \
-                 if (is_string($rpress_p2) && $rpress_p2 !== RPRESS_BRIDGE_PLUGIN && file_exists(WP_PLUGIN_DIR . '/' . $rpress_p2)) {{ \
-                     activate_plugin($rpress_p2); \
-                 }} \
-             }} \
-         }} \
-         $rpress_theme = defined('RPRESS_BRIDGE_THEME') ? RPRESS_BRIDGE_THEME : ''; \
-         if ($rpress_theme !== '' && get_option('stylesheet') !== $rpress_theme) {{ \
-             switch_theme($rpress_theme); \
-         }} \
-         $rpress_seed = WP_CONTENT_DIR . '/rpress-seed/post.json'; \
-         if (file_exists($rpress_seed) && !get_option('rpress_post_seeded')) {{ \
-             $rpress_j = json_decode(file_get_contents($rpress_seed), true); \
-             $rpress_p = is_array($rpress_j) ? ($rpress_j['post'] ?? null) : null; \
-             if (is_array($rpress_p) && (empty($rpress_p['ID']) || !get_post((int) $rpress_p['ID']))) {{ \
-                 $rpress_pid = wp_insert_post([ \
-                     'import_id'    => isset($rpress_p['ID']) ? (int) $rpress_p['ID'] : 0, \
-                     'post_title'   => $rpress_p['post_title'] ?? '', \
-                     'post_content' => $rpress_p['post_content'] ?? '', \
-                     'post_excerpt' => $rpress_p['post_excerpt'] ?? '', \
-                     'post_status'  => $rpress_p['post_status'] ?? 'draft', \
-                     'post_name'    => $rpress_p['post_name'] ?? '', \
-                     'post_type'    => $rpress_p['post_type'] ?? 'page', \
-                 ], true); \
-                 if (!is_wp_error($rpress_pid)) {{ \
-                     update_option('rpress_post_seeded', $rpress_pid, false); \
-                     if (!empty($rpress_j['meta']) && is_array($rpress_j['meta'])) {{ \
-                         foreach ($rpress_j['meta'] as $rpress_mk => $rpress_mv) {{ \
-                             update_post_meta($rpress_pid, $rpress_mk, $rpress_mv); \
-                         }} \
-                     }} \
-                 }} \
-             }} \
-         update_option('rpress_seed_done', 1, false); \
-         }}",
-        docroot = php_str(&docroot.display().to_string()),
+        "<?php\n\
+         define('DB_ENGINE','sqlite'); define('FQDB',{fqdb});\n\
+         define('DB_NAME','wordpress'); define('DB_USER',''); define('DB_PASSWORD',''); define('DB_HOST','localhost');\n\
+         define('DB_CHARSET','utf8'); define('DB_COLLATE','');\n\
+         define('WP_HOME','http://127.0.0.1:{port}'); define('WP_SITEURL','http://127.0.0.1:{port}');\n\
+         define('ABSPATH', __DIR__ . '/');\n\
+         define('WP_CONTENT_DIR', __DIR__ . '/wp-content');\n\
+         define('WP_CONTENT_URL','http://127.0.0.1:{port}/wp-content');\n\
+         define('WP_PLUGIN_DIR',WP_CONTENT_DIR.'/plugins'); define('WP_PLUGIN_URL','http://x');\n\
+         define('WPMU_PLUGIN_DIR',WP_CONTENT_DIR.'/mu-plugins'); define('WPMU_PLUGIN_URL','x');\n\
+         define('UPLOADS','wp-content/uploads');\n\
+         define('RPRESS_BRIDGE_TOKEN',{token_php}); define('RPRESS_BRIDGE_PLUGIN',{plugin});\n\
+         define('RPRESS_BRIDGE_THEME',{theme});\n\
+         define('WP_INSTALLING',true);\n\
+         $table_prefix='wp_';\n\
+         $_SERVER['HTTP_HOST']='127.0.0.1';\n\
+         $_SERVER['REQUEST_URI']='/';\n\
+         $_SERVER['REQUEST_METHOD']='GET';\n\
+         $_SERVER['HTTP_X_RPRESS_BRIDGE']={token_php};\n\
+         require ABSPATH . 'wp-settings.php';\n\
+         if (get_option('siteurl') !== WP_HOME || get_option('blogname') === '') {{\n\
+             require_once ABSPATH . 'wp-admin/includes/upgrade.php';\n\
+             wp_install('rpress bridge','admin','admin@bridge.local',false,'',RPRESS_BRIDGE_TOKEN);\n\
+         }}\n\
+         require_once ABSPATH . 'wp-admin/includes/plugin.php';\n\
+         if (RPRESS_BRIDGE_PLUGIN !== '' && file_exists(WP_PLUGIN_DIR . '/' . RPRESS_BRIDGE_PLUGIN)) {{\n\
+             activate_plugin(RPRESS_BRIDGE_PLUGIN);\n\
+         }}\n\
+         if (defined('RPRESS_BRIDGE_PLUGINS')) {{\n\
+             foreach ((array) json_decode(RPRESS_BRIDGE_PLUGINS, true) as $rpress_p2) {{\n\
+                 if (is_string($rpress_p2) && $rpress_p2 !== RPRESS_BRIDGE_PLUGIN && file_exists(WP_PLUGIN_DIR . '/' . $rpress_p2)) {{\n\
+                     activate_plugin($rpress_p2);\n\
+                 }}\n\
+             }}\n\
+         }}\n\
+         $rpress_theme = defined('RPRESS_BRIDGE_THEME') ? RPRESS_BRIDGE_THEME : '';\n\
+         if ($rpress_theme !== '' && get_option('stylesheet') !== $rpress_theme) {{\n\
+             switch_theme($rpress_theme);\n\
+         }}\n\
+         $rpress_seed = WP_CONTENT_DIR . '/rpress-seed/post.json';\n\
+         if (file_exists($rpress_seed) && !get_option('rpress_post_seeded')) {{\n\
+             $rpress_j = json_decode(file_get_contents($rpress_seed), true);\n\
+             $rpress_p = is_array($rpress_j) ? ($rpress_j['post'] ?? null) : null;\n\
+             if (is_array($rpress_p) && (empty($rpress_p['ID']) || !get_post((int) $rpress_p['ID']))) {{\n\
+                 $rpress_pid = wp_insert_post([\n\
+                     'import_id'    => isset($rpress_p['ID']) ? (int) $rpress_p['ID'] : 0,\n\
+                     'post_title'   => $rpress_p['post_title'] ?? '',\n\
+                     'post_content' => $rpress_p['post_content'] ?? '',\n\
+                     'post_excerpt' => $rpress_p['post_excerpt'] ?? '',\n\
+                     'post_status'  => $rpress_p['post_status'] ?? 'draft',\n\
+                     'post_name'    => $rpress_p['post_name'] ?? '',\n\
+                     'post_type'    => $rpress_p['post_type'] ?? 'page',\n\
+                 ], true);\n\
+                 if (!is_wp_error($rpress_pid)) {{\n\
+                     update_option('rpress_post_seeded', $rpress_pid, false);\n\
+                     if (!empty($rpress_j['meta']) && is_array($rpress_j['meta'])) {{\n\
+                         foreach ($rpress_j['meta'] as $rpress_mk => $rpress_mv) {{\n\
+                             update_post_meta($rpress_pid, $rpress_mk, $rpress_mv);\n\
+                         }}\n\
+                     }}\n\
+                 }}\n\
+             }}\n\
+             update_option('rpress_seed_done', 1, false);\n\
+         }}\n",
         theme = php_str(theme.as_deref().unwrap_or("")),
         plugin = php_str(plugin_file),
     );
-    // Skeleton wp.db: run the install once ever, cache the result OUTSIDE
-    // the per-spawn dir (`.skel-<slug>.db` survives the wipe) and copy it
-    // on later spawns — `wp_install()` cost ~2.4s, the copy is ~10ms.
-    // Port-bearing options (siteurl/home) are overridden by the WP_HOME
-    // constants in wp-config, so a stale port inside the skeleton is
-    // harmless; rpress_post_seeded is reset per-spawn so the CURRENT
-    // post_id re-seeds even when the skeleton carries an older post.
+    let install_path = docroot.join("rpress-install.php");
+    std::fs::write(&install_path, &install_php)?;
+    // Skeleton wp.db: run the install once ever, cache outside <slug>
+    // (spawn wipes that dir). Seed ALWAYS runs via rpress-install.php so a
+    // skel copy still inserts the current post_id.
     let skel = www.join("bridge").join(format!(".skel-{slug}.db"));
     if skel.is_file() {
         std::fs::copy(&skel, db_dir.join("wp.db")).context("copy wp.db skeleton")?;
         if let Ok(c) = crate::db::conn(&db_dir.join("wp.db")) {
             let _ = c.execute(sql!("bridge_php_cgi__delete_seed_options"), []);
         }
-    } else {
-        let install_args = [
-            "-d".to_string(), "opcache.enable_cli=1".to_string(),
-            "-d".to_string(), "opcache.jit=tracing".to_string(),
-            "-d".to_string(), "opcache.jit_buffer_size=32M".to_string(),
-            "-d".to_string(), "opcache.validate_timestamps=0".to_string(),
-            "-d".to_string(), "realpath_cache_size=2M".to_string(),
-            "-d".to_string(), "realpath_cache_ttl=600".to_string(),
-            "-r".to_string(), install_php,
-        ];
-        match sandboxed(&php, &docroot, www, templates, &db_dir) {
-            Some(mut c) => { let o = c.args(&install_args).output().context("WP install")?; anyhow::ensure!(o.status.success(), "WP install exit {}", o.status); }
-            // Only reachable under RPRESS_BRIDGE_UNSAFE=1 (spawn above refuses
-            // otherwise) — same bare-php allowance, already warned about.
-            None => { let o = Command::new(&php).args(&install_args).output().context("WP install")?; anyhow::ensure!(o.status.success(), "WP install exit {}", o.status); }
+    }
+    let install_args = [
+        "-d".to_string(), "opcache.enable_cli=1".to_string(),
+        "-d".to_string(), "display_errors=1".to_string(),
+        install_path.display().to_string(),
+    ];
+    match sandboxed(&php, &docroot, www, templates, &db_dir) {
+        Some(mut c) => {
+            let o = c.current_dir(&docroot).args(&install_args).output().context("WP install")?;
+            anyhow::ensure!(o.status.success(), "WP install exit {} stderr {}", o.status, String::from_utf8_lossy(&o.stderr));
         }
+        None => {
+            let o = Command::new(&php).current_dir(&docroot).args(&install_args).output().context("WP install")?;
+            anyhow::ensure!(o.status.success(), "WP install exit {} stderr {}", o.status, String::from_utf8_lossy(&o.stderr));
+        }
+    }
+    if !skel.is_file() {
         let _ = std::fs::copy(db_dir.join("wp.db"), &skel);
     }
 
@@ -729,5 +751,6 @@ pub(crate) fn spawn(
         token,
         wp_db,
         pidfile,
+        seeded_post: post_id,
     })
 }

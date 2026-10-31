@@ -19,21 +19,9 @@ pub(crate) fn request(
     headers: &[(String, String)],
     body: &[u8],
 ) -> Result<BridgeResponse> {
-    // Request-line hygiene: `path` arrives percent-decoded from axum — a
-    // caller-supplied CRLF would inject headers, `..` escapes the php -S
-    // docroot, `?`/`#`/`:`/`//` smuggle query/absolute-URI shapes the proxy
-    // never legitimately emits. Reject at the transport chokepoint so every
-    // caller is covered.
-    anyhow::ensure!(
-        !path.bytes().any(|b| b < 0x20 || b == b' ' || b == 0x7f)
-            && !path.split('/').any(|s| s == "..")
-            && !path.contains('?')
-            && !path.contains('#')
-            && !path.contains(':')
-            && !path.contains('\\')
-            && !path.starts_with("//"),
-        "bridge path rejected: {path:?}"
-    );
+    // Path stays query-free (CRLF/`..`/`:`/`//` smuggle). Query is optional
+    // and charset-limited — Elementor canvas is `post.php?post=&action=`.
+    check_bridge_target(path)?;
     let mut s = TcpStream::connect(("127.0.0.1", port))
         .with_context(|| format!("bridge connect 127.0.0.1:{port}"))?;
     s.set_read_timeout(Some(Duration::from_secs(120)))?;
@@ -123,7 +111,70 @@ fn dechunk(mut b: &[u8]) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-/// Probe endpoint — GET `/` with a tiny timeout.
+/// Path (no `?`) + optional query. Query charset allows the printable
+/// unreserved+reserved set (`%` `/` `+` `,` `:` `?` `;` `'` `(` `)` `*` `!` `~`)
+/// — Elementor REST uses `index.php?rest_route=/elementor/v1/...`; encoded
+/// bytes like `%0d` stay inside QUERY_STRING (php -S splits on the first
+/// literal `?`), so the real smuggle surface stays the banned raw
+/// ctl/space/`#`/`\\`.
+fn check_bridge_target(path: &str) -> Result<()> {
+    let (p, q) = match path.split_once('?') {
+        Some((p, q)) => (p, Some(q)),
+        None => (path, None),
+    };
+    anyhow::ensure!(
+        !p.bytes().any(|b| b < 0x20 || b == b' ' || b == 0x7f)
+            && !p.split('/').any(|s| s == "..")
+            && !p.contains('#')
+            && !p.contains(':')
+            && !p.contains('\\')
+            && !p.contains('?')
+            && !p.starts_with("//"),
+        "bridge path rejected: {path:?}"
+    );
+    if let Some(q) = q {
+        anyhow::ensure!(
+            !q.is_empty()
+                && !q.bytes().any(|b| b < 0x20 || b == b' ' || b == 0x7f)
+                && !q.contains('#')
+                && !q.contains('\\')
+                && q.bytes().all(|b| {
+                    matches!(
+                        b,
+                        b'A'..=b'Z'
+                            | b'a'..=b'z'
+                            | b'0'..=b'9'
+                            | b'_'
+                            | b'-'
+                            | b'='
+                            | b'&'
+                            | b'.'
+                            | b'%'
+                            | b'/'
+                            | b'+'
+                            | b','
+                            | b':'
+                            | b'?'
+                            | b';'
+                            | b'\''
+                            | b'('
+                            | b')'
+                            | b'*'
+                            | b'!'
+                            | b'~'
+                            | b'|'
+                            | b'['
+                            | b']'
+                            | b'@'
+                            | b'$'
+                    )
+                }),
+            "bridge query rejected: {path:?}"
+        );
+    }
+    Ok(())
+}
+
 pub(crate) fn probe(port: u16) -> bool {
     TcpStream::connect(("127.0.0.1", port))
         .map(|mut s| {
@@ -146,7 +197,7 @@ pub(crate) fn probe_identity(port: u16, token: &str) -> bool {
             let _ = s.set_read_timeout(Some(Duration::from_secs(2)));
             let _ = s.set_write_timeout(Some(Duration::from_secs(2)));
             let req = format!(
-                "GET /__rpress_ident HTTP/1.1\r\nHost: x\r\nConnection: close\r\nX-Rpress-Bridge: {token}\r\n\r\n"
+                "GET /__rpress_ident.php HTTP/1.1\r\nHost: x\r\nConnection: close\r\nX-Rpress-Bridge: {token}\r\n\r\n"
             );
             let _ = s.write_all(req.as_bytes());
             let mut buf = [0u8; 512];
@@ -177,5 +228,25 @@ mod tests {
         assert_eq!(r.status, 200);
         assert_eq!(r.body, b"hello");
         assert!(r.headers.iter().any(|(k, _)| k == "X-A"));
+    }
+
+    #[test]
+    fn check_bridge_target_accepts_elementor_query() {
+        check_bridge_target("/wp-admin/post.php?post=20&action=elementor").unwrap();
+        check_bridge_target("/wp-admin/admin-ajax.php").unwrap();
+        // Elementor REST: rest_route carries a literal slash path.
+        check_bridge_target("/?rest_route=/elementor/v1/documents/27&context=edit").unwrap();
+    }
+
+    #[test]
+    fn check_bridge_target_rejects_smuggle() {
+        assert!(check_bridge_target("/wp-admin/../etc/passwd").is_err());
+        // Raw CRLF in the request line is the smuggle vector; %0d%0a in
+        // QUERY_STRING is encoded data php -S never re-parses.
+        assert!(check_bridge_target("/wp-admin/post.php?post=1\r\nHost:x").is_err());
+        assert!(check_bridge_target("/wp-admin/post.php#x").is_err());
+        assert!(check_bridge_target("/wp-admin/post.php?x=a b").is_err());
+        assert!(check_bridge_target("/wp-admin/post.php?x=a\\b").is_err());
+        assert!(check_bridge_target("/wp-admin/post.php?x=a#b").is_err());
     }
 }

@@ -245,6 +245,7 @@ PY
 
 serve() {
   echo "admin http://${BIND}/admin"
+  export PLUGINS_PHP="${PLUGINS_PHP:-}"
   exec "$BIN" serve --bind "$BIND" --db "$DB" --templates "$TEMPLATES" \
     --out "$CACHE" --www "$WWW" --host "$HOST" --site "$SITE" \
     --name "$NAME" --tour-base "$TOUR_BASE"

@@ -577,6 +577,11 @@ fn read_out(sc: &SiteCtx, rel: &str) -> Option<Vec<u8>> {
     // `out` = disposable HTML cache. Persistent dirs (user uploads, vendored
     // plugin/theme assets, shared front assets) live under `www` — never
     // inside the cache.
+    // `rpress-seed` is bridge plumbing (draft post + builder meta) — never
+    // public even though it sits under the wp-content prefix.
+    if rel.starts_with("wp-content/rpress-seed") {
+        return None;
+    }
     let base = if rel.starts_with("wp-content/")
         || rel.starts_with("wp-includes/")
         || matches!(rel, "front.css" | "nav.js" | "llms.txt")

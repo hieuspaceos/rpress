@@ -269,7 +269,10 @@ registered in `settings.languages`, `ThemeDef::tax_lang`, or the blob.
   denies on `~/.ssh`, `rpress.db`, outbound HTTP). ~88MB RSS vs ~1.2GB for
   `@wp-playground/cli`; warm request ~100ms, cold respawn ~2.6s.
   Projection rule: `wp-includes` is symlinked (only required via the
-  ABSPATH string); `wp-admin` stays a REAL dir of hardlinked files —
+  ABSPATH string); `wp-admin` and the root `wp-*.php` files are COPIED —
+  hard links were tried for zero-copy spawn but every docroot file shared
+  an inode with `templates/wp-core`, so any truncation inside the docroot
+  silently zeroed the vendored source (observed: 583 files zeroed).
   PHP resolves `__FILE__` through symlinks, so a symlinked wp-admin
   re-anchors ABSPATH into `templates/wp-core`, hides wp-config.php and
   redirects everything to setup-config.php. `wp.db` comes from a
@@ -281,6 +284,21 @@ registered in `settings.languages`, `ThemeDef::tax_lang`, or the blob.
   is disposable per spawn; whitelisted writes pull back to `rpress.db`.
   On hosts without `php`, `bridge_for` falls back to
   `RuntimeKind::Playground` automatically.
+
+- **Post context is seeded per-request, not per-spawn.** The mu-plugin
+  consumes `wp-content/rpress-seed/post.json` once (flag
+  `rpress_post_seeded`), inserting the post with its rpress ID via
+  `import_id` so `?post=<id>` resolves. On a live bridge,
+  `bridge::reseed_post` rewrites the seed and clears the flag — no
+  respawn. The seed file lives ONLY in the bridge-owned docroot
+  (`www/bridge/<slug>/docroot/wp-content/rpress-seed/`): writing it under
+  `www/wp-content/` would leak draft content through the public static
+  server, which `serve.rs::read_out` also denies outright. `post_id`
+  itself is only accepted from `post=`/`p=` query args or an
+  `edit|post/<id>` path tail — numeric asset paths never reseed.
+  Elementor's row action "Edit with Elementor" on the posts list is
+  gated by `opt_in(PLUGINS_PHP)` AND at least one `_elementor_data`
+  post_meta row — sites the detector never saw Elementor on don't show it.
 - **Bridged wp-admin POSTs rely on `SameSite=Lax`, not the rpress CSRF token.**
   `/admin/plugins/<slug>/*` enforces `check_csrf` on adapter `ScreenDef`
   posts (accepts `csrf` or `security` — tourmaster JS names the field
@@ -299,6 +317,23 @@ registered in `settings.languages`, `ThemeDef::tax_lang`, or the blob.
   http://127.0.0.1:<port>/X` → `/admin/plugins/<slug>/X`, and text/html
   bodies get the same replacement for both plain and JSON-escaped
   (`\/`) URL shapes — WP emits WP_HOME absolute URLs everywhere.
+  Text/html|json|javascript bodies additionally rewrite root-relative
+  `"/wp-admin/` and `"/wp-json/` (both quoting styles + `\/`-escaped) to
+  the mount — Elementor's `ajaxurl`/`rest_route` is emitted that way.
+  `/wp-admin/` also matches inside an already-rewritten
+  `{mount}/wp-admin/` (doubled path), so a scoped collapse removes
+  `{mount}{mount}` only when followed by `/wp-`, a query/quote char, or
+  end-of-string — two legitimately adjacent mount URLs are left alone.
+  `check_bridge_target` allows the printable unreserved+reserved set in
+  the query (`%`, `/`, `+`, `,`, `:`, `?`, `;`…) — `rest_route=/elementor/v1/…`
+  needs literal slashes — while raw ctl/space/`#`/`\\` stay banned
+  (request-line smuggle surface).
+- **Elementor preview deadlock:** `includes/preview.php` does
+  `jQuery.holdReady(true)` inside the preview iframe and waits for the
+  parent editor to release it via `elementorFrontend.elements.window`.
+  The mu-plugin releases `holdReady(false)` itself on
+  `?elementor-preview` pages — without it the canvas spinner never
+  clears (parent attach can't reach a held iframe).
 - **Bridge egress can't be netns-isolated without root (residual risk).**
   `bwrap --unshare-net` would cut the host→child loopback the proxy needs,
   and slirp4netns/pasta *add* outbound NAT. So the bwrap profile keeps

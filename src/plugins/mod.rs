@@ -34,6 +34,7 @@ pub(crate) mod spec;
 pub(crate) mod theme_traveltour; // gate-allow: adapter module registration is the contract
 pub mod tourmaster; // gate-allow: audit_remediation tests reach save/render helpers
 pub(crate) mod goodlayers;
+pub(crate) mod elementor;
 /// `/admin/plugins` index + shared settings-screen helpers.
 pub(crate) mod index;
 pub(crate) mod chaty;
@@ -431,6 +432,7 @@ static ADAPTERS: &[&'static dyn PluginAdapter] = &[
     &theme_traveltour::ADAPTER, // gate-allow: registry entry
     // tevily: themes/specs/tevily.toml — TOML spec, no Rust adapter.
     &goodlayers::ADAPTER,
+    &elementor::ADAPTER,
     &presto_player::ADAPTER,
     &readmore::ADAPTER,
     &chaty::ADAPTER,

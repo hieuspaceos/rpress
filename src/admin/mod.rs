@@ -353,6 +353,8 @@ pub async fn serve(db: PathBuf, templates: PathBuf, out: PathBuf, www: PathBuf, 
         .route("/admin/media/delete", post(admin::media_delete))
         .route("/admin/media/detach", post(admin::media_detach))
         .route("/admin/plugins", get(plugins::index::index_page))
+        .route("/admin/plugins/{slug}/", get(plugin_dispatch::plugin_screen_root).post(plugin_dispatch::plugin_screen_root))
+        .route("/admin/plugins/{slug}", get(plugin_dispatch::plugin_screen_root).post(plugin_dispatch::plugin_screen_root))
         .route("/admin/plugins/{slug}/{*rest}", get(plugin_dispatch::plugin_screen).post(plugin_dispatch::plugin_screen))
         .route("/admin/api/tour/save-option", post(plugin_dispatch::save_option_shim))
         .route("/admin/media/bulk", post(admin::media_bulk))
