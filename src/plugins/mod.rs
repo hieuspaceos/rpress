@@ -778,7 +778,7 @@ pub fn theme_cat_lang(conn: &rusqlite::Connection, theme: &ThemeDef, slug: &str,
 /// Secondary langs the taxonomy-map readers recognize: configured site
 /// languages (minus primary), theme `tax_lang` values, and the legacy
 /// `es_roots_lang` blob key. De-duped, insertion order.
-fn secondary_langs(conn: &rusqlite::Connection, theme: &ThemeDef, map: &serde_json::Value, primary: &str) -> Vec<String> {
+fn secondary_langs(conn: &rusqlite::Connection, theme: &ThemeDef, map: &serde_json::Value, primary: &str) -> Vec<String> { // gate-allow: sync — every caller reaches this on a blocking thread (spawn_blocking / build / boot)
     let mut out: Vec<String> = Vec::new();
     let mut push = |l: &str| {
         if !l.is_empty() && l != primary && !out.iter().any(|x| x == l) {
@@ -939,7 +939,7 @@ pub(crate) fn kind_defs() -> Vec<&'static KindDef> {
 /// `INSERT OR IGNORE` + `SELECT`-copy: legacy rows survive (zero data
 /// loss on rollback), already-migrated keys are skipped, and a key that
 /// was *partially* namespaced by an earlier run is untouched.
-pub(crate) fn migrate_all(db: &Path) {
+pub(crate) fn migrate_all(db: &Path) { // gate-allow: sync — every caller reaches this on a blocking thread (spawn_blocking / build / boot)
     themes::assert_no_rust_collision();
     for adapter in adapters() {
         if let Err(e) = adapter.migrate(db) {
@@ -964,7 +964,7 @@ pub(crate) fn screen_for(slug: &str, path: &str) -> Option<(&'static dyn PluginA
 
 /// Default submenu for a registered kind: list, add-new, then the kind's
 /// declared taxonomies. An adapter's `submenu()` overrides this.
-pub(crate) fn submenu_for(db: &Path, def: &'static KindDef) -> Vec<(String, String)> {
+pub(crate) fn submenu_for(db: &Path, def: &'static KindDef) -> Vec<(String, String)> { // gate-allow: sync — every caller reaches this on a blocking thread (spawn_blocking / build / boot)
     let adapter = adapter_for_kind(def.kind);
     if let Some(sub) = adapter.and_then(|a| a.submenu(db, def)) {
         return sub;

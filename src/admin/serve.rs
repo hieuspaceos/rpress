@@ -13,6 +13,7 @@ use axum::response::{IntoResponse, Redirect, Response};
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -162,8 +163,20 @@ pub(crate) async fn public_page(State(app): State<App>, headers: HeaderMap, Conn
     }
     // Cache missed — resolve what this URL is allowed to become before
     // paying for a render.
-    let conn = match crate::db::conn(&sc.db) { Ok(c) => c, Err(_) => return not_found(sc).await };
-    let lang_cfg = crate::lang::config(&conn);
+    // lang config is a sync conn open + SELECT — offload like every other
+    // miss-path lookup (audit-261031 C1); conn Err keeps the 404 shape.
+    let db_l = sc.db.clone();
+    let lang_cfg = match tokio::task::spawn_blocking(move || {
+        let conn = crate::db::conn(&db_l).ok()?;
+        Some(crate::lang::config(&conn))
+    })
+    .await
+    .ok()
+    .flatten()
+    {
+        Some(c) => c,
+        None => return not_found(sc).await,
+    };
     // Primary-lang prefix (`/fr/<slug>` on an fr-primary site): duplicate of
     // the canonical URL — 301 before any lookup. Pre-existing `{out}/fr/`
     // alias files are swept at serve() boot, so this is only reached on a
@@ -266,6 +279,64 @@ pub(crate) async fn public_page(State(app): State<App>, headers: HeaderMap, Conn
     // ~140ms of work, too heavy to sit on a tokio worker (H14). Everything
     // the render needs is cloned up front; the cache write-back still runs
     // on the handler task (pure fs).
+    // Single-flight: N concurrent misses on the same path trigger one
+    // render (audit §3 H4). Followers wait on the watch channel then fall
+    // through to the file-cache path — the leader's write-back lands there.
+    // A leader that ended in 404/301/non-publish leaves nothing cached, so
+    // a follower that misses after changed() loops back: it either follows
+    // the next leader or becomes it — never renders unregistered, and its
+    // guard only removes ITS OWN sender (a successor leader is safe).
+    let mut guard_tx = None;
+    loop {
+        let next = {
+            let mut infl = app.inflight_renders.lock();
+            match infl.entry(clean.to_string()) {
+                std::collections::hash_map::Entry::Occupied(e) => Some(e.get().subscribe()),
+                std::collections::hash_map::Entry::Vacant(v) => {
+                    let (tx, _rx) = tokio::sync::watch::channel(None);
+                    v.insert(tx.clone());
+                    guard_tx = Some(tx);
+                    None
+                }
+            }
+        };
+        match next {
+            None => break, // we are the leader
+            Some(mut rx) => {
+                let _ = rx.changed().await;
+                if let Some(b) = read_out_async(sc, format!("{clean}/index.html")).await {
+                    return file_response(&headers, "text/html; charset=utf-8".to_string(), b);
+                }
+                // Leader failed or served a redirect/404 — loop: follow the
+                // next leader if one registered meanwhile, else lead.
+            }
+        }
+    }
+
+    // RAII guard: whatever happens below (early returns included), the
+    // inflight key must not leak or waiters hang forever. Removal is
+    // ownership-checked — only OUR sender is taken out, so a successor
+    // leader's entry survives a stale guard drop.
+    struct InflightGuard {
+        map: Arc<Mutex<HashMap<String, tokio::sync::watch::Sender<Option<()>>>>>,
+        key: String,
+        tx: tokio::sync::watch::Sender<Option<()>>,
+    }
+    impl Drop for InflightGuard {
+        fn drop(&mut self) {
+            let mut m = self.map.lock();
+            if m.get(&self.key).map(|t| t.same_channel(&self.tx)).unwrap_or(false) {
+                m.remove(&self.key);
+            }
+            drop(m);
+            let _ = self.tx.send(Some(()));
+        }
+    }
+    let _inflight_guard = InflightGuard {
+        map: app.inflight_renders.clone(),
+        key: clean.to_string(),
+        tx: guard_tx.expect("leader always holds a sender"),
+    };
     let rendered = {
         let (db, tpl, lookup_s, lang_c, kind_c, base_c, tb_c) = (
             sc.db.clone(),
@@ -335,7 +406,7 @@ fn moved_permanently(target: &str) -> Response {
 /// → the kind owning that base, else post/page. Mirrors the normalization
 /// in `public_page`. Returns (post id, markdown) — the id feeds the
 /// canonical-rel gate.
-fn md_for_slug(sc: &SiteCtx, clean: &str) -> Option<(i64, String)> {
+fn md_for_slug(sc: &SiteCtx, clean: &str) -> Option<(i64, String)> { // gate-allow: blocking by contract — only called inside spawn_blocking (public_page .md miss)
     let conn = crate::db::conn(&sc.db).ok()?;
     let cfg = crate::lang::config(&conn);
     let (lang, rest) = crate::lang::split_path(&cfg, clean);
@@ -736,7 +807,7 @@ const PUBLISH_DUE_GAP: Duration = Duration::from_secs(30);
 /// a site with no admin traffic never published): the UPDATE is a no-op
 /// when nothing is due; a flip spawns one background thread that writes
 /// each post's output file via the single-post regen path.
-pub(crate) fn publish_due(sc: &SiteCtx) {
+pub(crate) fn publish_due(sc: &SiteCtx) { // gate-allow: blocking by contract — only called inside the minute-tick spawn_blocking
     // Throttle: the UPDATE is cheap but it still opens a write tx + a
     // status='future' scan. 30s granularity is well inside WP's
     // minute-level schedule semantics.
@@ -765,7 +836,7 @@ pub(crate) fn publish_due(sc: &SiteCtx) {
 ///   - every `{rel}.html` leaf that isn't `index.html`/`404.html` —
 ///     legacy flat write-backs that survive unpublish (regen only removes
 ///     `{slug}/index.html`). Loud, idempotent, cheap once swept.
-pub(crate) fn purge_alias_caches(db: &PathBuf, out: &PathBuf) {
+pub(crate) fn purge_alias_caches(db: &PathBuf, out: &PathBuf) { // gate-allow: blocking by contract — only called inside serve()'s boot spawn_blocking
     let mut removed = 0usize;
     if let Ok(conn) = crate::db::conn(db) {
         let primary = crate::lang::config(&conn).primary;
@@ -917,7 +988,7 @@ pub(crate) async fn uploads(State(app): State<App>, headers: HeaderMap, Path(pat
     let sc = site_for(&app, &headers);
     let root = sc.www.join("wp-content/uploads");
     if let Some(file) = safe_resolve_under(&root, &path) {
-        let (mime, attachment) = crud::served_upload_mime(&path);
+        let (mime, attachment) = crud::served_upload_mime(&path); // gate-allow: pure mime/extension map (db/media.rs) — no DB, no I/O
         let mut r = stream_file(&headers, file, mime).await;
         if attachment {
             let name = path.rsplit('/').next().unwrap_or("download.bin").replace('"', "_");

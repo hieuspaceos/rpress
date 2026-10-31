@@ -24,9 +24,13 @@ fn admin_only(s: &super::Sess) -> Result<(), Response> {
 
 /// GET — list archives + "Backup now" button.
 pub(crate) async fn backup_page(State(app): State<App>, headers: HeaderMap) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else { return Redirect::to("/admin/login").into_response(); };
+    let Ok((s, sc)) = need_auth(&app, &headers).await else { return Redirect::to("/admin/login").into_response(); };
     if let Err(r) = admin_only(&s) { return r; }
-    let dir = backups_dir(sc);
+    // chrome() hits the DB (comments counts, kind probes) — the whole
+    // page render rides a blocking thread (audit-261031 C1).
+    let (s, sc) = (s, sc.clone());
+    tokio::task::spawn_blocking(move || {
+    let dir = backups_dir(&sc);
     let files = crate::backup::list(&dir);
     let mut rows = String::new();
     for (name, size) in &files {
@@ -50,16 +54,23 @@ pub(crate) async fn backup_page(State(app): State<App>, headers: HeaderMap) -> R
         esc(&sc.slug), esc(&sc.slug), esc(&s.csrf)
     );
     html_page(&s, "Backup", &format!("{}<div class=\"wrap\">{}</div>", super::chrome("tools", &s), body), false).into_response()
+    })
+    .await
+    .unwrap_or_else(|e| {
+        eprintln!("backup_page join: {e:#}");
+        StatusCode::INTERNAL_SERVER_ERROR.into_response()
+    })
 }
 
 #[derive(Deserialize)]
 pub(crate) struct CsrfForm {
+    #[serde(default)]
     csrf: String,
 }
 
 /// POST — run the backup on the blocking pool, redirect back.
 pub(crate) async fn backup_run(State(app): State<App>, headers: HeaderMap, Form(f): Form<CsrfForm>) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else { return Redirect::to("/admin/login").into_response(); };
+    let Ok((s, sc)) = need_auth(&app, &headers).await else { return Redirect::to("/admin/login").into_response(); };
     if let Err(r) = check_csrf(&s, &f.csrf) { return r; }
     if let Err(r) = admin_only(&s) { return r; }
     let work = sc.db.parent().unwrap_or_else(|| std::path::Path::new(".")).to_path_buf();
@@ -80,7 +91,7 @@ pub(crate) async fn backup_run(State(app): State<App>, headers: HeaderMap, Form(
 
 /// GET download — basename only (`backup::resolve` guards traversal).
 pub(crate) async fn backup_download(State(app): State<App>, headers: HeaderMap, AxPath(name): AxPath<String>) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else { return Redirect::to("/admin/login").into_response(); };
+    let Ok((s, sc)) = need_auth(&app, &headers).await else { return Redirect::to("/admin/login").into_response(); };
     if let Err(r) = admin_only(&s) { return r; }
     let dir = backups_dir(sc);
     let Ok(path) = crate::backup::resolve(&dir, &name) else { return StatusCode::BAD_REQUEST.into_response() };

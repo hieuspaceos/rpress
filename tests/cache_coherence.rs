@@ -108,7 +108,7 @@ fn save_invalidates_dependents() {
     let doomed = seed_dependents(&out);
     let keep = put(&out, "other/index.html");
 
-    let removed = rpress::generate::invalidate_dependents(&conn, &out, 1, "voyage", &[]);
+    let removed = rpress::generate::invalidate_dependents(&conn, &out, 1, "voyage", &[], "http://127.0.0.1");
     assert!(removed > 0);
     for p in &doomed {
         assert!(!p.exists(), "still serving stale {}", p.display());
@@ -168,7 +168,7 @@ fn term_removal_invalidates_old_archive() {
     let extra = vec![("category".to_string(), "culture-histoire".to_string())];
     rpress::db::quick_update(&db, 1, "T", "my-post", "publish", "fr", &[], &[]).unwrap();
     // Post no longer carries the term (current post_terms wouldn't find it):
-    rpress::generate::invalidate_dependents(&conn, &out, 1, "voyage", &extra);
+    rpress::generate::invalidate_dependents(&conn, &out, 1, "voyage", &extra, "http://127.0.0.1");
     assert!(!old_archive.exists(), "old category archive stayed stale");
     let _ = fs::remove_dir_all(&dir);
 }

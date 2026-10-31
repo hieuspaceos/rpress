@@ -56,12 +56,12 @@ fn holder_wrap(id: &str, title: &str, inside: String) -> String {
     )
 }
 
-fn mark_dirty(db: &std::path::Path) {
+fn mark_dirty(db: &std::path::Path) { // gate-allow: blocking by contract — only called inside spawn_blocking
     let _ = crud::comments::setting_set(db, "widgets_dirty", "1");
 }
 
 /// (id, sidebar_id, type, title, settings_json) for one widget.
-fn widget_row(
+fn widget_row( // gate-allow: blocking by contract — only called inside spawn_blocking
     conn: &Connection,
     id: &str,
 ) -> Option<(String, String, String, String, String)> {
@@ -81,7 +81,7 @@ fn widget_row(
     .ok()
 }
 
-fn sidebar_ids(conn: &Connection) -> Vec<String> {
+fn sidebar_ids(conn: &Connection) -> Vec<String> { // gate-allow: blocking by contract — only called inside spawn_blocking
     let mut v: Vec<String> = Vec::new();
     if let Ok(mut st) = conn.prepare(sql!("widgets__select_sidebar_ids")) {
         if let Ok(rows) = st.query_map([], |r| r.get::<_, String>(0)) {
@@ -99,12 +99,24 @@ pub(crate) async fn widgets_page(
     headers: HeaderMap,
     Query(q): Query<HashMap<String, String>>,
 ) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
     if let Err(code) = require_admin(&s) {
         return code.into_response();
     }
+    // rusqlite is sync — offload conn+queries+render to a blocking thread
+    // (same pattern as dashboard; audit P1).
+    let (s2, sc2) = (s, sc.clone());
+    return tokio::task::spawn_blocking(move || widgets_page_sync(s2, &sc2, &q))
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("widgets_page join: {e:#}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        });
+}
+
+fn widgets_page_sync(s: Sess, sc: &SiteCtx, q: &HashMap<String, String>) -> Response { // gate-allow: blocking by contract — only called inside spawn_blocking
     let Ok(conn) = crate::db::conn(&sc.db) else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
@@ -312,7 +324,7 @@ pub(crate) async fn widgets_page(
 /// click toggles `.open`), `.widget-inside` form area (schema fields +
 /// sidebar select), and a `.widget-control-actions` footer — Remove and
 /// ↑/↓ moves left, primary Save right.
-fn widget_block(
+fn widget_block( // gate-allow: blocking by contract — only called inside spawn_blocking
     w: &(String, String, String, String, String),
     all_sidebars: &[(String, String)],
     taxs: &[String],
@@ -392,7 +404,7 @@ fn widget_block(
 }
 
 /// One schema-driven field row (`f_{key}` posts to the save handler).
-fn field_html(f: &crate::widgets::FieldSpec, settings: &Value, wid: &str, taxs: &[String]) -> String {
+fn field_html(f: &crate::widgets::FieldSpec, settings: &Value, wid: &str, taxs: &[String]) -> String { // gate-allow: blocking by contract — only called inside spawn_blocking
     let key = f.key;
     let name = format!("f_{key}");
     let req = if f.required { " <span class=\"required\">*</span>" } else { "" };
@@ -683,7 +695,7 @@ pub(crate) async fn widgets_add(
     headers: HeaderMap,
     Form(map): Form<HashMap<String, String>>,
 ) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
     if let Err(code) = require_admin(&s) {
@@ -692,29 +704,38 @@ pub(crate) async fn widgets_add(
     if !csrf_ok(&s, &map) {
         return StatusCode::FORBIDDEN.into_response();
     }
-    let Ok(conn) = crate::db::conn(&sc.db) else {
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    };
-    let _ = crate::widgets::ensure(&conn);
-    let typ = map.get("type").cloned().unwrap_or_default();
-    let sidebar = map.get("sidebar").cloned().unwrap_or_default();
-    let title = map.get("title").cloned().unwrap_or_default();
-    let valid_type = crate::widgets::WIDGET_TYPES.iter().any(|(t, _)| *t == typ);
-    if !valid_type || !sidebar_ids(&conn).contains(&sidebar) || sidebar == INACTIVE {
-        return Redirect::to("/admin/widgets?msg=invalid").into_response();
-    }
-    let Ok(id) = crate::widgets::next_instance_id(&conn, &typ) else {
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    };
-    let settings = default_settings(&conn, &typ, &id);
-    let ord = crud::widget_next_ord(&conn, &sidebar);
-    let ok = crud::widget_insert(&conn, &id, &sidebar, &typ, &title, &settings, ord);
-    if ok.is_err() {
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    }
-    mark_dirty(&sc.db);
-    crate::admin::admin::bust_cache(&sc);
-    Redirect::to(&format!("/admin/widgets?msg=added#w-{id}")).into_response()
+    // rusqlite is sync — offload conn + validate + insert to a blocking thread.
+    let sc2 = sc.clone();
+    tokio::task::spawn_blocking(move || {
+        let Ok(conn) = crate::db::conn(&sc2.db) else {
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        };
+        let _ = crate::widgets::ensure(&conn);
+        let typ = map.get("type").cloned().unwrap_or_default();
+        let sidebar = map.get("sidebar").cloned().unwrap_or_default();
+        let title = map.get("title").cloned().unwrap_or_default();
+        let valid_type = crate::widgets::WIDGET_TYPES.iter().any(|(t, _)| *t == typ);
+        if !valid_type || !sidebar_ids(&conn).contains(&sidebar) || sidebar == INACTIVE {
+            return Redirect::to("/admin/widgets?msg=invalid").into_response();
+        }
+        let Ok(id) = crate::widgets::next_instance_id(&conn, &typ) else {
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        };
+        let settings = default_settings(&conn, &typ, &id);
+        let ord = crud::widget_next_ord(&conn, &sidebar);
+        let ok = crud::widget_insert(&conn, &id, &sidebar, &typ, &title, &settings, ord);
+        if ok.is_err() {
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+        mark_dirty(&sc2.db);
+        crate::admin::admin::bust_cache(&sc2);
+        Redirect::to(&format!("/admin/widgets?msg=added#w-{id}")).into_response()
+    })
+    .await
+    .unwrap_or_else(|e| {
+        eprintln!("widgets_add join: {e:#}");
+        StatusCode::INTERNAL_SERVER_ERROR.into_response()
+    })
 }
 
 /// Initial `settings_json` for a new instance. `html`-storing types get a
@@ -723,7 +744,7 @@ pub(crate) async fn widgets_add(
 /// working WP search form so a fresh instance renders something real.
 /// Settings types (categories) start empty — the edit form requires
 /// taxonomy.
-fn default_settings(conn: &rusqlite::Connection, typ: &str, id: &str) -> String {
+fn default_settings(conn: &rusqlite::Connection, typ: &str, id: &str) -> String { // gate-allow: blocking by contract — only called inside spawn_blocking
     let wc = crate::plugins::theme_for_site(conn).widget_class;
     let html = match typ {
         "search" => format!(
@@ -752,7 +773,7 @@ pub(crate) async fn widgets_save(
     headers: HeaderMap,
     Form(map): Form<HashMap<String, String>>,
 ) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
     if let Err(code) = require_admin(&s) {
@@ -761,6 +782,17 @@ pub(crate) async fn widgets_save(
     if !csrf_ok(&s, &map) {
         return StatusCode::FORBIDDEN.into_response();
     }
+    // rusqlite is sync — offload conn + validate + update to a blocking thread.
+    let sc2 = sc.clone();
+    return tokio::task::spawn_blocking(move || widgets_save_sync(&sc2, map))
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("widgets_save join: {e:#}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        });
+}
+
+fn widgets_save_sync(sc: &SiteCtx, map: HashMap<String, String>) -> Response { // gate-allow: blocking by contract — only called inside spawn_blocking
     let Ok(conn) = crate::db::conn(&sc.db) else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
@@ -934,7 +966,7 @@ pub(crate) async fn widgets_delete(
     headers: HeaderMap,
     Form(map): Form<HashMap<String, String>>,
 ) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
     if let Err(code) = require_admin(&s) {
@@ -943,23 +975,32 @@ pub(crate) async fn widgets_delete(
     if !csrf_ok(&s, &map) {
         return StatusCode::FORBIDDEN.into_response();
     }
-    let Ok(conn) = crate::db::conn(&sc.db) else {
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    };
+    // rusqlite is sync — offload conn + delete/move to a blocking thread.
+    let sc2 = sc.clone();
     let id = map.get("id").cloned().unwrap_or_default();
-    let Some((_id, sidebar, _t, _ti, _raw)) = widget_row(&conn, &id) else {
-        return Redirect::to("/admin/widgets?msg=notfound").into_response();
-    };
-    if sidebar == INACTIVE {
-        let _ = crud::widget_delete(&conn, &id);
-        mark_dirty(&sc.db);
-        return Redirect::to("/admin/widgets?msg=deleted").into_response();
-    }
-    let ord = crud::widget_next_ord(&conn, INACTIVE);
-    let _ = crud::widget_move(&conn, &id, INACTIVE, ord);
-    mark_dirty(&sc.db);
-    crate::admin::admin::bust_cache(&sc);
-    Redirect::to("/admin/widgets?msg=removed").into_response()
+    tokio::task::spawn_blocking(move || {
+        let Ok(conn) = crate::db::conn(&sc2.db) else {
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        };
+        let Some((_id, sidebar, _t, _ti, _raw)) = widget_row(&conn, &id) else {
+            return Redirect::to("/admin/widgets?msg=notfound").into_response();
+        };
+        if sidebar == INACTIVE {
+            let _ = crud::widget_delete(&conn, &id);
+            mark_dirty(&sc2.db);
+            return Redirect::to("/admin/widgets?msg=deleted").into_response();
+        }
+        let ord = crud::widget_next_ord(&conn, INACTIVE);
+        let _ = crud::widget_move(&conn, &id, INACTIVE, ord);
+        mark_dirty(&sc2.db);
+        crate::admin::admin::bust_cache(&sc2);
+        Redirect::to("/admin/widgets?msg=removed").into_response()
+    })
+    .await
+    .unwrap_or_else(|e| {
+        eprintln!("widgets_delete join: {e:#}");
+        StatusCode::INTERNAL_SERVER_ERROR.into_response()
+    })
 }
 
 /// `POST /admin/widgets/order` — two modes:
@@ -972,7 +1013,7 @@ pub(crate) async fn widgets_order(
     headers: HeaderMap,
     Form(map): Form<HashMap<String, String>>,
 ) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
     if let Err(code) = require_admin(&s) {
@@ -981,6 +1022,17 @@ pub(crate) async fn widgets_order(
     if !csrf_ok(&s, &map) {
         return StatusCode::FORBIDDEN.into_response();
     }
+    // rusqlite is sync — offload conn + tx reorder to a blocking thread.
+    let sc2 = sc.clone();
+    return tokio::task::spawn_blocking(move || widgets_order_sync(&sc2, map))
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("widgets_order join: {e:#}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        });
+}
+
+fn widgets_order_sync(sc: &SiteCtx, map: HashMap<String, String>) -> Response { // gate-allow: blocking by contract — only called inside spawn_blocking
     let Ok(conn) = crate::db::conn(&sc.db) else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
@@ -1066,7 +1118,7 @@ pub(crate) async fn sidebar_add(
     headers: HeaderMap,
     Form(map): Form<HashMap<String, String>>,
 ) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
     if let Err(code) = require_admin(&s) {
@@ -1075,6 +1127,17 @@ pub(crate) async fn sidebar_add(
     if !csrf_ok(&s, &map) {
         return StatusCode::FORBIDDEN.into_response();
     }
+    // rusqlite is sync — offload conn + sidebar insert to a blocking thread.
+    let sc2 = sc.clone();
+    return tokio::task::spawn_blocking(move || sidebar_add_sync(&sc2, map))
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("sidebar_add join: {e:#}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        });
+}
+
+fn sidebar_add_sync(sc: &SiteCtx, map: HashMap<String, String>) -> Response { // gate-allow: blocking by contract — only called inside spawn_blocking
     let Ok(conn) = crate::db::conn(&sc.db) else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
@@ -1111,7 +1174,7 @@ pub(crate) async fn sidebar_delete(
     headers: HeaderMap,
     Form(map): Form<HashMap<String, String>>,
 ) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
     if let Err(code) = require_admin(&s) {
@@ -1120,6 +1183,17 @@ pub(crate) async fn sidebar_delete(
     if !csrf_ok(&s, &map) {
         return StatusCode::FORBIDDEN.into_response();
     }
+    // rusqlite is sync — offload conn + delete-and-park to a blocking thread.
+    let sc2 = sc.clone();
+    return tokio::task::spawn_blocking(move || sidebar_delete_sync(&sc2, map))
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("sidebar_delete join: {e:#}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        });
+}
+
+fn sidebar_delete_sync(sc: &SiteCtx, map: HashMap<String, String>) -> Response { // gate-allow: blocking by contract — only called inside spawn_blocking
     let Ok(mut conn) = crate::db::conn(&sc.db) else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };

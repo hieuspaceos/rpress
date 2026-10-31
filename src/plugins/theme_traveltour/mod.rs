@@ -47,7 +47,7 @@ impl PluginAdapter for ThemeTraveltour {
     /// Seed `taxonomy_map` when absent (idempotent `INSERT OR IGNORE`
     /// semantics: an existing row — admin-tuned or previously seeded —
     /// is left alone).
-    fn migrate(&self, db: &Path) -> Result<()> {
+    fn migrate(&self, db: &Path) -> Result<()> { // gate-allow: sync — every caller reaches this on a blocking thread (spawn_blocking / build / boot)
         let c = crate::db::conn(db)?;
         // Seed only when this site's stylesheet claims traveltour — a
         // tevily/core site gets no traveltour taxonomy_map or widget rows.

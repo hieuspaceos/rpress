@@ -13,6 +13,31 @@ struct Cli {
     cmd: Cmd,
 }
 
+// Shared render/serve flags — the same `db/templates/out/site_url/
+// tour_base` set used to repeat as literal `#[arg]` blocks in three
+// subcommands (audit §4). Non-doc comments: clap surfaces `///` on a
+// flattened group as the subcommand description.
+#[derive(clap::Args, Clone)]
+struct SitePaths {
+    #[arg(long, default_value = "rpress.db")]
+    db: PathBuf,
+    #[arg(long, default_value = "templates")]
+    templates: PathBuf,
+    #[arg(long, default_value = "cache")]
+    out: PathBuf,
+}
+
+// `site_url` + `tour_base` shared by `generate`/`migrate` (`serve` has no
+// site_url flag — it reads site_url from the DB).
+#[derive(clap::Args, Clone)]
+struct SiteUrls {
+    #[arg(long, default_value = "http://localhost:8400")]
+    site_url: String,
+    /// URL base for the tour plugin (e.g. "voyage").
+    #[arg(long, default_value = "voyage")]
+    tour_base: String,
+}
+
 #[derive(Subcommand)]
 enum Cmd {
     /// Import WP dump → rpress.db
@@ -39,34 +64,20 @@ enum Cmd {
     },
     /// Write static HTML tree
     Generate {
-        #[arg(long, default_value = "rpress.db")]
-        db: PathBuf,
-        #[arg(long, default_value = "templates")]
-        templates: PathBuf,
-        #[arg(long, default_value = "cache")]
-        out: PathBuf,
-        #[arg(long, default_value = "http://localhost:8400")]
-        site_url: String,
-        /// URL base for the tour plugin (e.g. "voyage").
-        #[arg(long, default_value = "voyage")]
-        tour_base: String,
+        #[command(flatten)]
+        paths: SitePaths,
+        #[command(flatten)]
+        urls: SiteUrls,
     },
     /// WP → rpress one-liner: import dump, create admin, generate site
     Migrate {
         dump: PathBuf,
-        #[arg(long, default_value = "rpress.db")]
-        db: PathBuf,
-        #[arg(long, default_value = "templates")]
-        templates: PathBuf,
-        #[arg(long, default_value = "cache")]
-        out: PathBuf,
-        #[arg(long, default_value = "http://localhost:8400")]
-        site_url: String,
+        #[command(flatten)]
+        paths: SitePaths,
+        #[command(flatten)]
+        urls: SiteUrls,
         #[arg(long)]
         www: Option<PathBuf>,
-        /// URL base for the tour plugin (e.g. "voyage").
-        #[arg(long, default_value = "voyage")]
-        tour_base: String,
         /// Re-import into a database that already has content.
         #[arg(long)]
         force: bool,
@@ -90,12 +101,8 @@ enum Cmd {
     Serve {
         #[arg(long, default_value = "127.0.0.1:8400")]
         bind: String,
-        #[arg(long, default_value = "rpress.db")]
-        db: PathBuf,
-        #[arg(long, default_value = "templates")]
-        templates: PathBuf,
-        #[arg(long, default_value = "cache")]
-        out: PathBuf,
+        #[command(flatten)]
+        paths: SitePaths,
         /// Persistent data dir: user uploads + vendored assets (NOT cache).
         /// Defaults to `<out>/../www` — sibling of the disposable cache dir.
         #[arg(long)]
@@ -188,28 +195,28 @@ fn main() -> Result<()> {
                 verify::verify_refs(&db, &templates, &site_url, &tour_base)
             }
         },
-        Cmd::Generate { db, templates, out, site_url, tour_base } => {
-            generate::run(&db, &templates, &out, &site_url, &tour_base)
+        Cmd::Generate { paths, urls } => {
+            generate::run(&paths.db, &paths.templates, &paths.out, &urls.site_url, &urls.tour_base)
         },
         Cmd::User { step } => match step {
             UserStep::Add { email, password, role, db } => auth::add_user(&db, &email, &password, &role),
             UserStep::Passwd { email, password, db } => auth::set_password(&db, &email, &password),
         },
-        Cmd::Migrate { dump, db, templates, out, site_url, www, tour_base, force } => {
+        Cmd::Migrate { dump, paths, urls, www, force } => {
             let _ = www; // uploads land in www via admin; migrate only needs db+out
             println!("== import ==");
-            import::run(&dump, &db, &db.with_extension("import-report.txt"), force)?;
+            import::run(&dump, &paths.db, &paths.db.with_extension("import-report.txt"), force)?;
             let password = rand::random::<u128>().to_string();
             let (password, _) = password.split_at(24.min(password.len()));
-            auth::add_user(&db, "admin@localhost", password, "admin")?;
+            auth::add_user(&paths.db, "admin@localhost", password, "admin")?;
             println!("admin user: admin@localhost\npassword: {password}");
             println!("== generate ==");
-            generate::run(&db, &templates, &out, &site_url, &tour_base)?;
+            generate::run(&paths.db, &paths.templates, &paths.out, &urls.site_url, &urls.tour_base)?;
             println!(
                 "== done ==\nnext: rpress serve --bind 127.0.0.1:8400 --db {} --templates {} --out {}\nadmin:  http://127.0.0.1:8400/admin",
-                db.display(),
-                templates.display(),
-                out.display(),
+                paths.db.display(),
+                paths.templates.display(),
+                paths.out.display(),
             );
             Ok(())
         },
@@ -243,13 +250,13 @@ fn main() -> Result<()> {
             }
             SiteStep::Backup { site, keep } => site_backup(&site, keep),
         },
-        Cmd::Serve { bind, db, templates, out, www, host, site, name, tour_base } => {
+        Cmd::Serve { bind, paths, www, host, site, name, tour_base } => {
             let addr: std::net::SocketAddr = bind.parse()?;
             let name = name.unwrap_or_else(|| host.clone());
             let www = www.unwrap_or_else(|| {
-                out.parent().unwrap_or(std::path::Path::new(".")).join("www")
+                paths.out.parent().unwrap_or(std::path::Path::new(".")).join("www")
             });
-            tokio::runtime::Runtime::new()?.block_on(admin::serve(db, templates, out, www, addr, site, host, name, tour_base, std::env::var("PLUGINS_PHP").unwrap_or_default()))
+            tokio::runtime::Runtime::new()?.block_on(admin::serve(paths.db, paths.templates, paths.out, www, addr, site, host, name, tour_base, std::env::var("PLUGINS_PHP").unwrap_or_default()))
         }
         Cmd::Bridge { site, action } => site_bridge::run(site_bridge::BridgeArgs { site, action }),
     }

@@ -165,30 +165,34 @@ pub(crate) async fn form_edit(
     Path(slug): Path<String>,
     Query(q): Query<HashMap<String, String>>,
 ) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
-    let Ok(Some(r)) = fdb::get_by_slug(&sc.db, &slug) else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-    let tab = q.get("tab").map(|s| s.as_str()).unwrap_or("form");
+    let tab = q.get("tab").cloned().unwrap_or_else(|| "form".to_string());
     let notice = if q.get("saved").is_some() {
-        "<div class=\"notice notice-success is-dismissible\"><p>Form saved.</p></div>"
+        "<div class=\"notice notice-success is-dismissible\"><p>Form saved.</p></div>".to_string()
     } else if let Some(err) = q.get("error") {
-        &format!("<div class=\"notice notice-error\"><p>{}</p></div>", esc(err))
+        format!("<div class=\"notice notice-error\"><p>{}</p></div>", esc(err))
     } else {
-        ""
+        String::new()
     };
+    // rusqlite is sync — row fetch and the chrome render (comments counts,
+    // kind probes) ride one blocking thread (audit-261031 C1).
+    let (s, sc_c, slug2) = (s, sc.clone(), slug.clone());
+    tokio::task::spawn_blocking(move || {
+        let Ok(Some(r)) = fdb::get_by_slug(&sc_c.db, &slug2) else {
+            return StatusCode::NOT_FOUND.into_response();
+        };
 
-    let content = match tab {
-        "mail" => mail_tab(&r),
-        "messages" => messages_tab(&r),
-        "additional" => additional_tab(&r),
-        _ => form_tab(&r),
-    };
+        let content = match tab.as_str() {
+            "mail" => mail_tab(&r),
+            "messages" => messages_tab(&r),
+            "additional" => additional_tab(&r),
+            _ => form_tab(&r),
+        };
 
-    let body = format!(
-        r#"{}<div class="wrap">
+        let body = format!(
+            r#"{}<div class="wrap">
 <h1 class="wp-heading-inline">Contact Form</h1>
 <span class="subtitle">{slug}</span>
 <hr class="wp-header-end">{notice}
@@ -203,15 +207,21 @@ pub(crate) async fn form_edit(
 </p>
 </form>
 </div>"#,
-        chrome("contact", &s),
-        s.csrf,
-        slug = esc(&slug),
-        tab = esc(tab),
-        tabs = tabs(&slug, tab),
-        content = content,
-        notice = notice,
-    );
-    html_admin(&s, &format!("Contact Form ‹ {}", s.site_name), &body, true, "edit-php").into_response()
+            chrome("contact", &s),
+            s.csrf,
+            slug = esc(&slug),
+            tab = esc(&tab),
+            tabs = tabs(&slug, &tab),
+            content = content,
+            notice = notice,
+        );
+        html_admin(&s, &format!("Contact Form ‹ {}", s.site_name), &body, true, "edit-php").into_response()
+    })
+    .await
+    .unwrap_or_else(|e| {
+        eprintln!("form_edit join: {e:#}");
+        StatusCode::INTERNAL_SERVER_ERROR.into_response()
+    })
 }
 
 fn form_tab(r: &FormRow) -> String {
@@ -288,6 +298,7 @@ fn additional_tab(r: &FormRow) -> String {
 #[derive(Deserialize)]
 #[allow(dead_code)] // full CF7 save payload; tabs saved incrementally
 pub(crate) struct SaveForm {
+    #[serde(default)]
     csrf: String,
     tab: Option<String>,
     title: Option<String>,
@@ -310,7 +321,7 @@ pub(crate) async fn form_save(
     Path(slug): Path<String>,
     Form(f): Form<HashMap<String, String>>,
 ) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
     // CSRF via the same session path as every other handler — the old
@@ -320,7 +331,13 @@ pub(crate) async fn form_save(
         return r;
     }
 
-    let Ok(Some(mut r)) = fdb::get_by_slug(&sc.db, &slug) else {
+    // rusqlite is sync — offload the row fetch to a blocking thread.
+    let db = sc.db.clone();
+    let slug2 = slug.clone();
+    let r = tokio::task::spawn_blocking(move || fdb::get_by_slug(&db, &slug2))
+        .await
+        .unwrap_or_else(|_| Err(anyhow::anyhow!("join")));
+    let Ok(Some(mut r)) = r else {
         return StatusCode::NOT_FOUND.into_response();
     };
     let tab = f.get("tab").map(|s| s.as_str()).unwrap_or("form");
@@ -361,13 +378,19 @@ pub(crate) async fn form_save(
         }
     }
 
-    if fdb::update(
-        &sc.db, r.id, &r.title, &r.markup, &r.mail_to, &r.mail_from,
-        &r.mail_subject, &r.mail_body, r.mail2_active, &r.mail2_to,
-        &r.mail2_subject, &r.mail2_body, &r.messages, &r.additional,
-    )
-    .is_err()
-    {
+    // rusqlite is sync — offload the forms UPDATE to a blocking thread.
+    let db = sc.db.clone();
+    let saved = tokio::task::spawn_blocking(move || {
+        fdb::update(
+            &db, r.id, &r.title, &r.markup, &r.mail_to, &r.mail_from,
+            &r.mail_subject, &r.mail_body, r.mail2_active, &r.mail2_to,
+            &r.mail2_subject, &r.mail2_body, &r.messages, &r.additional,
+        )
+        .is_ok()
+    })
+    .await
+    .unwrap_or(false);
+    if !saved {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
     Redirect::to(&format!("/admin/contact/form/{slug}/edit?tab={tab}&saved=1")).into_response()
@@ -379,7 +402,7 @@ pub(crate) async fn form_save(
 
 /// GET `/admin/contact/new` — create a new contact form.
 pub(crate) async fn form_new(State(app): State<App>, headers: HeaderMap, Query(q): Query<HashMap<String, String>>) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
     let notice = q
@@ -388,19 +411,23 @@ pub(crate) async fn form_new(State(app): State<App>, headers: HeaderMap, Query(q
         .unwrap_or_default();
     // Language options come from the site's lang config — N-language
     // sites get one option per configured lang, never fr/es literals.
-    let lang_opts = match crate::db::conn(&sc.db) {
-        Ok(c) => {
-            let cfg = crate::lang::config(&c);
-            cfg.langs
-                .iter()
-                .map(|l| format!("<option value=\"{}\">{}</option>", esc(l), esc(&crate::lang::lang_label(l))))
-                .collect::<Vec<_>>()
-                .join("")
-        }
-        Err(_) => String::new(),
-    };
-    let body = format!(
-        r#"{}<div class="wrap"><h1>Add New Contact Form</h1>
+    // rusqlite + chrome's DB reads are sync — lang config and the render
+    // ride one blocking thread (audit-261031 C1).
+    let (s, db) = (s, sc.db.clone());
+    tokio::task::spawn_blocking(move || {
+        let lang_opts = match crate::db::conn(&db) {
+            Ok(c) => {
+                let cfg = crate::lang::config(&c);
+                cfg.langs
+                    .iter()
+                    .map(|l| format!("<option value=\"{}\">{}</option>", esc(l), esc(&crate::lang::lang_label(l))))
+                    .collect::<Vec<_>>()
+                    .join("")
+            }
+            Err(_) => String::new(),
+        };
+        let body = format!(
+            r#"{}<div class="wrap"><h1>Add New Contact Form</h1>
 {notice}
 <form method="post" action="/admin/contact/create">
 <input type="hidden" name="csrf" value="{}">
@@ -413,11 +440,17 @@ pub(crate) async fn form_new(State(app): State<App>, headers: HeaderMap, Query(q
 </tbody></table>
 <p class="submit"><input type="submit" class="button button-primary" value="Create"></p>
 </form></div>"#,
-        chrome("contact", &s),
-        s.csrf,
-        notice = notice,
-    );
-    html_admin(&s, "Add Contact Form", &body, true, "edit-php").into_response()
+            chrome("contact", &s),
+            s.csrf,
+            notice = notice,
+        );
+        html_admin(&s, "Add Contact Form", &body, true, "edit-php").into_response()
+    })
+    .await
+    .unwrap_or_else(|e| {
+        eprintln!("form_new join: {e:#}");
+        StatusCode::INTERNAL_SERVER_ERROR.into_response()
+    })
 }
 
 /// POST `/admin/contact/create` — create + redirect to edit.
@@ -426,7 +459,7 @@ pub(crate) async fn form_create(
     headers: HeaderMap,
     Form(f): Form<HashMap<String, String>>,
 ) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
     if let Err(r) = check_csrf(&s, f.get("csrf").map(|x| x.as_str()).unwrap_or("")) {
@@ -434,11 +467,19 @@ pub(crate) async fn form_create(
     }
     let slug = f.get("slug").cloned().unwrap_or_default();
     let title = f.get("title").cloned().unwrap_or_default();
-    let lang = f.get("lang").cloned().unwrap_or_else(|| {
-        crate::db::conn(&sc.db)
-            .map(|c| crate::lang::config(&c).primary)
-            .unwrap_or_default()
-    });
+    // rusqlite is sync — the lang fallback reads site config off the
+    // async thread.
+    let db = sc.db.clone();
+    let lang = match f.get("lang") {
+        Some(v) => v.clone(),
+        None => tokio::task::spawn_blocking(move || {
+            crate::db::conn(&db)
+                .map(|c| crate::lang::config(&c).primary)
+                .unwrap_or_default()
+        })
+        .await
+        .unwrap_or_default(),
+    };
     let kind = f.get("kind").cloned().unwrap_or_else(|| "form".into());
     // Slug becomes a URL path segment + UNIQUE column: reject anything
     // outside [a-z0-9-] and duplicates, with a visible error instead of a
@@ -464,7 +505,16 @@ pub(crate) async fn form_create(
         [submit \"Send\"]\n";
     let msgs = r#"{"success":"Thank you for your message. It has been sent."}"#;
     let body = "From: [your-name] <[your-email]>\n\n[your-message]\n";
-    if fdb::insert(&sc.db, &slug, &title, &lang, &kind, default_markup, "", "[your-email]", "", body, msgs).is_err() {
+    // rusqlite is sync — offload the INSERT to a blocking thread.
+    let db = sc.db.clone();
+    let slug2 = slug.clone();
+    let inserted = tokio::task::spawn_blocking(move || {
+        fdb::insert(&db, &slug2, &title, &lang, &kind, default_markup, "", "[your-email]", "", body, msgs)
+            .is_ok()
+    })
+    .await
+    .unwrap_or(false);
+    if !inserted {
         return Redirect::to(&format!(
             "/admin/contact/new?error={}",
             urlenc(&format!("A form named '{slug}' already exists."))

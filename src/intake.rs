@@ -217,7 +217,10 @@ pub fn submit_comment(db: &Path, fields: &HashMap<String, String>, ip: &str) -> 
     let field = |a: &str, b: &str| {
         fields.get(a).or_else(|| fields.get(b)).cloned().unwrap_or_default()
     };
-    let name = field("wc_name", "name");
+    // Strip quotes from the display name at intake: names never need them,
+    // and it's defense-in-depth against attribute-breaking markup on any
+    // render path that forgets esc_attr (audit-261031 §1.1).
+    let name = field("wc_name", "name").replace(['\'', '"'], "");
     let email = field("wc_email", "email");
     let body = field("wc_comment", "comment");
     let url = field("url", "author_url");
@@ -395,7 +398,7 @@ pub fn submit_review(db: &Path, fields: &HashMap<String, String>, ip: &str) -> R
     if !(1..=5).contains(&rating) {
         anyhow::bail!("rating 1-5");
     }
-    let name = fields.get("name").cloned().unwrap_or_default();
+    let name = fields.get("name").cloned().unwrap_or_default().replace(['\'', '"'], "");
     let body = fields.get("review").cloned().unwrap_or_default();
     if name.is_empty() || body.is_empty() {
         anyhow::bail!("missing fields");

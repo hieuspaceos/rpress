@@ -90,7 +90,7 @@ impl PluginAdapter for Tourmaster {
     fn submenu(&self, db: &Path, _def: &KindDef) -> Option<Vec<(String, String)>> {
         Some(submenu(db))
     }
-    fn migrate(&self, db: &Path) -> Result<()> {
+    fn migrate(&self, db: &Path) -> Result<()> { // gate-allow: sync — every caller reaches this on a blocking thread (spawn_blocking / build / boot)
         let c = crate::db::conn(db)?;
         c.execute_batch(TOURS_DDL)?;
         let n = promote(&c)?;
@@ -189,7 +189,7 @@ pub(crate) static ADAPTER: Tourmaster = Tourmaster;
 /// Tour submenu mirrors tourmaster: All/Add Tour, Add New Filter, then
 /// every non-post taxonomy present in `terms`/`post_terms` (custom tour
 /// taxs + theme taxonomies like Activites/Pays).
-fn submenu(db: &Path) -> Vec<(String, String)> {
+fn submenu(db: &Path) -> Vec<(String, String)> { // gate-allow: sync — every caller reaches this on a blocking thread (spawn_blocking / build / boot)
     let mut sub = vec![
         ("/admin/tours".into(), "All Tour".into()),
         ("/admin/new/tour".into(), "Add New Tour".into()),
@@ -280,7 +280,7 @@ fn load(c: &Connection, id: i64, f: &mut PostForm) -> Result<()> {
 
 /// Metabox chrome — verbatim port of
 /// `framework/function/page-option.php` lines 57–126.
-fn metabox(sc: &SiteCtx, s: &Sess, f: &PostForm) -> String {
+fn metabox(sc: &SiteCtx, s: &Sess, f: &PostForm) -> String { // gate-allow: sync — every caller reaches this on a blocking thread (spawn_blocking / build / boot)
     let id = f.id.map(|n| n.to_string()).unwrap_or_default();
     // data-post-id for ajax buttons; no ical endpoint exists yet.
     elements::set_context(&id, "");

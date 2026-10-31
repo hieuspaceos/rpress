@@ -119,7 +119,7 @@ pub(crate) fn menu_li_badge<A: AsRef<str>, B: AsRef<str>>(
     out
 }
 
-pub(crate) fn chrome_start(active: &str, s: &Sess) -> String {
+pub(crate) fn chrome_start(active: &str, s: &Sess) -> String { // gate-allow: blocking by contract — renders do comments-counts + conn-open DB work; every callsite runs inside spawn_blocking
     let site_name = esc(&s.site_name);
     let email = esc(&s.email);
     let mut html = String::from(
@@ -181,9 +181,11 @@ pub(crate) fn chrome_start(active: &str, s: &Sess) -> String {
     // Plugin kinds with no imported content get no dock tile (e.g. babe
     // `to_book` on a site that never used it) — the section + list routes
     // still resolve, the tile just stops advertising an empty screen.
+    // One shared conn for all kind probes — the old per-kind Connection::open
+    // paid an open per tile on every admin chrome render (audit §3 H3).
+    let kc = rusqlite::Connection::open(&s.db).ok();
     let kind_has_posts = |kind: &str| -> bool {
-        rusqlite::Connection::open(&s.db)
-            .ok()
+        kc.as_ref()
             .and_then(|c| c.query_row(sql!("posts__count_by_kind"), [kind], |r| r.get::<_, i64>(0)).ok())
             .map(|n| n > 0)
             .unwrap_or(true)

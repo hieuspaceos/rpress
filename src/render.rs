@@ -1,7 +1,5 @@
 //! Render posts through minijinja templates.
 
-#[allow(unused_imports)]
-use crate::sql;
 use anyhow::{Context, Result};
 use minijinja::{context, Environment, Value as JVal};
 use minijinja::value::Rest;

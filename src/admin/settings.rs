@@ -12,7 +12,7 @@ fn require_admin(s: &Sess) -> Result<(), StatusCode> {
     if s.role == "admin" { Ok(()) } else { Err(StatusCode::FORBIDDEN) }
 }
 
-fn get(db: &std::path::Path, key: &str, default: &str) -> String {
+fn get(db: &std::path::Path, key: &str, default: &str) -> String { // gate-allow: blocking by contract — only called inside spawn_blocking
     sdb::setting_get(db, key).unwrap_or_else(|| default.to_string())
 }
 
@@ -43,7 +43,7 @@ fn page_shell(s: &Sess, section: &str, title: &str, inner: &str, updated: bool) 
 
 /// `<select>` of published pages — Reading/Privacy need real dropdowns, not
 /// raw IDs. `selected` is the stored post id (0 = none/— Select —).
-fn pages_select(name: &str, selected: i64, sc: &SiteCtx, none_label: &str) -> String {
+fn pages_select(name: &str, selected: i64, sc: &SiteCtx, none_label: &str) -> String { // gate-allow: blocking by contract — only called inside spawn_blocking
     let mut opts = format!("<option value=\"0\">{}</option>", esc(none_label));
     for (id, title) in crud::menus::panel_posts(&sc.db, "page", "", false).unwrap_or_default() {
         let sel = if id == selected { " selected" } else { "" };
@@ -95,7 +95,7 @@ fn general(sc: &SiteCtx) -> String {
     + &row("Week Starts On", &select_opt("start_of_week", &days, &get(&sc.db, "start_of_week", "1"), ""))
 }
 
-fn writing(sc: &SiteCtx) -> String {
+fn writing(sc: &SiteCtx) -> String { // gate-allow: blocking by contract — only called inside spawn_blocking
     let mut cats = String::from("<option value=\"\">— Select —</option>");
     for t in crud::list_terms(&sc.db, "category").unwrap_or_default() {
         let sel = if t.id.to_string() == get(&sc.db, "default_category", "") { " selected" } else { "" };
@@ -194,52 +194,66 @@ fn privacy(sc: &SiteCtx) -> String {
 }
 
 pub(crate) async fn settings_page(State(app): State<App>, headers: HeaderMap, Path(section): Path<String>, axum::extract::Query(q): axum::extract::Query<HashMap<String, String>>) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else { return Redirect::to("/admin/login").into_response(); };
+    let Ok((s, sc)) = need_auth(&app, &headers).await else { return Redirect::to("/admin/login").into_response(); };
     if let Err(e) = require_admin(&s) { return e.into_response(); }
-    let (title, body) = match section.as_str() {
-        "general" => ("General Settings", general(sc)),
-        "writing" => ("Writing Settings", writing(sc)),
-        "reading" => ("Reading Settings", reading(sc)),
-        "discussion" => ("Discussion Settings", discussion(sc)),
-        "media" => ("Media Settings", media(sc)),
-        "permalink" => ("Permalink Settings", permalink(sc)),
-        "privacy" => ("Privacy Settings", privacy(sc)),
-        _ => return StatusCode::NOT_FOUND.into_response(),
-    };
-    page_shell(&s, &section, title, &body, q.get("updated").is_some())
+    let updated = q.get("updated").is_some();
+    // rusqlite is sync — offload the settings reads + section render.
+    let (s2, sc2) = (s.clone(), sc.clone());
+    tokio::task::spawn_blocking(move || {
+        let (title, body) = match section.as_str() {
+            "general" => ("General Settings", general(&sc2)),
+            "writing" => ("Writing Settings", writing(&sc2)),
+            "reading" => ("Reading Settings", reading(&sc2)),
+            "discussion" => ("Discussion Settings", discussion(&sc2)),
+            "media" => ("Media Settings", media(&sc2)),
+            "permalink" => ("Permalink Settings", permalink(&sc2)),
+            "privacy" => ("Privacy Settings", privacy(&sc2)),
+            _ => return StatusCode::NOT_FOUND.into_response(),
+        };
+        page_shell(&s2, &section, title, &body, updated)
+    }).await.unwrap_or_else(|e| {
+        eprintln!("settings_page join: {e:#}");
+        StatusCode::INTERNAL_SERVER_ERROR.into_response()
+    })
 }
 
 pub(crate) async fn settings_save(State(app): State<App>, headers: HeaderMap, Path(section): Path<String>, Form(f): Form<HashMap<String, String>>) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else { return Redirect::to("/admin/login").into_response(); };
+    let Ok((s, sc)) = need_auth(&app, &headers).await else { return Redirect::to("/admin/login").into_response(); };
     if let Err(e) = require_admin(&s) { return e.into_response(); }
     if !ct_eq(s.csrf.as_bytes(), f.get("csrf").map(|x| x.as_str()).unwrap_or("").as_bytes()) { return StatusCode::FORBIDDEN.into_response(); }
-    // Radio/checkbox normalization: checkboxes collapse to 1/0; permalink
-    // radios keep only the stored structure string.
-    for (k, present) in [
-        ("default_comment_status", "open"),
-        ("comment_moderation", "1"),
-        ("comment_previously_approved", "1"),
-        ("require_name_email", "1"),
-        ("close_comments", "1"),
-        ("comment_cookies", "1"),
-        ("thread_comments", "1"),
-        ("thumbnail_crop", "1"),
-        ("uploads_use_yearmonth", "1"),
-    ] {
-        let v = if f.contains_key(k) { present } else if k == "default_comment_status" { "closed" } else { "0" };
-        let _ = sdb::setting_set(&sc.db, k, v);
-    }
-    if section == "permalink" {
-        // Permalink inputs render disabled (fixed structure on static
-        // site), so nothing posts — never clobber the stored values with
-        // defaults. A hand-crafted POST still lands through the generic
-        // settings writer below; that's harmless since nothing reads them.
-    }
-    for (k, v) in &f {
-        if k == "csrf" || k == "permalink_custom" || k == "permalink_structure"
-            || matches!(k.as_str(), "default_comment_status"|"comment_moderation"|"comment_previously_approved"|"require_name_email"|"close_comments"|"comment_cookies"|"thread_comments"|"thumbnail_crop"|"uploads_use_yearmonth") { continue; }
-        let _ = sdb::setting_set(&sc.db, k, v);
-    }
-    crate::admin::admin::bust_cache(&sc);
-    Redirect::to(&format!("/admin/settings/{section}?updated=1")).into_response()
+    let back = format!("/admin/settings/{section}?updated=1");
+    // rusqlite is sync — offload the writes + cache sweep to a blocking thread.
+    let sc2 = sc.clone();
+    let _ = tokio::task::spawn_blocking(move || {
+        // Radio/checkbox normalization: checkboxes collapse to 1/0; permalink
+        // radios keep only the stored structure string.
+        for (k, present) in [
+            ("default_comment_status", "open"),
+            ("comment_moderation", "1"),
+            ("comment_previously_approved", "1"),
+            ("require_name_email", "1"),
+            ("close_comments", "1"),
+            ("comment_cookies", "1"),
+            ("thread_comments", "1"),
+            ("thumbnail_crop", "1"),
+            ("uploads_use_yearmonth", "1"),
+        ] {
+            let v = if f.contains_key(k) { present } else if k == "default_comment_status" { "closed" } else { "0" };
+            let _ = sdb::setting_set(&sc2.db, k, v);
+        }
+        if section == "permalink" {
+            // Permalink inputs render disabled (fixed structure on static
+            // site), so nothing posts — never clobber the stored values with
+            // defaults. A hand-crafted POST still lands through the generic
+            // settings writer below; that's harmless since nothing reads them.
+        }
+        for (k, v) in &f {
+            if k == "csrf" || k == "permalink_custom" || k == "permalink_structure"
+                || matches!(k.as_str(), "default_comment_status"|"comment_moderation"|"comment_previously_approved"|"require_name_email"|"close_comments"|"comment_cookies"|"thread_comments"|"thumbnail_crop"|"uploads_use_yearmonth") { continue; }
+            let _ = sdb::setting_set(&sc2.db, k, v);
+        }
+        crate::admin::admin::bust_cache(&sc2);
+    })
+    .await;
+    Redirect::to(&back).into_response()
 }

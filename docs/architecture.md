@@ -175,6 +175,23 @@ registered in `settings.languages`, `ThemeDef::tax_lang`, or the blob.
 - **Quick Edit writes through `quick_update`/`bulk_apply`**, not `save_post`:
   they touch only title/slug/status/lang + cat/tag terms and preserve
   tour taxonomies (`duree`, `region`, …) untouched.
+- **No blocking DB/argon2 on tokio threads — gated by `check-layers.sh`
+  rule 6.** rusqlite and argon2 are synchronous; every `db::`/`crud::`/
+  `udb::`/`server_key`/conn-open call under `src/admin/` and `src/plugins/`
+  must run inside `tokio::task::spawn_blocking` (open the `Connection`
+  inside the closure — it is `!Sync`). Whole DB+HTML handlers wrap their
+  post-auth body in one spawn; mixed handlers wrap each DB unit; adapter
+  `ScreenDef` futures are offloaded by `plugin_dispatch` (`screen.handle`
+  runs via `spawn_blocking` + a std-only `block_on`). Sync helpers that
+  still open a conn stay sync but must be marked
+  `// gate-allow: blocking by contract — only called inside spawn_blocking`
+  on their signature line; `need_auth`/`get_sess`/`app_pass_sess` are
+  `async` for this reason. `SiteCtx::settings()` serves its TTL-stale
+  snapshot while a deduped `spawn_blocking` reloads it — `settings_bust`
+  only backdates the snapshot so post-save requests never block inline.
+  Render misses dedup single-flight via `App.inflight_renders`: followers
+  wait on the leader's watch channel, then re-enter as follower-or-leader
+  on a cache miss (404/301 leaders leave nothing to share).
 - **No domain literals in `src/` — gated by `check-layers.sh` rules 4–5.**
   Any string naming a host, brand, taxonomy, or URL segment comes from
   `SiteCtx` (CLI), `settings.*` (DB), `ThemeDef`/`KindDef` data, or a

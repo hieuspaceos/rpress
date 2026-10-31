@@ -11,9 +11,21 @@ pub(crate) async fn revisions_page(
     headers: HeaderMap,
     Path(id): Path<i64>,
 ) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
+    // rusqlite is sync — offload conn+queries (and the page render built
+    // on them) to a blocking thread (audit P1).
+    let (s2, sc2) = (s.clone(), sc.clone());
+    return tokio::task::spawn_blocking(move || revisions_page_sync(&s2, &sc2, id))
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("revisions_page join: {e:#}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        });
+}
+
+fn revisions_page_sync(s: &Sess, sc: &SiteCtx, id: i64) -> Response { // gate-allow: blocking by contract — only called inside spawn_blocking
     let Some(p) = crud::load_post(&sc.db, id).ok().flatten() else {
         return StatusCode::NOT_FOUND.into_response();
     };
@@ -56,9 +68,21 @@ pub(crate) async fn revision_diff(
     headers: HeaderMap,
     Path(rid): Path<i64>,
 ) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
+    // rusqlite is sync — offload conn+queries (and the diff render) to a
+    // blocking thread (audit P1).
+    let (s2, sc2) = (s.clone(), sc.clone());
+    return tokio::task::spawn_blocking(move || revision_diff_sync(&s2, &sc2, rid))
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("revision_diff join: {e:#}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        });
+}
+
+fn revision_diff_sync(s: &Sess, sc: &SiteCtx, rid: i64) -> Response { // gate-allow: blocking by contract — only called inside spawn_blocking
     let Some((post_id, saved, r_title, _r_excerpt, r_body)) =
         crud::revision_get(&sc.db, rid).ok().flatten()
     else {
@@ -104,13 +128,20 @@ pub(crate) async fn revision_restore(
     Path(rid): Path<i64>,
     Form(f): Form<HashMap<String, String>>,
 ) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
     if let Err(r) = check_csrf(&s, f.get("csrf").map(|v| v.as_str()).unwrap_or("")) {
         return r;
     }
-    match crud::restore_revision(&sc.db, rid) {
+    // rusqlite is sync — offload the snapshot+restore writes to a
+    // blocking thread (audit P1); a join failure reports like the
+    // original Err branch.
+    let db = sc.db.clone();
+    match tokio::task::spawn_blocking(move || crud::restore_revision(&db, rid))
+        .await
+        .unwrap_or_else(|e| Err(anyhow::anyhow!("restore join: {e:#}")))
+    {
         Ok(post_id) => Redirect::to(&format!("/admin/posts/{post_id}/revisions")).into_response(),
         Err(e) => (StatusCode::BAD_REQUEST, format!("{e}")).into_response(),
     }

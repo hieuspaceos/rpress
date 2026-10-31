@@ -20,7 +20,7 @@ fn require_admin(s: &Sess) -> Result<(), StatusCode> {
 
 /// `admin-schemes.min.css` styles `body.admin-color-{scheme}` — resolve the
 /// session user's persisted scheme (tampered values fall back to modern).
-pub(crate) fn color_class(s: &Sess) -> String {
+pub(crate) fn color_class(s: &Sess) -> String { // gate-allow: blocking by contract — only called inside spawn_blocking
     let p = udb::user_prefs(&s.db, s.user_id);
     if udb::SCHEMES.iter().any(|(k, _)| *k == p.color_scheme) {
         format!("admin-color-{}", p.color_scheme)
@@ -35,7 +35,7 @@ pub(crate) fn color_class(s: &Sess) -> String {
 /// (multi-site shares one map, user ids are per-site); `None` drops
 /// that id everywhere (used by delete — over-dropping only forces re-login).
 /// Integrator: sessions live in `app.sessions: Mutex<HashMap<token, Sess>>`.
-pub(crate) fn drop_sessions_for(app: &App, user_id: i64, keep_token: Option<&str>) {
+pub(crate) fn drop_sessions_for(app: &App, user_id: i64, keep_token: Option<&str>) { // gate-allow: blocking by contract — only called inside spawn_blocking
     let mut map = app.sessions.lock();
     let scope: Option<String> = keep_token.and_then(|t| map.get(t).map(|s| s.site.clone()));
     map.retain(|tok, s| {
@@ -173,7 +173,7 @@ fn role_select(name: &str, current: &str, locked: bool, lock_note: &str) -> Stri
 }
 
 /// WP "Display name publicly as" variants for `u` (nickname/first+last forms).
-fn display_variants(u: &udb::UserRow) -> Vec<String> {
+fn display_variants(u: &udb::UserRow) -> Vec<String> { // gate-allow: blocking by contract — only called inside spawn_blocking
     let mut v: Vec<String> = Vec::new();
     let mut push = |x: String| {
         let x = x.trim().to_string();
@@ -196,9 +196,15 @@ pub(crate) async fn users_page(
     headers: HeaderMap,
     Query(q): Query<HashMap<String, String>>,
 ) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
+    // rusqlite + chrome render are sync — offload the whole page build to a
+    // blocking thread (same pattern as dashboard).
+    let s = s.clone();
+    let sc = sc.clone();
+    return tokio::task::spawn_blocking(move || {
+        let (s, sc) = (s, sc);
     if let Err(r) = require_admin(&s) {
         return r.into_response();
     }
@@ -450,6 +456,12 @@ document.addEventListener('change',function(e){{
         role_bottom = role_actions("2", "new_role2"),
     );
     html_admin(&s, "Users", &inner, true, "users-php").into_response()
+    })
+    .await
+    .unwrap_or_else(|e| {
+        eprintln!("users_page join: {e:#}");
+        StatusCode::INTERNAL_SERVER_ERROR.into_response()
+    });
 }
 /// WP `#screen-meta` + `#screen-meta-links` for `users.php`: Screen Options
 /// tab — `hide_*` column checkboxes + items-per-page, submitted as a GET
@@ -507,10 +519,14 @@ fn users_screen_meta(hide: &[String], per_page: i64, csrf: &str, role: &str, sea
 /// CUT vs WP: Language dropdown (no i18n infra) and Send User Notification
 /// checkbox (no SMTP mailer) — recorded in phase spec.
 pub(crate) async fn user_new_page(State(app): State<App>, headers: HeaderMap, Query(q): Query<HashMap<String, String>>) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
     let _ = sc;
+    // rusqlite + chrome render are sync — offload the page build to a
+    // blocking thread (same pattern as dashboard).
+    let s = s.clone();
+    return tokio::task::spawn_blocking(move || {
     if let Err(r) = require_admin(&s) {
         return r.into_response();
     }
@@ -570,10 +586,17 @@ pub(crate) async fn user_new_page(State(app): State<App>, headers: HeaderMap, Qu
         pw_js = PW_JS,
     );
     html_admin(&s, "Add New User", &inner, true, "user-new-php").into_response()
+    })
+    .await
+    .unwrap_or_else(|e| {
+        eprintln!("user_new_page join: {e:#}");
+        StatusCode::INTERNAL_SERVER_ERROR.into_response()
+    });
 }
 
 #[derive(Deserialize)]
 pub(crate) struct CreateForm {
+    #[serde(default)]
     csrf: String,
     #[serde(default)]
     email: String,
@@ -592,9 +615,15 @@ pub(crate) struct CreateForm {
 }
 
 pub(crate) async fn users_create(State(app): State<App>, headers: HeaderMap, Form(f): Form<CreateForm>) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
+    // rusqlite + argon2 + chrome render are sync/CPU-bound — offload the
+    // create to a blocking thread (same pattern as dashboard).
+    let s = s.clone();
+    let sc = sc.clone();
+    return tokio::task::spawn_blocking(move || {
+        let (s, sc) = (s, sc);
     if let Err(r) = require_admin(&s) {
         return r.into_response();
     }
@@ -641,11 +670,17 @@ pub(crate) async fn users_create(State(app): State<App>, headers: HeaderMap, For
         }
         Err(_) => Redirect::to("/admin/user-new?msg=err-dup").into_response(),
     }
+    })
+    .await
+    .unwrap_or_else(|e| {
+        eprintln!("users_create join: {e:#}");
+        StatusCode::INTERNAL_SERVER_ERROR.into_response()
+    });
 }
 
 /// Shared edit/profile form. `profile` drops the Role row entirely (WP
 /// profile.php parity — not read-only, omitted).
-fn user_edit_html(s: &Sess, u: &udb::UserRow, profile: bool, last_admin: bool, back: &str, notice: &str) -> String {
+fn user_edit_html(s: &Sess, u: &udb::UserRow, profile: bool, last_admin: bool, back: &str, notice: &str) -> String { // gate-allow: blocking by contract — only called inside spawn_blocking
     let self_edit = u.id == s.user_id;
     let role_locked = self_edit || last_admin;
     let lock_note = if self_edit {
@@ -817,9 +852,15 @@ pub(crate) async fn user_edit_page(
     Path(id): Path<i64>,
     Query(q): Query<HashMap<String, String>>,
 ) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
+    // rusqlite + chrome render are sync — offload the whole page build to a
+    // blocking thread (same pattern as dashboard).
+    let s = s.clone();
+    let sc = sc.clone();
+    return tokio::task::spawn_blocking(move || {
+        let (s, sc) = (s, sc);
     if let Err(r) = require_admin(&s) {
         return r.into_response();
     }
@@ -836,10 +877,17 @@ pub(crate) async fn user_edit_page(
     let notice = notice_html(q.get("msg").map(|s| s.as_str()).unwrap_or(""), 0, 0);
     let inner = user_edit_html(&s, &u, false, last_admin, &back, &notice);
     html_admin(&s, "Edit User", &inner, true, "user-edit-php").into_response()
+    })
+    .await
+    .unwrap_or_else(|e| {
+        eprintln!("user_edit_page join: {e:#}");
+        StatusCode::INTERNAL_SERVER_ERROR.into_response()
+    });
 }
 
 #[derive(Deserialize)]
 pub(crate) struct SaveForm {
+    #[serde(default)]
     csrf: String,
     id: i64,
     #[serde(default)]
@@ -874,9 +922,15 @@ pub(crate) struct SaveForm {
 /// (`id == s.user_id`); the role field is ignored for self/last-admin even if
 /// a crafted form submits it.
 pub(crate) async fn users_save(State(app): State<App>, headers: HeaderMap, Form(f): Form<SaveForm>) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
+    // rusqlite + argon2 are sync/CPU-bound — offload the save to a blocking
+    // thread (same pattern as dashboard).
+    let s = s.clone();
+    let sc = sc.clone();
+    return tokio::task::spawn_blocking(move || {
+        let (s, sc) = (s, sc);
     let is_self = f.id == s.user_id;
     if !is_self {
         if let Err(r) = require_admin(&s) {
@@ -951,12 +1005,19 @@ pub(crate) async fn users_save(State(app): State<App>, headers: HeaderMap, Form(
         drop_sessions_for(&app, f.id, keep.as_deref());
     }
     redirect_with(&back, "msg=updated")
+    })
+    .await
+    .unwrap_or_else(|e| {
+        eprintln!("users_save join: {e:#}");
+        StatusCode::INTERNAL_SERVER_ERROR.into_response()
+    });
 }
 
 /// "Log Out Other Sessions" — drops every session of `id` except the
 /// current one when acting on self. Admin-gated for other users.
 #[derive(Deserialize)]
 pub(crate) struct LogoutForm {
+    #[serde(default)]
     csrf: String,
     id: i64,
     #[serde(default)]
@@ -964,7 +1025,7 @@ pub(crate) struct LogoutForm {
 }
 
 pub(crate) async fn users_logout_others(State(app): State<App>, headers: HeaderMap, Form(f): Form<LogoutForm>) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
     if let Err(r) = check_csrf(&s, &f.csrf) {
@@ -977,9 +1038,19 @@ pub(crate) async fn users_logout_others(State(app): State<App>, headers: HeaderM
     }
     let keep = if f.id == s.user_id { cookie(&headers, SESSION_COOKIE) } else { None };
     // Persisted sessions die too — without this the other device just
-    // rehydrates from `sessions` on its next request.
-    let _ = udb::session_delete_others(&sc.db, f.id, keep.as_deref().unwrap_or(""));
-    drop_sessions_for(&app, f.id, keep.as_deref());
+    // rehydrates from `sessions` on its next request. rusqlite is sync —
+    // offload the delete to a blocking thread (map drop rides along).
+    let (db, uid) = (sc.db.clone(), f.id);
+    if let Err(e) = tokio::task::spawn_blocking(move || {
+        if let Err(e) = udb::session_delete_others(&db, uid, keep.as_deref().unwrap_or("")) {
+            eprintln!("session_delete_others {uid}: {e:#}");
+        }
+        drop_sessions_for(&app, uid, keep.as_deref());
+    })
+    .await
+    {
+        eprintln!("users_logout_others join: {e:#}");
+    }
     // WP stays on the same screen — the list `back` is for save/delete only.
     let back = if f.back == "/admin/profile" && f.id == s.user_id {
         "/admin/profile".to_string()
@@ -998,9 +1069,15 @@ pub(crate) async fn users_delete_page(
     headers: HeaderMap,
     Query(q): Query<HashMap<String, String>>,
 ) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
+    // rusqlite + chrome render are sync — offload the page build to a
+    // blocking thread (same pattern as dashboard).
+    let s = s.clone();
+    let sc = sc.clone();
+    return tokio::task::spawn_blocking(move || {
+        let (s, sc) = (s, sc);
     if let Err(r) = require_admin(&s) {
         return r.into_response();
     }
@@ -1051,12 +1128,18 @@ pub(crate) async fn users_delete_page(
         back = esc(&back),
     );
     html_admin(&s, "Delete Users", &inner, true, "users-php").into_response()
+    })
+    .await
+    .unwrap_or_else(|e| {
+        eprintln!("users_delete_page join: {e:#}");
+        StatusCode::INTERNAL_SERVER_ERROR.into_response()
+    });
 }
 
 /// Delete commit — self and last-admin are refused per user (WP self-guard +
 /// intentional hardening). Sessions of deleted users are dropped.
 pub(crate) async fn users_delete(State(app): State<App>, headers: HeaderMap, Form(map): Form<HashMap<String, String>>) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
     if let Err(r) = require_admin(&s) {
@@ -1070,6 +1153,11 @@ pub(crate) async fn users_delete(State(app): State<App>, headers: HeaderMap, For
     if ids.is_empty() {
         return Redirect::to(&back).into_response();
     }
+    // rusqlite is sync — offload the delete loop to a blocking thread
+    // (in-memory session drops ride along; same pattern as dashboard).
+    let (s, sc) = (s.clone(), sc.clone());
+    return tokio::task::spawn_blocking(move || {
+        let (s, sc) = (s, sc);
     // Track remaining admins inside the loop so selecting every admin in one
     // request still leaves ≥1 (beyond-WP hardening, mirroring the bulk path).
     let mut admins_left = udb::count_admins(&sc.db).unwrap_or(0);
@@ -1089,7 +1177,13 @@ pub(crate) async fn users_delete(State(app): State<App>, headers: HeaderMap, For
                 if u.role == "admin" {
                     admins_left -= 1;
                 }
-                let _ = udb::delete(&sc.db, id);
+                if let Err(e) = udb::delete(&sc.db, id) {
+                    // Audit §2.2: delete fail must not cascade to orphan
+                    // cleanup while reporting success.
+                    eprintln!("user delete {id}: {e:#}");
+                    err = "err-delete".into();
+                    continue;
+                }
                 // H12: orphan cleanup — dead sessions can't rehydrate,
                 // dead app passwords can't keep authenticating.
                 let _ = udb::session_delete_user(&sc.db, id);
@@ -1114,12 +1208,18 @@ pub(crate) async fn users_delete(State(app): State<App>, headers: HeaderMap, For
         return Redirect::to(&back).into_response();
     }
     redirect_with(&back, &extra)
+    })
+    .await
+    .unwrap_or_else(|e| {
+        eprintln!("users_delete join: {e:#}");
+        StatusCode::INTERNAL_SERVER_ERROR.into_response()
+    });
 }
 
 /// users.php bulk: `action=delete` → GET confirm screen (WP two-step);
 /// `changeit` + `new_role` → bulk "Change role to…". Guards mirror delete.
 pub(crate) async fn users_bulk(State(app): State<App>, headers: HeaderMap, Form(map): Form<HashMap<String, String>>) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
     if let Err(r) = require_admin(&s) {
@@ -1148,6 +1248,12 @@ pub(crate) async fn users_bulk(State(app): State<App>, headers: HeaderMap, Form(
     if !matches!(new_role, "admin" | "editor") {
         return Redirect::to(&back).into_response();
     }
+    let new_role = new_role.to_string();
+    // rusqlite is sync — offload the role-change loop to a blocking thread
+    // (in-memory session drops ride along; same pattern as dashboard).
+    let (s, sc) = (s.clone(), sc.clone());
+    return tokio::task::spawn_blocking(move || {
+        let (s, sc) = (s, sc);
     // Track REMAINING admins inside the loop — a bulk request selecting all
     // admins must refuse the last one, not just an all-admin snapshot.
     let mut admins_left = udb::count_admins(&sc.db).unwrap_or(0);
@@ -1170,7 +1276,13 @@ pub(crate) async fn users_bulk(State(app): State<App>, headers: HeaderMap, Form(
                     if u.role == "admin" && new_role != "admin" {
                         admins_left -= 1;
                     }
-                    let _ = udb::change_role(&sc.db, id, new_role);
+                    if let Err(e) = udb::change_role(&sc.db, id, &new_role) {
+                        // Audit §2.2: a failed role write must not kill the
+                        // user's sessions or count as changed.
+                        eprintln!("role change {id}→{new_role}: {e:#}");
+                        skipped += 1;
+                        continue;
+                    }
                     // Stale-role sessions die immediately (A9).
                     let _ = udb::session_delete_user(&sc.db, id);
                     drop_sessions_for(&app, id, None);
@@ -1185,20 +1297,38 @@ pub(crate) async fn users_bulk(State(app): State<App>, headers: HeaderMap, Form(
         extra.push_str(&format!("&skipped={skipped}"));
     }
     redirect_with(&back, &extra)
+    })
+    .await
+    .unwrap_or_else(|e| {
+        eprintln!("users_bulk join: {e:#}");
+        StatusCode::INTERNAL_SERVER_ERROR.into_response()
+    });
 }
 
 /// `profile.php` — self-edit for any session; the Role row is omitted
 /// entirely (WP parity), and `users_save` ignores `role` for self anyway.
 pub(crate) async fn profile_page(State(app): State<App>, headers: HeaderMap, Query(q): Query<HashMap<String, String>>) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
+    // rusqlite + chrome render are sync — offload the page build to a
+    // blocking thread (same pattern as dashboard).
+    let s = s.clone();
+    let sc = sc.clone();
+    return tokio::task::spawn_blocking(move || {
+        let (s, sc) = (s, sc);
     let Ok(Some(u)) = udb::get(&sc.db, s.user_id) else {
         return StatusCode::NOT_FOUND.into_response();
     };
     let notice = notice_html(q.get("msg").map(|s| s.as_str()).unwrap_or(""), 0, 0);
     let inner = user_edit_html(&s, &u, true, false, "/admin/profile", &notice);
     html_admin(&s, "Profile", &inner, true, "profile-php").into_response()
+    })
+    .await
+    .unwrap_or_else(|e| {
+        eprintln!("profile_page join: {e:#}");
+        StatusCode::INTERNAL_SERVER_ERROR.into_response()
+    });
 }
 
 fn app_password() -> String {
@@ -1214,10 +1344,16 @@ fn app_password() -> String {
 /// POST `/admin/users/app-pass/add` — creates an Application Password,
 /// shows the cleartext once, then stores only SHA-256.
 pub(crate) async fn users_app_pass_add(State(app): State<App>, headers: HeaderMap, Form(f): Form<HashMap<String, String>>) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else { return Redirect::to("/admin/login").into_response(); };
+    let Ok((s, sc)) = need_auth(&app, &headers).await else { return Redirect::to("/admin/login").into_response(); };
     if !ct_eq(s.csrf.as_bytes(), f.get("csrf").map(|x| x.as_str()).unwrap_or("").as_bytes()) { return StatusCode::FORBIDDEN.into_response(); }
     let user_id = f.get("user_id").and_then(|v| v.parse::<i64>().ok()).unwrap_or(0);
     if user_id != s.user_id && require_admin(&s).is_err() { return StatusCode::FORBIDDEN.into_response(); }
+    // rusqlite + chrome render are sync — offload the insert + page build
+    // to a blocking thread (same pattern as dashboard).
+    let s = s.clone();
+    let sc = sc.clone();
+    return tokio::task::spawn_blocking(move || {
+        let (s, sc) = (s, sc);
     let Ok(Some(_)) = udb::get(&sc.db, user_id) else { return Redirect::to("/admin/users?msg=notfound").into_response(); };
     let name = f.get("name").map(|v| v.trim()).filter(|v| !v.is_empty()).unwrap_or("Application Password");
     let pw = app_password();
@@ -1230,16 +1366,27 @@ pub(crate) async fn users_app_pass_add(State(app): State<App>, headers: HeaderMa
     let notice = format!("<div class=\"notice notice-success\"><p>Application password created. Copy it now; it will not be shown again: <code>{}</code></p></div>", esc(&pw));
     let inner = user_edit_html(&s, &u, false, false, "/admin/users", &notice);
     html_admin(&s, "Edit User", &inner, true, "user-edit-php").into_response()
+    })
+    .await
+    .unwrap_or_else(|e| {
+        eprintln!("users_app_pass_add join: {e:#}");
+        StatusCode::INTERNAL_SERVER_ERROR.into_response()
+    });
 }
 
 /// POST `/admin/users/app-pass/revoke` — deletes one app password for a user.
 pub(crate) async fn users_app_pass_revoke(State(app): State<App>, headers: HeaderMap, Form(f): Form<HashMap<String, String>>) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else { return Redirect::to("/admin/login").into_response(); };
+    let Ok((s, sc)) = need_auth(&app, &headers).await else { return Redirect::to("/admin/login").into_response(); };
     if !ct_eq(s.csrf.as_bytes(), f.get("csrf").map(|x| x.as_str()).unwrap_or("").as_bytes()) { return StatusCode::FORBIDDEN.into_response(); }
     let user_id = f.get("user_id").and_then(|v| v.parse::<i64>().ok()).unwrap_or(0);
     if user_id != s.user_id && require_admin(&s).is_err() { return StatusCode::FORBIDDEN.into_response(); }
     let id = f.get("id").and_then(|v| v.parse::<i64>().ok()).unwrap_or(0);
-    let _ = udb::app_pass_revoke(&sc.db, id, user_id);
+    // rusqlite is sync — offload the revoke to a blocking thread.
+    let db = sc.db.clone();
+    let res = tokio::task::spawn_blocking(move || udb::app_pass_revoke(&db, id, user_id)).await;
+    if !matches!(res, Ok(Ok(()))) {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
     Redirect::to(&format!("/admin/user-edit/{user_id}?msg=updated")).into_response()
 }
 
@@ -1247,9 +1394,15 @@ pub(crate) async fn users_app_pass_revoke(State(app): State<App>, headers: Heade
 /// signed-in user only (2FA is per-account; admins manage users via
 /// reset, not their factors).
 pub(crate) async fn profile_2fa_page(State(app): State<App>, headers: HeaderMap, axum::extract::Query(q): axum::extract::Query<HashMap<String, String>>) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
+    // rusqlite + QR/chrome render are sync — offload the page build to a
+    // blocking thread (same pattern as dashboard).
+    let s = s.clone();
+    let sc = sc.clone();
+    return tokio::task::spawn_blocking(move || {
+        let (s, sc) = (s, sc);
     let notice = notice_html(q.get("msg").map(|s| s.as_str()).unwrap_or(""), 0, 0);
     let (secret, enabled, _last, codes_json) = udb::totp_get(&sc.db, s.user_id).unwrap_or_default();
     let mut inner = String::from("<h2>Two-Factor Authentication</h2>");
@@ -1294,6 +1447,12 @@ pub(crate) async fn profile_2fa_page(State(app): State<App>, headers: HeaderMap,
         ));
     }
     html_admin(&s, "Two-Factor Authentication", &format!("<div class=\"wrap\"><h1>Two-Factor Authentication</h1>{notice}{inner}<p><a href=\"/admin/profile\">&larr; Back to Profile</a></p></div>"), true, "profile-php").into_response()
+    })
+    .await
+    .unwrap_or_else(|e| {
+        eprintln!("profile_2fa_page join: {e:#}");
+        StatusCode::INTERNAL_SERVER_ERROR.into_response()
+    });
 }
 
 /// Percent-encode for the otpauth URI label (byte-wise UTF-8).
@@ -1307,19 +1466,34 @@ fn pct_encode(s: &str) -> String {
 /// POST setup — generate a pending secret and show the QR. Re-posting
 /// rotates the pending secret (harmless — nothing enabled yet).
 pub(crate) async fn totp_setup(State(app): State<App>, headers: HeaderMap, Form(f): Form<HashMap<String, String>>) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else { return Redirect::to("/admin/login").into_response(); };
+    let Ok((s, sc)) = need_auth(&app, &headers).await else { return Redirect::to("/admin/login").into_response(); };
     if !ct_eq(s.csrf.as_bytes(), f.get("csrf").map(|x| x.as_str()).unwrap_or("").as_bytes()) { return StatusCode::FORBIDDEN.into_response(); }
-    let secret = crate_auth::totp_secret_new();
-    let _ = udb::totp_secret_set(&sc.db, s.user_id, &secret);
-    Redirect::to("/admin/profile/2fa").into_response()
+    // rusqlite is sync — offload the pending-secret write to a blocking thread.
+    let (db, uid) = (sc.db.clone(), s.user_id);
+    let res = tokio::task::spawn_blocking(move || {
+        let secret = crate_auth::totp_secret_new();
+        udb::totp_secret_set(&db, uid, &secret)
+    })
+    .await;
+    match res {
+        Ok(Ok(())) => Redirect::to("/admin/profile/2fa").into_response(),
+        _ => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
 }
+
 
 /// POST confirm — verify one live TOTP against the pending secret, then
 /// enable + issue backup codes (shown once).
 pub(crate) async fn totp_confirm(State(app): State<App>, headers: HeaderMap, Form(f): Form<HashMap<String, String>>) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else { return Redirect::to("/admin/login").into_response(); };
+    let Ok((s, sc)) = need_auth(&app, &headers).await else { return Redirect::to("/admin/login").into_response(); };
     if !ct_eq(s.csrf.as_bytes(), f.get("csrf").map(|x| x.as_str()).unwrap_or("").as_bytes()) { return StatusCode::FORBIDDEN.into_response(); }
-    let code = f.get("code").map(|v| v.trim()).unwrap_or("");
+    let code = f.get("code").map(|v| v.trim().to_string()).unwrap_or_default();
+    // rusqlite + chrome render are sync — offload verify+enable to a
+    // blocking thread (same pattern as dashboard).
+    let s = s.clone();
+    let sc = sc.clone();
+    return tokio::task::spawn_blocking(move || {
+        let (s, sc) = (s, sc);
     let Some((secret, enabled, last_step, _)) = udb::totp_get(&sc.db, s.user_id) else {
         return Redirect::to("/admin/profile/2fa").into_response();
     };
@@ -1327,33 +1501,62 @@ pub(crate) async fn totp_confirm(State(app): State<App>, headers: HeaderMap, For
         return Redirect::to("/admin/profile/2fa").into_response();
     }
     let now_secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-    let Some(step) = crate_auth::totp_verify(&secret, code, now_secs, last_step) else {
+    let Some(step) = crate_auth::totp_verify(&secret, &code, now_secs, last_step) else {
         return Redirect::to("/admin/profile/2fa?msg=2fa-bad").into_response();
     };
     let (codes, hashes_json) = crate_auth::backup_codes_new();
-    let _ = udb::totp_enable(&sc.db, s.user_id, step, &hashes_json);
+    if let Err(e) = udb::totp_enable(&sc.db, s.user_id, step, &hashes_json) {
+        eprintln!("totp_enable user {}: {e:#}", s.user_id);
+        return (StatusCode::INTERNAL_SERVER_ERROR, "2FA not enabled").into_response();
+    }
     let codes_html = codes.iter().map(|c| format!("<code>{c}</code>")).collect::<Vec<_>>().join(" ");
     let notice = format!("<div class=\"notice notice-success\"><p>Two-factor authentication enabled. Save these backup codes now — each works once and will not be shown again:<br>{codes_html}</p></div>");
     let inner = format!("<h2>Two-Factor Authentication</h2><p><strong>Status:</strong> enabled.</p><p><a class=\"button\" href=\"/admin/profile/2fa\">Done</a></p>");
     html_admin(&s, "Two-Factor Authentication", &format!("<div class=\"wrap\"><h1>Two-Factor Authentication</h1>{notice}{inner}</div>"), true, "profile-php").into_response()
+    })
+    .await
+    .unwrap_or_else(|e| {
+        eprintln!("totp_confirm join: {e:#}");
+        StatusCode::INTERNAL_SERVER_ERROR.into_response()
+    });
 }
 
 /// POST disable — CSRF'd; clears secret + codes.
 pub(crate) async fn totp_disable(State(app): State<App>, headers: HeaderMap, Form(f): Form<HashMap<String, String>>) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else { return Redirect::to("/admin/login").into_response(); };
+    let Ok((s, sc)) = need_auth(&app, &headers).await else { return Redirect::to("/admin/login").into_response(); };
     if !ct_eq(s.csrf.as_bytes(), f.get("csrf").map(|x| x.as_str()).unwrap_or("").as_bytes()) { return StatusCode::FORBIDDEN.into_response(); }
-    let _ = udb::totp_disable(&sc.db, s.user_id);
-    Redirect::to("/admin/profile/2fa?msg=2fa-off").into_response()
+    // rusqlite is sync — offload the clear to a blocking thread.
+    let (db, uid) = (sc.db.clone(), s.user_id);
+    let res = tokio::task::spawn_blocking(move || udb::totp_disable(&db, uid)).await;
+    match res {
+        Ok(Ok(())) => Redirect::to("/admin/profile/2fa?msg=2fa-off").into_response(),
+        _ => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
 }
 
 /// POST regen — replace backup codes (shown once).
 pub(crate) async fn totp_regen(State(app): State<App>, headers: HeaderMap, Form(f): Form<HashMap<String, String>>) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else { return Redirect::to("/admin/login").into_response(); };
+    let Ok((s, sc)) = need_auth(&app, &headers).await else { return Redirect::to("/admin/login").into_response(); };
     if !ct_eq(s.csrf.as_bytes(), f.get("csrf").map(|x| x.as_str()).unwrap_or("").as_bytes()) { return StatusCode::FORBIDDEN.into_response(); }
+    // rusqlite + chrome render are sync — offload regen to a blocking
+    // thread (same pattern as dashboard).
+    let s = s.clone();
+    let sc = sc.clone();
+    return tokio::task::spawn_blocking(move || {
+        let (s, sc) = (s, sc);
     let (codes, hashes_json) = crate_auth::backup_codes_new();
-    let _ = udb::totp_codes_replace(&sc.db, s.user_id, &hashes_json);
+    if let Err(e) = udb::totp_codes_replace(&sc.db, s.user_id, &hashes_json) {
+        eprintln!("totp_codes_replace user {}: {e:#}", s.user_id);
+        return (StatusCode::INTERNAL_SERVER_ERROR, "codes not replaced").into_response();
+    }
     let codes_html = codes.iter().map(|c| format!("<code>{c}</code>")).collect::<Vec<_>>().join(" ");
     let notice = format!("<div class=\"notice notice-success\"><p>New backup codes (old ones are invalid now) — save them now, they will not be shown again:<br>{codes_html}</p></div>");
     let inner = "<h2>Two-Factor Authentication</h2><p><a class=\"button\" href=\"/admin/profile/2fa\">Done</a></p>";
     html_admin(&s, "Two-Factor Authentication", &format!("<div class=\"wrap\"><h1>Two-Factor Authentication</h1>{notice}{inner}</div>"), true, "profile-php").into_response()
+    })
+    .await
+    .unwrap_or_else(|e| {
+        eprintln!("totp_regen join: {e:#}");
+        StatusCode::INTERNAL_SERVER_ERROR.into_response()
+    });
 }

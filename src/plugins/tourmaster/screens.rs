@@ -30,7 +30,7 @@ pub(crate) struct TourOptionAjax {
 
 /// `POST /admin/plugins/tourmaster/save-option` — the metabox's own
 /// ajax save (tourmaster page-option's `tourmaster_save_tour_option`).
-fn save_option<'a>(
+fn save_option<'a>( // gate-allow: sync — every caller reaches this on a blocking thread (spawn_blocking / build / boot)
     _app: &'a App,
     s: &'a crate::admin::Sess,
     sc: &'a crate::admin::SiteCtx,
@@ -120,7 +120,7 @@ fn new_filter_html(s: &crate::admin::Sess) -> String {
 /// `/admin/plugins/tourmaster/new-filter` — custom taxonomy creator
 /// (tourmaster's `tourmaster_custom_taxonomy` equivalent). GET renders
 /// the form; POST inserts into `plugin:tourmaster:tour_custom_taxs`.
-fn new_filter<'a>(
+fn new_filter<'a>( // gate-allow: sync — every caller reaches this on a blocking thread (spawn_blocking / build / boot)
     _app: &'a App,
     s: &'a crate::admin::Sess,
     sc: &'a crate::admin::SiteCtx,

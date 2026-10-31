@@ -25,6 +25,7 @@ pub(crate) async fn htmx(State(app): State<App>, headers: HeaderMap) -> Response
 
 #[derive(Deserialize)]
 pub(crate) struct CsrfForm {
+    #[serde(default)]
     csrf: String,
 }
 
@@ -33,7 +34,7 @@ pub(crate) async fn api_generate(
     headers: HeaderMap,
     Form(form): Form<CsrfForm>,
 ) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
         if let Err(r) = check_csrf(&s, &form.csrf) {
@@ -58,7 +59,7 @@ pub(crate) async fn api_generate(
             eprintln!("emit_site_files: {e:#}");
         }
         // 3. Clear the page cache — it re-warms itself from traffic.
-        crate::admin::admin::bust_cache_dir(&out);
+        crate::admin::admin::bust_cache_dir(&out, Some(&base));
         // Keep `widgets_dirty` honest: a full bust means nothing pending.
         let _ = crate::db::setting_put(&db, "widgets_dirty", "0");
         flag.store(false, Ordering::SeqCst);
@@ -84,7 +85,7 @@ pub(crate) fn regen_site(sc: &SiteCtx) -> bool {
         if let Err(e) = crate::sitefx::emit_site_files(&db, &templates, &out, &base, &tour_base) {
             eprintln!("emit_site_files: {e:#}");
         }
-        crate::admin::admin::bust_cache_dir(&out);
+        crate::admin::admin::bust_cache_dir(&out, Some(&base));
         let _ = crate::db::setting_put(&db, "widgets_dirty", "0");
         flag.store(false, Ordering::SeqCst);
     });
@@ -92,7 +93,7 @@ pub(crate) fn regen_site(sc: &SiteCtx) -> bool {
 }
 
 pub(crate) async fn generate_status(State(app): State<App>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap) -> Response {
-    let Ok((_s, sc)) = need_auth_peer(&app, &headers, Some(peer)) else {
+    let Ok((_s, sc)) = need_auth_peer(&app, &headers, Some(peer)).await else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
     let running = sc.generating.load(Ordering::SeqCst);
@@ -104,21 +105,30 @@ pub(crate) async fn generate_status(State(app): State<App>, ConnectInfo(peer): C
 }
 
 pub(crate) async fn api_posts(State(app): State<App>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap) -> Response {
-    let Ok((_s, sc)) = need_auth_peer(&app, &headers, Some(peer)) else {
+    let Ok((_s, sc)) = need_auth_peer(&app, &headers, Some(peer)).await else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
-    let conn = match crate::db::conn(&sc.db) {
-        Ok(c) => c,
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
-    let n: i64 = conn
-        .query_row(
-            sql!("admin__select_count_from"),
-            [],
-            |r| r.get(0),
-        )
-        .unwrap_or(0);
-    format!(r#"{{"count":{n}}}"#).into_response()
+    // rusqlite is sync — the count query runs on a blocking thread.
+    let db = sc.db.clone();
+    tokio::task::spawn_blocking(move || {
+        let conn = match crate::db::conn(&db) {
+            Ok(c) => c,
+            Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        };
+        let n: i64 = conn
+            .query_row(
+                sql!("admin__select_count_from"),
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        format!(r#"{{"count":{n}}}"#).into_response()
+    })
+    .await
+    .unwrap_or_else(|e| {
+        eprintln!("api_posts join: {e:#}");
+        StatusCode::INTERNAL_SERVER_ERROR.into_response()
+    })
 }
 
 /// Media library — WP `/wp-admin/upload.php` list + grid modes.
@@ -133,9 +143,22 @@ pub(crate) async fn api_posts(State(app): State<App>, ConnectInfo(peer): Connect
 const MEDIA_COLS: [&str; 5] = ["author", "parent", "date", "size", "dimensions"];
 
 pub(crate) async fn media_page(State(app): State<App>, headers: HeaderMap, Query(q): Query<HashMap<String, String>>) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
+    // rusqlite is sync — the view/screen prefs, media_list, months and
+    // attachment map plus the list/grid HTML build all run on a blocking
+    // thread (H14).
+    let (s2, sc2) = (s, sc.clone());
+    tokio::task::spawn_blocking(move || media_page_sync(&s2, &sc2, q))
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("media_page join: {e:#}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        })
+}
+
+fn media_page_sync(s: &Sess, sc: &SiteCtx, q: HashMap<String, String>) -> Response { // gate-allow: blocking by contract — only called inside spawn_blocking
     // View toggle: explicit ?mode= wins and is persisted; otherwise the last
     // stored choice applies so the toggle survives a reload.
     let view_key = format!("media_view_{}", s.user_id);
@@ -325,7 +348,7 @@ pub(crate) async fn media_page(State(app): State<App>, headers: HeaderMap, Query
             csrf = s.csrf,
             url = esc(&url),
             back = back,
-            abs = esc_js(&format!("{}{}", site_url(&sc).trim_end_matches('/'), url)),
+            abs = esc_js(&format!("{}{}", site_url(sc).trim_end_matches('/'), url)),
         );
         body.push_str(&format!(
             r#"<tr id="media-{id}"><th scope="row" class="check-column"><input form="media-bulk" type="checkbox" name="m-{id}"></th>
@@ -525,12 +548,12 @@ if(bulkBtn){{
 }}
 }})();
 </script>"#,
-        chrome = chrome("media", &s),
+        chrome = chrome("media", s),
         screen_meta = media_screen_meta(&hide_cols, per_page, &s.csrf, mime, month, search, sort, mode),
         notice = notice,
         content = content,
     );
-    html_page(&s, "Media", &inner, true).into_response()
+    html_page(s, "Media", &inner, true).into_response()
 }
 
 /// WP `#screen-meta` + `#screen-meta-links` for the media screen: "Screen
@@ -603,7 +626,7 @@ pub(crate) async fn media_screen_options(
     headers: HeaderMap,
     axum::extract::Form(f): axum::extract::Form<HashMap<String, String>>,
 ) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
     if let Err(r) = check_csrf(&s, f.get("csrf").map(String::as_str).unwrap_or("")) {
@@ -619,7 +642,9 @@ pub(crate) async fn media_screen_options(
         .collect();
     let per = f.get("per_page").and_then(|v| v.parse::<i64>().ok()).unwrap_or(20).clamp(1, 500);
     let json = serde_json::json!({"hide": hide, "per_page": per}).to_string();
-    let _ = crud::comments::setting_set(&sc.db, &format!("media_screen_{}", s.user_id), &json);
+    // rusqlite is sync — the pref write runs on a blocking thread.
+    let (db, key) = (sc.db.clone(), format!("media_screen_{}", s.user_id));
+    let _ = tokio::task::spawn_blocking(move || crud::comments::setting_set(&db, &key, &json)).await;
     // Preserve active filters — the form round-trips them as hidden inputs.
     let qs = ["type", "m", "s", "sort", "mode"]
         .iter()
@@ -631,7 +656,7 @@ pub(crate) async fn media_screen_options(
 
 /// WP `/wp-admin/media-new.php` — multi-file drop zone page.
 pub(crate) async fn media_new_page(State(app): State<App>, headers: HeaderMap) -> Response {
-    let Ok((s, _sc)) = need_auth(&app, &headers) else {
+    let Ok((s, _sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
     let inner = format!(
@@ -679,7 +704,8 @@ function upload(files){{
     if(!queue.length){{location.href='/admin/media';return;}}
     var f=queue.shift();
     var div=document.createElement('div');div.className='media-item';
-    div.innerHTML='<strong>'+f.name+'</strong><span class="st"></span><div class="bar"><div></div></div>';
+    div.innerHTML='<strong></strong><span class="st"></span><div class="bar"><div></div></div>';
+    div.querySelector('strong').textContent=f.name;
     items.appendChild(div);
     var fd=new FormData();
     fd.append('csrf','{csrf}');
@@ -707,14 +733,26 @@ function upload(files){{
 
 /// WP `post.php?post=<id>&action=edit` for attachments.
 pub(crate) async fn media_edit_page(State(app): State<App>, headers: HeaderMap, Path(id): Path<i64>, Query(q): Query<HashMap<String, String>>) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
+    // rusqlite is sync — media_get/attached_to plus the page render run
+    // on a blocking thread (H14).
+    let (s2, sc2) = (s, sc.clone());
+    tokio::task::spawn_blocking(move || media_edit_page_sync(&s2, &sc2, id, q))
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("media_edit_page join: {e:#}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        })
+}
+
+fn media_edit_page_sync(s: &Sess, sc: &SiteCtx, id: i64, q: HashMap<String, String>) -> Response { // gate-allow: blocking by contract — only called inside spawn_blocking
     let Some(m) = crud::media_get(&sc.db, id).ok().flatten() else {
         return (StatusCode::NOT_FOUND, "media not found").into_response();
     };
     let url = format!("/wp-content/uploads/{}", m.path);
-    let abs = format!("{}{}", site_url(&sc).trim_end_matches('/'), url);
+    let abs = format!("{}{}", site_url(sc).trim_end_matches('/'), url);
     let file_name = m.path.rsplit('/').next().unwrap_or(&m.path).to_string();
     let size_d = media_size(sc, &m).map(human_size).unwrap_or_else(|| "—".into());
     let dims_d = match (m.w, m.h) {
@@ -794,7 +832,7 @@ pub(crate) async fn media_edit_page(State(app): State<App>, headers: HeaderMap, 
 <div class="clear"></div></div></div>
 </form>
 <form method="post" action="/admin/media/delete" id="media-del"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="id" value="{id}"></form></div>"##,
-        chrome = chrome("media", &s),
+        chrome = chrome("media", s),
         notice = notice,
         csrf = s.csrf,
         id = m.id,
@@ -814,11 +852,12 @@ pub(crate) async fn media_edit_page(State(app): State<App>, headers: HeaderMap, 
         size = size_d,
         dims = dims_d,
     );
-    html_page(&s, "Edit Media", &inner, true).into_response()
+    html_page(s, "Edit Media", &inner, true).into_response()
 }
 
 #[derive(Deserialize)]
 pub(crate) struct MediaSave {
+    #[serde(default)]
     csrf: String,
     id: i64,
     #[serde(default)]
@@ -834,17 +873,28 @@ pub(crate) struct MediaSave {
 }
 
 pub(crate) async fn media_save(State(app): State<App>, headers: HeaderMap, Form(f): Form<MediaSave>) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
     if let Err(r) = check_csrf(&s, &f.csrf) {
         return r;
     }
-    match crud::media_update(&sc.db, f.id, &f.title, &f.alt, &f.caption, &f.description) {
-        Ok(_) if !f.ajax.is_empty() => "ok".into_response(),
-        Ok(_) => Redirect::to(&format!("/admin/media/edit/{}?updated=1", f.id)).into_response(),
+    // rusqlite is sync — the update runs on a blocking thread.
+    let (sc2, fid) = (sc.clone(), f.id);
+    match tokio::task::spawn_blocking(move || {
+        crud::media_update(&sc2.db, f.id, &f.title, &f.alt, &f.caption, &f.description)
+            .map_err(|e| anyhow::anyhow!("{e:#}"))
+            .map(|_| f)
+    })
+    .await
+    .unwrap_or_else(|e| {
+        eprintln!("media_save join: {e:#}");
+        Err(anyhow::anyhow!("{e:#}"))
+    }) {
+        Ok(f) if !f.ajax.is_empty() => "ok".into_response(),
+        Ok(f) => Redirect::to(&format!("/admin/media/edit/{}?updated=1", f.id)).into_response(),
         Err(e) => {
-            eprintln!("media_save id={}: {e}", f.id);
+            eprintln!("media_save id={}: {e}", fid);
             (StatusCode::BAD_REQUEST, "save failed").into_response()
         }
     }
@@ -852,21 +902,31 @@ pub(crate) async fn media_save(State(app): State<App>, headers: HeaderMap, Form(
 
 #[derive(Deserialize)]
 pub(crate) struct MediaId {
+    #[serde(default)]
     csrf: String,
     id: i64,
 }
 
 /// Single delete: row + local file + any generated sizes.
 pub(crate) async fn media_delete(State(app): State<App>, headers: HeaderMap, Form(f): Form<MediaId>) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
     if let Err(r) = check_csrf(&s, &f.csrf) {
         return r;
     }
-    match crud::media_delete(&sc.db, f.id) {
-        Ok(row) => {
-            if let Some((p, sz, bp)) = row { remove_media_files(&sc, &p, &sz, &bp); }
+    // rusqlite is sync — row delete + file cleanup run on a blocking thread.
+    let (sc2, id) = (sc.clone(), f.id);
+    match tokio::task::spawn_blocking(move || {
+        crud::media_delete(&sc2.db, id).map(|row| (row, sc2)).map_err(|e| anyhow::anyhow!("{e:#}"))
+    })
+    .await
+    .unwrap_or_else(|e| {
+        eprintln!("media_delete join: {e:#}");
+        Err(anyhow::anyhow!("{e:#}"))
+    }) {
+        Ok((row, sc2)) => {
+            if let Some((p, sz, bp)) = row { remove_media_files(&sc2, &p, &sz, &bp); }
             Redirect::to("/admin/media?deleted=1").into_response()
         }
         Err(e) => {
@@ -878,19 +938,22 @@ pub(crate) async fn media_delete(State(app): State<App>, headers: HeaderMap, For
 
 #[derive(Deserialize)]
 pub(crate) struct MediaDetach {
+    #[serde(default)]
     csrf: String,
     media_id: i64,
     post_id: i64,
 }
 
 pub(crate) async fn media_detach(State(app): State<App>, headers: HeaderMap, Form(f): Form<MediaDetach>) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
     if let Err(r) = check_csrf(&s, &f.csrf) {
         return r;
     }
-    let _ = crud::media_detach(&sc.db, f.media_id, f.post_id);
+    // rusqlite is sync — the detach write runs on a blocking thread.
+    let (db, mid, pid) = (sc.db.clone(), f.media_id, f.post_id);
+    let _ = tokio::task::spawn_blocking(move || crud::media_detach(&db, mid, pid)).await;
     Redirect::to("/admin/media").into_response()
 }
 
@@ -898,7 +961,7 @@ pub(crate) async fn media_detach(State(app): State<App>, headers: HeaderMap, For
 /// list-view bulk-actions form and the grid-view "Delete Selected" bar; `back`
 /// preserves the active filter query string.
 pub(crate) async fn media_bulk(State(app): State<App>, headers: HeaderMap, Form(map): Form<HashMap<String, String>>) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
     if let Err(r) = check_csrf(&s, map.get("csrf").map(|v| v.as_str()).unwrap_or("")) {
@@ -906,14 +969,28 @@ pub(crate) async fn media_bulk(State(app): State<App>, headers: HeaderMap, Form(
     }
     let mut deleted = 0i64;
     if map.get("action").map(|v| v.as_str()) == Some("delete") {
-        for (k, _) in map.iter().filter(|(k, _)| k.starts_with("m-")) {
-            if let Ok(id) = k[2..].parse::<i64>() {
-                if let Ok(Some((p, sz, bp))) = crud::media_delete(&sc.db, id) {
-                    remove_media_files(&sc, &p, &sz, &bp);
-                    deleted += 1;
+        let ids: Vec<i64> = map
+            .keys()
+            .filter_map(|k| k.strip_prefix("m-").and_then(|x| x.parse::<i64>().ok()))
+            .collect();
+        // rusqlite is sync — per-row deletes + file cleanup run on a
+        // blocking thread.
+        let sc2 = sc.clone();
+        deleted = tokio::task::spawn_blocking(move || {
+            let mut n = 0i64;
+            for id in ids {
+                if let Ok(Some((p, sz, bp))) = crud::media_delete(&sc2.db, id) {
+                    remove_media_files(&sc2, &p, &sz, &bp);
+                    n += 1;
                 }
             }
-        }
+            n
+        })
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("media_bulk join: {e:#}");
+            0
+        });
     }
     let back = map.get("back").cloned().unwrap_or_else(|| "/admin/media".to_string());
     // Redirect target must stay a local /admin path — an open-redirect to an
@@ -925,33 +1002,44 @@ pub(crate) async fn media_bulk(State(app): State<App>, headers: HeaderMap, Form(
 
 /// Force-download with Content-Disposition (WP "Download file" plugin action).
 pub(crate) async fn media_download(State(app): State<App>, headers: HeaderMap, Path(id): Path<i64>) -> Response {
-    let Ok((_, sc)) = need_auth(&app, &headers) else {
+    let Ok((_, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
-    let Some(m) = crud::media_get(&sc.db, id).ok().flatten() else {
-        return (StatusCode::NOT_FOUND, "not found").into_response();
-    };
-    // Path comes from the DB — guard traversal even though readers already do.
-    if m.path.contains("..") || m.path.starts_with('/') {
-        return (StatusCode::BAD_REQUEST, "bad path").into_response();
-    }
-    let p = sc.www.join("wp-content/uploads").join(&m.path);
-    let Ok(b) = std::fs::read(&p) else {
-        // File lives on the origin host — send the browser there.
-        let origin = site_url(&sc).trim_end_matches('/').to_string();
-        return Redirect::temporary(&format!("{origin}/wp-content/uploads/{}", m.path)).into_response();
-    };
-    let raw = m.path.rsplit('/').next().unwrap_or("file");
-    // Strip header-breaking bytes: quotes, CRLF, control chars.
-    let name: String = raw.chars().filter(|c| *c != '"' && !c.is_control()).collect();
-    (
-        [
-            (header::CONTENT_TYPE, m.mime.clone()),
-            (header::CONTENT_DISPOSITION, format!("attachment; filename=\"{name}\"")),
-        ],
-        b,
-    )
-        .into_response()
+    // rusqlite is sync — media_get (then the file read off the same
+    // blocking thread) runs away from the event loop.
+    let sc2 = sc.clone();
+    tokio::task::spawn_blocking(move || {
+        let sc = sc2;
+        let Some(m) = crud::media_get(&sc.db, id).ok().flatten() else {
+            return (StatusCode::NOT_FOUND, "not found").into_response();
+        };
+        // Path comes from the DB — guard traversal even though readers already do.
+        if m.path.contains("..") || m.path.starts_with('/') {
+            return (StatusCode::BAD_REQUEST, "bad path").into_response();
+        }
+        let p = sc.www.join("wp-content/uploads").join(&m.path);
+        let Ok(b) = std::fs::read(&p) else {
+            // File lives on the origin host — send the browser there.
+            let origin = site_url(&sc).trim_end_matches('/').to_string();
+            return Redirect::temporary(&format!("{origin}/wp-content/uploads/{}", m.path)).into_response();
+        };
+        let raw = m.path.rsplit('/').next().unwrap_or("file");
+        // Strip header-breaking bytes: quotes, CRLF, control chars.
+        let name: String = raw.chars().filter(|c| *c != '"' && !c.is_control()).collect();
+        (
+            [
+                (header::CONTENT_TYPE, m.mime.clone()),
+                (header::CONTENT_DISPOSITION, format!("attachment; filename=\"{name}\"")),
+            ],
+            b,
+        )
+            .into_response()
+    })
+    .await
+    .unwrap_or_else(|e| {
+        eprintln!("media_download join: {e:#}");
+        StatusCode::INTERNAL_SERVER_ERROR.into_response()
+    })
 }
 
 /// Delete the stored file plus every generated size listed in sizes_json and
@@ -1031,7 +1119,7 @@ fn human_size(b: u64) -> String {
 }
 
 pub(crate) async fn media_upload(State(app): State<App>, headers: HeaderMap, mut multipart: axum::extract::Multipart) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
     let mut csrf = String::new();
@@ -1057,11 +1145,19 @@ pub(crate) async fn media_upload(State(app): State<App>, headers: HeaderMap, mut
     }
     // Extension allowlist (A4): scriptable types (svg/html/xml/…) rejected
     // before save_upload's defense-in-depth re-check.
-    if !crud::upload_ext_ok(&file_name) {
+    if !crud::upload_ext_ok(&file_name) { // gate-allow: pure extension match (db/media.rs) — no DB, no I/O
         return (StatusCode::UNSUPPORTED_MEDIA_TYPE, "file type not allowed").into_response();
     }
     let uploads = sc.www.join("wp-content/uploads");
-    match crud::save_upload(&sc.db, &uploads, &file_name, &bytes, &alt, &s.email) {
+    // rusqlite is sync — save_upload writes bytes + inserts the row on a
+    // blocking thread.
+    let (db, owner) = (sc.db.clone(), s.email.clone());
+    match tokio::task::spawn_blocking(move || crud::save_upload(&db, &uploads, &file_name, &bytes, &alt, &owner))
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("media_upload join: {e:#}");
+            Err(anyhow::anyhow!("{e:#}"))
+        }) {
         Ok(id) => match headers.get("x-requested-with").and_then(|v| v.to_str().ok()) {
             Some("XMLHttpRequest") => id.to_string().into_response(),
             _ => Redirect::to("/admin/media").into_response(),
@@ -1087,18 +1183,20 @@ pub(crate) fn intake_headers(allowed: &[String], origin: Option<&str>, body: &'s
 
 pub(crate) async fn intake_form(State(app): State<App>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap, Path(slug): Path<String>, Form(fields): Form<HashMap<String, String>>) -> Response {
     let sc = site_for(&app, &headers);
-    intake_post(&app, &headers, Some(peer), &allowed_origins(sc), None, |ip| intake::submit_form(&sc.db, &slug, &fields, ip))
+    let (allowed, db) = (allowed_origins(sc), sc.db.clone());
+    intake_post(&app, &headers, Some(peer), &allowed, None, move |ip| intake::submit_form(&db, &slug, &fields, ip)).await
 }
 
 pub(crate) async fn intake_comment(State(app): State<App>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap, Form(fields): Form<HashMap<String, String>>) -> Response {
     let sc = site_for(&app, &headers);
     // A static page can't flash a status inline — the intake redirects back
     // to the post with a fragment the comment block's :target divs style.
-    let back = fields.get("_page").map(|s| s.as_str());
-    intake_post(&app, &headers, Some(peer), &allowed_origins(sc), back, |ip| {
-        intake::submit_comment(&sc.db, &fields, ip).map(|(result, pid)| {
+    let back = fields.get("_page").cloned();
+    let (allowed, db, sc2) = (allowed_origins(sc), sc.db.clone(), sc.clone());
+    intake_post(&app, &headers, Some(peer), &allowed, back.as_deref(), move |ip| {
+        intake::submit_comment(&db, &fields, ip).map(|(result, pid)| {
             if pid > 0 && matches!(result, intake::CommentResult::Submitted) {
-                regen_posts(sc, &[pid]);
+                regen_posts(&sc2, &[pid]);
             }
             match result {
                 intake::CommentResult::Submitted => "comment-submitted",
@@ -1107,12 +1205,14 @@ pub(crate) async fn intake_comment(State(app): State<App>, ConnectInfo(peer): Co
             }
         })
     })
+    .await
 }
 
 pub(crate) async fn intake_review(State(app): State<App>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap, Form(fields): Form<HashMap<String, String>>) -> Response {
     let sc = site_for(&app, &headers);
-    let back = fields.get("_page").map(|s| s.as_str());
-    intake_post(&app, &headers, Some(peer), &allowed_origins(sc), back, |ip| intake::submit_review(&sc.db, &fields, ip))
+    let back = fields.get("_page").cloned();
+    let (allowed, db) = (allowed_origins(sc), sc.db.clone());
+    intake_post(&app, &headers, Some(peer), &allowed, back.as_deref(), move |ip| intake::submit_review(&db, &fields, ip)).await
 }
 
 /// Only same-site paths may become the post-POST redirect target: an
@@ -1170,6 +1270,7 @@ pub(crate) fn regen_posts_with_terms(sc: &SiteCtx, ids: &[i64], extra_terms: &[(
     let templates = sc.templates.clone();
     let out = sc.out.clone();
     let tour_base = crate::admin::tour_base(sc).to_string();
+    let site_url = crate::admin::site_url(sc);
     tokio::task::spawn_blocking(move || {
         let conn = match crate::db::conn(&db) {
             Ok(c) => c,
@@ -1180,7 +1281,7 @@ pub(crate) fn regen_posts_with_terms(sc: &SiteCtx, ids: &[i64], extra_terms: &[(
         };
         for id in &ids {
             let extra = terms_by_post.get(id).cloned().unwrap_or_default();
-            generate::invalidate_dependents(&conn, &out, *id, &tour_base, &extra);
+            generate::invalidate_dependents(&conn, &out, *id, &tour_base, &extra, &site_url);
             if let Err(e) = generate::regen_post(&db, &templates, &out, *id, &tour_base) {
                 eprintln!("regen post {id}: {e:#}");
             }
@@ -1189,7 +1290,7 @@ pub(crate) fn regen_posts_with_terms(sc: &SiteCtx, ids: &[i64], extra_terms: &[(
         // during the regen above (see the residual-window note).
         for id in &ids {
             let extra = terms_by_post.get(id).cloned().unwrap_or_default();
-            generate::invalidate_dependents(&conn, &out, *id, &tour_base, &extra);
+            generate::invalidate_dependents(&conn, &out, *id, &tour_base, &extra, &site_url);
         }
         // Re-emit the site files the sweep invalidated — feeds and
         // sitemap*.xml have no lazy re-render path (pure file reads), so
@@ -1207,19 +1308,21 @@ pub(crate) fn regen_posts_with_terms(sc: &SiteCtx, ids: &[i64], extra_terms: &[(
 /// *every* page: menu/widget/settings/taxonomy saves.
 pub(crate) fn bust_cache(sc: &SiteCtx) {
     sc.settings_bust();
-    bust_cache_dir(&sc.out);
+    let url = crate::admin::site_url(sc);
+    bust_cache_dir(&sc.out, Some(&url));
 }
 
 /// Sweep generated files under `dir` — callable from contexts that have a
-/// path but no SiteCtx (e.g. the rebuild job).
-pub(crate) fn bust_cache_dir(dir: &std::path::Path) {
+/// path but no SiteCtx (e.g. the rebuild job). `site_url` scopes the
+/// site_data bust; `None` busts all sites.
+pub(crate) fn bust_cache_dir(dir: &std::path::Path, site_url: Option<&str>) {
     // Template environments are process-cached per templates dir; a bust is
     // the admin signal that theme/template content may have changed, so the
     // cached Environment must go too or editors see stale templates.
     crate::render::env_cache_bust();
     // Site_data is (site_url, lang)-keyed and holds post/tour rows — a full
     // bust means widgets/menus/settings changed; the cache must go too.
-    crate::render::site_data_bust();
+    crate::render::site_data_bust(site_url);
     fn sweep(dir: &std::path::Path) {
         let Ok(rd) = std::fs::read_dir(dir) else { return };
         for e in rd.flatten() {
@@ -1248,7 +1351,7 @@ pub(crate) fn bust_cache_dir(dir: &std::path::Path) {
     sweep(dir);
 }
 
-pub(crate) fn intake_post(app: &App, headers: &HeaderMap, peer: Option<SocketAddr>, allowed: &[String], back: Option<&str>, f: impl FnOnce(&str) -> anyhow::Result<&'static str>) -> Response {
+pub(crate) async fn intake_post(app: &App, headers: &HeaderMap, peer: Option<SocketAddr>, allowed: &[String], back: Option<&str>, f: impl FnOnce(&str) -> anyhow::Result<&'static str> + Send + 'static) -> Response {
     let origin = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok());
     if !intake::cors_ok(allowed, origin) {
         return intake_headers(allowed, origin, "forbidden", StatusCode::FORBIDDEN);
@@ -1260,7 +1363,15 @@ pub(crate) fn intake_post(app: &App, headers: &HeaderMap, peer: Option<SocketAdd
     if !app.intake_rate.lock().allow(&ip, 10, Duration::from_secs(300)) {
         return intake_headers(allowed, origin, "rate", StatusCode::TOO_MANY_REQUESTS);
     }
-    match f(&ip) {
+    // rusqlite is sync — the submit closure (form/comment/review insert +
+    // comment regen) runs on a blocking thread.
+    let res = tokio::task::spawn_blocking(move || f(&ip))
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("intake_post join: {e:#}");
+            Err(anyhow::anyhow!("{e:#}"))
+        });
+    match res {
         Ok(msg) => {
             if let Some(page) = back {
                 // `msg` doubles as the fragment: comment-submitted /
@@ -1288,14 +1399,26 @@ pub(crate) async fn media_json(
     Path(id): Path<i64>,
     Query(q): Query<HashMap<String, String>>,
 ) -> Response {
-    let Ok((_s, sc)) = need_auth(&app, &headers) else {
+    let Ok((_s, sc)) = need_auth(&app, &headers).await else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
+    // rusqlite is sync — media_get/attached_to + JSON build run on a
+    // blocking thread.
+    let sc2 = sc.clone();
+    tokio::task::spawn_blocking(move || media_json_sync(&sc2, id, q))
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("media_json join: {e:#}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        })
+}
+
+fn media_json_sync(sc: &SiteCtx, id: i64, q: HashMap<String, String>) -> Response { // gate-allow: blocking by contract — only called inside spawn_blocking
     let Some(m) = crud::media_get(&sc.db, id).ok().flatten() else {
         return (StatusCode::NOT_FOUND, "not found").into_response();
     };
     let url = format!("/wp-content/uploads/{}", m.path);
-    let abs = format!("{}{}", site_url(&sc).trim_end_matches('/'), url);
+    let abs = format!("{}{}", site_url(sc).trim_end_matches('/'), url);
     let thumb = thumb_url(&abs, &m);
     let ids: Vec<i64> = q
         .get("ids")
@@ -1352,9 +1475,21 @@ pub(crate) async fn media_items(
     headers: HeaderMap,
     Query(q): Query<HashMap<String, String>>,
 ) -> Response {
-    let Ok((_s, sc)) = need_auth(&app, &headers) else {
+    let Ok((_s, sc)) = need_auth(&app, &headers).await else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
+    // rusqlite is sync — media_list/months + item JSON run on a blocking
+    // thread.
+    let sc2 = sc.clone();
+    tokio::task::spawn_blocking(move || media_items_sync(&sc2, q))
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("media_items join: {e:#}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        })
+}
+
+fn media_items_sync(sc: &SiteCtx, q: HashMap<String, String>) -> Response { // gate-allow: blocking by contract — only called inside spawn_blocking
     let mime = q.get("mime").map(|v| v.as_str()).unwrap_or("");
     let month = q.get("m").map(|v| v.as_str()).unwrap_or("");
     let search = q.get("s").map(|v| v.as_str()).unwrap_or("");
@@ -1363,7 +1498,7 @@ pub(crate) async fn media_items(
     let Ok((rows, total)) = crud::media_list(&sc.db, mime, month, search, "date", (page - 1) * per, per) else {
         return (StatusCode::INTERNAL_SERVER_ERROR, "db").into_response();
     };
-    let origin = site_url(&sc);
+    let origin = site_url(sc);
     let items: Vec<serde_json::Value> = rows
         .iter()
         .map(|m| {
@@ -1389,7 +1524,7 @@ pub(crate) async fn media_replace(
     Path(id): Path<i64>,
     mut multipart: axum::extract::Multipart,
 ) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
     let mut csrf = String::new();
@@ -1407,8 +1542,13 @@ pub(crate) async fn media_replace(
         return r;
     }
     let uploads = sc.www.join("wp-content/uploads");
+    // rusqlite is sync — restore/replace (file write + row update) run on
+    // a blocking thread.
+    let db = sc.db.clone();
     if restore {
-        return match crud::media_restore(&sc.db, &uploads, id) {
+        return match tokio::task::spawn_blocking(move || crud::media_restore(&db, &uploads, id))
+            .await
+            .unwrap_or_else(|e| Err(anyhow::anyhow!("{e:#}"))) {
             Ok(_) => "restored".into_response(),
             Err(e) => (StatusCode::BAD_REQUEST, format!("{e}")).into_response(),
         };
@@ -1416,7 +1556,9 @@ pub(crate) async fn media_replace(
     if bytes.is_empty() {
         return (StatusCode::BAD_REQUEST, "empty").into_response();
     }
-    match crud::media_replace_upload(&sc.db, &uploads, id, &bytes) {
+    match tokio::task::spawn_blocking(move || crud::media_replace_upload(&db, &uploads, id, &bytes))
+        .await
+        .unwrap_or_else(|e| Err(anyhow::anyhow!("{e:#}"))) {
         Ok(_) => "saved".into_response(),
         Err(e) => (StatusCode::BAD_REQUEST, format!("{e}")).into_response(),
     }
@@ -1875,14 +2017,19 @@ pub(crate) async fn media_regenerate(
     headers: HeaderMap,
     Form(f): Form<HashMap<String, String>>,
 ) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
     if let Err(r) = check_csrf(&s, f.get("csrf").map(|v| v.as_str()).unwrap_or("")) {
         return r;
     }
     let uploads = sc.www.join("wp-content/uploads");
-    match crud::media_regenerate_sizes(&sc.db, &uploads) {
+    // rusqlite is sync — the library-wide sizes rebuild (DB + file writes)
+    // runs on a blocking thread.
+    let db = sc.db.clone();
+    match tokio::task::spawn_blocking(move || crud::media_regenerate_sizes(&db, &uploads))
+        .await
+        .unwrap_or_else(|e| Err(anyhow::anyhow!("{e:#}"))) {
         Ok((done, skipped)) => Redirect::to(&format!(
             "/admin/media?updated=1&regen={done}&skipped={skipped}"
         ))

@@ -25,7 +25,7 @@ fn primary_key_default(conn: &Connection, tax: &str) -> String {
 /// Called from `crud::save_post` inside the post-save transaction: rebuilds
 /// the taxonomy→meta-key map for this post and delegates to
 /// `crud::save_rankmath`, so SEO metas commit or roll back with the post.
-pub(crate) fn save_conn(conn: &Connection, id: i64, f: &crud::PostForm) -> Result<(), String> {
+pub(crate) fn save_conn(conn: &Connection, id: i64, f: &crud::PostForm) -> Result<(), String> { // gate-allow: blocking by contract — only called inside post-save spawn_blocking closures
     crud::save_rankmath(conn, id, f, &tax_map(conn, id)).map_err(|e| e.to_string())
 }
 
@@ -48,7 +48,7 @@ fn seo_inner(a: &crud::SeoAnalysis) -> String {
     let kw = if a.keyword.is_empty() {
         "Not Set".to_string()
     } else {
-        a.keyword.clone()
+        esc(&a.keyword)
     };
     format!(
         r#"<div class="rm-seo-pill {cls}">{txt}</div><div class="rm-seo-kw">Keyword: {kw}</div><div class="rm-seo-links">Links: 🔗 {i} | ↗ {e} | ↩ {b}</div>"#,
@@ -67,13 +67,20 @@ pub(crate) async fn seo_cell_frag(
     headers: HeaderMap,
     Path(id): Path<i64>,
 ) -> Response {
-    let Ok((_s, sc)) = need_auth(&app, &headers) else {
+    let Ok((_s, sc)) = need_auth(&app, &headers).await else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
-    let body = match crate::db::conn(&sc.db) {
-        Ok(c) => seo_inner(&crud::seo_analysis(&c, id, &site_url(sc), None, None, None, None)),
-        Err(_) => String::new(),
-    };
+    // conn + seo_analysis are sync SQLite (~7 queries) — offload (C1);
+    // conn Err/JoinError both keep the empty-body shape.
+    let sc_c = sc.clone();
+    let body = tokio::task::spawn_blocking(move || {
+        match crate::db::conn(&sc_c.db) {
+            Ok(c) => seo_inner(&crud::seo_analysis(&c, id, &site_url(&sc_c), None, None, None, None)),
+            Err(_) => String::new(),
+        }
+    })
+    .await
+    .unwrap_or_default();
     ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], body).into_response()
 }
 
@@ -129,13 +136,18 @@ pub(crate) async fn seo_analysis_frag(
     headers: HeaderMap,
     Path(id): Path<i64>,
 ) -> Response {
-    let Ok((_s, sc)) = need_auth(&app, &headers) else {
+    let Ok((_s, sc)) = need_auth(&app, &headers).await else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
-    let body = match crate::db::conn(&sc.db) {
-        Ok(c) => analysis_inner(&crud::seo_analysis(&c, id, &site_url(sc), None, None, None, None)),
-        Err(_) => String::new(),
-    };
+    let sc_c = sc.clone();
+    let body = tokio::task::spawn_blocking(move || {
+        match crate::db::conn(&sc_c.db) {
+            Ok(c) => analysis_inner(&crud::seo_analysis(&c, id, &site_url(&sc_c), None, None, None, None)),
+            Err(_) => String::new(),
+        }
+    })
+    .await
+    .unwrap_or_default();
     ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], body).into_response()
 }
 
@@ -236,7 +248,7 @@ fn text_field(key: &str, value: &str) -> String {
 }
 
 /// Metabox HTML. `f.id = None` → empty metas (new post).
-pub(crate) fn metabox_html(sc: &SiteCtx, s: &Sess, f: &crud::PostForm) -> String {
+pub(crate) fn metabox_html(sc: &SiteCtx, s: &Sess, f: &crud::PostForm) -> String { // gate-allow: blocking by contract — only called inside edit-page spawn_blocking closures
     let meta: HashMap<String, String> = f
         .id
         .and_then(|id| crate::db::conn(&sc.db).ok().map(|c| (id, c)))

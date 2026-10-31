@@ -1,7 +1,5 @@
 //! `rpress generate` — render every publish post into an HTML tree.
 
-#[allow(unused_imports)]
-use crate::sql;
 use crate::plugins::{self, KindBases};
 use crate::render;
 use anyhow::{Context, Result};
@@ -452,6 +450,7 @@ pub fn invalidate_dependents(
     post_id: i64,
     tour_base: &str,
     extra_terms: &[(String, String)],
+    site_url: &str,
 ) -> usize {
     let kind_bases = plugins::resolve_bases(tour_base);
     let mut removed = 0usize;
@@ -466,7 +465,7 @@ pub fn invalidate_dependents(
     let lang_cfg = crate::lang::config(conn);
     // site_data materializes every published post/tour for element widgets —
     // a post-level save must drop it or cache-miss renders serve the old row.
-    crate::render::site_data_bust();
+    crate::render::site_data_bust(Some(site_url));
     // The post's own variants (canonical + alias copies).
     if let Ok(rel) = post_out_rel(conn, post_id, &kind_bases) {
         let post_lang: String = conn

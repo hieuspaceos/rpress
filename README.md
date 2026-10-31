@@ -394,7 +394,7 @@ src/
   sitefx.rs     sitemap, feeds, robots.txt, 404, redirects.map, llms.txt
   schema.rs     DDL owner
 templates/      minijinja templates — admin/ + public theme shells (base_<lang>.html)
-scripts/        e2e-site.sh — dump→serve workflow; check-layers.sh — architecture gate; e2e-bridge.sh — live php-bridge gate
+scripts/        e2e-site.sh — dump→serve workflow; check-layers.sh — architecture gate; e2e-bridge.sh — live php-bridge gate; diff-render.sh — render diff helper; scope-css.py — CSS scoping helper; visual_smoke.sh — visual smoke suite
 plugins/specs/  declarative plugin adapters (baked into the binary by build.rs)
 themes/specs/  declarative themes (stylesheet match → ThemeDef; same codegen)
 install.sh     one-command Linux VPS installer

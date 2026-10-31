@@ -11,8 +11,6 @@ use crate::site::{self, shell_quote, Remote, SiteEnv};
 use crate::{auth, generate, import, verify};
 // lib.rs brings sql! in via #[macro_use]; the bin target does not — this
 // import is required there and merely redundant here.
-#[allow(unused_imports)]
-use crate::sql;
 use anyhow::{bail, Context, Result};
 use rusqlite::params;
 use std::path::{Path, PathBuf};

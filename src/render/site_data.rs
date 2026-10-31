@@ -14,9 +14,15 @@ use super::*;
 static SITE_DATA: std::sync::LazyLock<parking_lot::RwLock<HashMap<(String, String), JVal>>> =
     std::sync::LazyLock::new(parking_lot::RwLock::default);
 
-/// Drop all cached site_data — call from every invalidation path.
-pub(crate) fn site_data_bust() {
-    SITE_DATA.write().clear();
+/// Drop cached site_data — `Some(url)` busts only that site's entries (all
+/// langs), `None` busts everything. Post-level saves know their site and
+/// must not flush sibling sites sharing the process (audit-261031 §3 H2);
+/// contexts with no SiteCtx (rebuild jobs) keep the global bust.
+pub(crate) fn site_data_bust(site_url: Option<&str>) {
+    match site_url {
+        Some(u) => SITE_DATA.write().retain(|(k, _), _| k != u),
+        None => SITE_DATA.write().clear(),
+    }
 }
 
 /// `site_data` behind the (site_url, lang)-keyed cache; compute-on-miss.

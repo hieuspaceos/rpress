@@ -1,5 +1,3 @@
-#[allow(unused_imports)]
-use crate::sql;
 use crate::db::users as udb;
 use sha2::{Digest, Sha256};
 use super::*;
@@ -89,7 +87,7 @@ pub(crate) struct LoginForm {
 /// Argon2 hash verified on the unknown-email path so the login attempt has
 /// the same cost shape as a real account (built once — it's never the
 /// correct hash, only a timing decoy).
-fn dummy_hash() -> &'static str {
+fn dummy_hash() -> &'static str { // gate-allow: argon2 mint — only called inside the login spawn_blocking
     static DUMMY: std::sync::LazyLock<String> =
         std::sync::LazyLock::new(|| crate_auth::hash_password("dummy-password").unwrap_or_default());
     &DUMMY
@@ -102,7 +100,7 @@ pub(crate) async fn login(
 ) -> Response {
     let sc = site_for(&app, &headers);
     let email = form.log.trim().to_lowercase();
-    let password = form.pwd.trim().to_string();
+    let password = form.pwd.to_string();
     let ip = client_ip(&headers, Some(peer));
     // Subnet-keyed (`/24`/`/64`): evict-stalest alone lets a ≥10k-IP spray
     // evict its own entries and reset its counter to zero — a shared
@@ -133,35 +131,57 @@ pub(crate) async fn login(
         }
         e.push(now);
     }
-    let conn = match crate::db::conn(&sc.db) {
-        Ok(c) => c,
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    // rusqlite + argon2 (~50-100ms verify) are synchronous — the lookup and
+    // BOTH verify paths (real hash + the unknown-email dummy) run on one
+    // blocking thread (audit-261031 C1). Outer None = conn/join failure →
+    // 500; inner None = bad credentials → the same response as before.
+    let (db_l, email_l, pass_l) = (sc.db.clone(), email.clone(), password.clone());
+    let cred = tokio::task::spawn_blocking(move || {
+        let conn = crate::db::conn(&db_l).ok()?;
+        let row: Option<(i64, String, String)> = conn
+            .query_row(
+                sql!("auth__select_id_pass_hash"),
+                [&email_l],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .ok();
+        match row {
+            None => {
+                // Constant-shape timing (A14): unknown emails still pay one
+                // argon2 verify so the response time doesn't reveal account
+                // existence.
+                let _ = crate_auth::verify_password(dummy_hash(), &pass_l);
+                Some(None)
+            }
+            Some((id, hash, role)) => {
+                if crate_auth::verify_password(&hash, &pass_l) {
+                    Some(Some((id, role)))
+                } else {
+                    Some(None)
+                }
+            }
+        }
+    })
+    .await
+    .ok()
+    .flatten();
+    let Some(cred) = cred else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
-    let row: Option<(i64, String, String)> = conn
-        .query_row(
-            sql!("auth__select_id_pass_hash"),
-            [&email],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
-        .ok();
-    let Some((id, hash, role)) = row else {
-        // Constant-shape timing (A14): unknown emails still pay one argon2
-        // verify so the response time doesn't reveal account existence.
-        let _ = crate_auth::verify_password(dummy_hash(), &password);
+    let Some((id, role)) = cred else {
         eprintln!("login fail email={} ip={}", email, ip);
         return login_html(sc, "Invalid credentials").into_response();
-
     };
-    if !crate_auth::verify_password(&hash, &password) {
-        eprintln!("login fail email={} ip={}", email, ip);
-        return login_html(sc, "Invalid credentials").into_response();
-
-    }
     // TOTP gate (phase 4): user with 2FA enabled gets a short-lived
     // pending token instead of a session — the second factor verifies at
     // /admin/2fa before anything is minted. The pending token is the only
     // path to a session from here; no alternate mint exists on this flow.
-    if let Some((secret, enabled, last_step, _codes)) = udb::totp_get(&sc.db, id) {
+    let (db_t, id_t) = (sc.db.clone(), id);
+    let totp_row = tokio::task::spawn_blocking(move || udb::totp_get(&db_t, id_t))
+        .await
+        .ok()
+        .flatten();
+    if let Some((secret, enabled, last_step, _codes)) = totp_row {
         if enabled && !secret.is_empty() {
             let mut tok = [0u8; 32];
             rand::thread_rng().fill_bytes(&mut tok);
@@ -194,7 +214,7 @@ pub(crate) async fn login(
         }
         let _ = (secret, last_step);
     }
-    mint_session(&app, sc, &headers, id, &form.log, &role, form.rememberme.as_deref() == Some("forever"), &ip)
+    mint_session(&app, sc, &headers, id, &form.log, &role, form.rememberme.as_deref() == Some("forever"), &ip).await
 }
 
 /// TTL for a pending 2FA token — short enough that a stolen password
@@ -203,7 +223,7 @@ const PENDING_TTL: Duration = Duration::from_secs(300);
 
 /// Shared session mint — login (post-password or post-TOTP) and future
 /// paths funnel through here so cookie/session/db stay in lockstep.
-fn mint_session(
+async fn mint_session(
     app: &App,
     sc: &SiteCtx,
     headers: &HeaderMap,
@@ -218,7 +238,8 @@ fn mint_session(
     // a different user, and re-login rotates the csrf.
     if let Some(old) = cookie(&headers, SESSION_COOKIE) {
         app.sessions.lock().remove(&old);
-        let _ = udb::session_delete(&sc.db, &old);
+        let (db_d, old_d) = (sc.db.clone(), old);
+        let _ = tokio::task::spawn_blocking(move || udb::session_delete(&db_d, &old_d)).await;
     }
     let mut tok = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut tok);
@@ -249,7 +270,8 @@ fn mint_session(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_string();
-    let _ = udb::session_put(&sc.db, &tok, id, &ua, ip, &csrf, ttl as i64);
+    let (db_p, tok_p, ua_p, ip_p, csrf_p) = (sc.db.clone(), tok.clone(), ua, ip.to_string(), csrf.clone());
+    let _ = tokio::task::spawn_blocking(move || udb::session_put(&db_p, &tok_p, id, &ua_p, &ip_p, &csrf_p, ttl as i64)).await;
     Response::builder()
         .status(StatusCode::SEE_OTHER)
         .header(header::LOCATION, "/admin")
@@ -286,7 +308,7 @@ pub(crate) async fn two_fa_page(
 <label for="code">Authentication Code</label>
 <input type="text" name="code" id="code" class="input" size="20" inputmode="numeric" pattern="[0-9A-Za-z-]*" autocomplete="one-time-code" autofocus>
 </p>
-<p class="description">6-digit code from your authenticator app, or a backup code (xxxx-xxxx).</p>
+<p class="description">6-digit code from your authenticator app, or a backup code.</p>
 <p class="submit">
 <input type="submit" class="button button-primary button-large" value="Verify">
 </p>
@@ -324,23 +346,34 @@ pub(crate) async fn two_fa_verify(
         app.pending_2fa.lock().remove(&p);
         return Redirect::to("/admin/login").into_response();
     }
-    let Some((secret, enabled, last_step, _)) = udb::totp_get(&sc.db, user_id) else {
+    // TOTP row + verify/consume are sync SQLite+argon2-adjacent work — one
+    // blocking thread for the whole check (audit-261031 C1). None = no
+    // totp row (same redirect as the old `let-else`); Some(ok) = verdict.
+    let (db_v, code_v) = (sc.db.clone(), code.clone());
+    let verdict = tokio::task::spawn_blocking(move || {
+        let (secret, enabled, last_step, _) = udb::totp_get(&db_v, user_id)?;
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        // TOTP first (the normal path); backup codes are the recovery path —
+        // consume is atomic so a raced double-submit can't both win.
+        let ok = enabled
+            && !secret.is_empty()
+            && (crate_auth::totp_verify(&secret, &code_v, now_secs, last_step)
+                .map(|step| {
+                    let _ = udb::totp_step_update(&db_v, user_id, step);
+                })
+                .is_some()
+                || udb::backup_code_consume(&db_v, user_id, &sha256_hex(&crate_auth::backup_code_normalize(&code_v))).unwrap_or(false));
+        Some(ok)
+    })
+    .await
+    .ok()
+    .flatten();
+    let Some(ok) = verdict else {
         return Redirect::to("/admin/login").into_response();
     };
-    let now_secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    // TOTP first (the normal path); backup codes are the recovery path —
-    // consume is atomic so a raced double-submit can't both win.
-    let ok = enabled
-        && !secret.is_empty()
-        && (crate_auth::totp_verify(&secret, &code, now_secs, last_step)
-            .map(|step| {
-                let _ = udb::totp_step_update(&sc.db, user_id, step);
-            })
-            .is_some()
-            || udb::backup_code_consume(&sc.db, user_id, &sha256_hex(&code.replace(' ', ""))).unwrap_or(false));
     if !ok {
         app.pending_2fa.lock().entry(p.clone()).and_modify(|v| v.2 += 1);
         eprintln!("2fa fail user={user_id} ip={}", client_ip(&headers, Some(peer)));
@@ -349,19 +382,25 @@ pub(crate) async fn two_fa_verify(
     // Verified — drop the pending token and mint as usual. `login_hits`
     // was already charged at the password step.
     app.pending_2fa.lock().remove(&p);
-    let row: Option<(String, String)> = crate::db::conn(&sc.db)
-        .ok()
-        .and_then(|c| {
-            c.query_row(sql!("users__select_email_role"), [user_id], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-            })
+    let db_e = sc.db.clone();
+    let row: Option<(String, String)> = tokio::task::spawn_blocking(move || {
+        crate::db::conn(&db_e)
             .ok()
-        });
+            .and_then(|c| {
+                c.query_row(sql!("users__select_email_role"), [user_id], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                })
+                .ok()
+            })
+    })
+    .await
+    .ok()
+    .flatten();
     let Some((email, role)) = row else {
         return Redirect::to("/admin/login").into_response();
     };
     let ip = client_ip(&headers, Some(peer));
-    let mut r = mint_session(&app, sc, &headers, user_id, &email, &role, false, &ip);
+    let mut r = mint_session(&app, sc, &headers, user_id, &email, &role, false, &ip).await;
     // Drop the half-auth cookie now that the real session is minted.
     r.headers_mut().append(
         header::SET_COOKIE,
@@ -375,7 +414,7 @@ pub(crate) async fn logout(
     headers: HeaderMap,
     Form(f): Form<HashMap<String, String>>,
 ) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
     if let Err(r) = check_csrf(&s, f.get("csrf").map(|x| x.as_str()).unwrap_or("")) {
@@ -383,7 +422,8 @@ pub(crate) async fn logout(
     }
     if let Some(tok) = cookie(&headers, SESSION_COOKIE) {
         app.sessions.lock().remove(&tok);
-        let _ = udb::session_delete(&sc.db, &tok);
+        let (db_d, tok_d) = (sc.db.clone(), tok);
+        let _ = tokio::task::spawn_blocking(move || udb::session_delete(&db_d, &tok_d)).await;
     }
     Response::builder()
         .status(StatusCode::SEE_OTHER)
@@ -435,7 +475,7 @@ fn b64_decode(s: &str) -> Option<Vec<u8>> {
 /// `Sess` is returned — it is NOT inserted into `app.sessions`, so its csrf
 /// can't be a stored value: it's HMAC(server_key, user_id:app_pass_hash),
 /// deterministic per credential and stable across requests (M20).
-pub(crate) fn app_pass_sess(sc: &SiteCtx, headers: &HeaderMap, peer: Option<SocketAddr>) -> Option<Sess> {
+pub(crate) async fn app_pass_sess(sc: &SiteCtx, headers: &HeaderMap, peer: Option<SocketAddr>) -> Option<Sess> {
     let hv = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
     let blob = hv.strip_prefix("Basic ")?;
     let raw = b64_decode(blob)?;
@@ -445,21 +485,29 @@ pub(crate) fn app_pass_sess(sc: &SiteCtx, headers: &HeaderMap, peer: Option<Sock
     // WP generates `xxxx xxxx xxxx …`; clients may send it spaced or bare.
     let compact: String = pass.chars().filter(|c| !c.is_whitespace()).collect();
     let pass_hash = sha256_hex(&compact);
-    let (ap_id, user_id, uemail, role) =
-        udb::app_pass_lookup(&sc.db, &pass_hash, &email).ok().flatten()?;
-    let _ = udb::app_pass_touch(&sc.db, ap_id, &client_ip(headers, peer));
-    let csrf = hmac_sha256_hex(&server_key(&sc.db), &format!("{user_id}:{pass_hash}"));
-    Some(Sess {
-        site: sc.slug.clone(),
-        site_name: sc.name.clone(),
-        user_id,
-        email: uemail,
-        role,
-        db: sc.db.clone(),
-        csrf,
-        exp: Instant::now() + Duration::from_secs(12 * 3600),
-        touched: Instant::now()
+    // lookup + touch + server_key are sync SQLite — one blocking thread
+    // carries the whole credential path (audit-261031 C1).
+    let (sc_c, ip_c, hash_c, email_c) = (sc.clone(), client_ip(headers, peer), pass_hash, email);
+    tokio::task::spawn_blocking(move || {
+        let (ap_id, user_id, uemail, role) =
+            udb::app_pass_lookup(&sc_c.db, &hash_c, &email_c).ok().flatten()?;
+        let _ = udb::app_pass_touch(&sc_c.db, ap_id, &ip_c);
+        let csrf = hmac_sha256_hex(&server_key(&sc_c.db), &format!("{user_id}:{hash_c}"));
+        Some(Sess {
+            site: sc_c.slug.clone(),
+            site_name: sc_c.name.clone(),
+            user_id,
+            email: uemail,
+            role,
+            db: sc_c.db.clone(),
+            csrf,
+            exp: Instant::now() + Duration::from_secs(12 * 3600),
+            touched: Instant::now()
+        })
     })
+    .await
+    .ok()
+    .flatten()
 }
 
 

@@ -1,6 +1,7 @@
 use super::*;
 #[derive(Deserialize)]
 pub(crate) struct TaxForm {
+    #[serde(default)]
     csrf: String,
     #[serde(default)]
     id: Option<i64>,
@@ -16,7 +17,7 @@ pub(crate) struct TaxForm {
 
 
 
-fn tax_labels(db: &std::path::Path, tax: &str) -> (String, String) {
+fn tax_labels(db: &std::path::Path, tax: &str) -> (String, String) { // gate-allow: blocking by contract — only called inside spawn_blocking
     let theme = crate::db::conn(db).map(|c| crate::plugins::theme_for_site(&c)).unwrap_or(&crate::plugins::DEFAULT_THEME);
     let (pl, sg) = tax_label_for(theme, tax);
     (pl.to_string(), sg)
@@ -26,7 +27,7 @@ fn tax_labels(db: &std::path::Path, tax: &str) -> (String, String) {
 /// `plugin:tourmaster:tour_custom_taxs` = {slug: label} (tourmaster's
 /// `tourmaster_custom_tour_taxs` option equivalent; hierarchy always
 /// on). Dual-reads the legacy bare `tour_custom_taxs` until phase 05.
-fn custom_taxs(db: &std::path::Path) -> std::collections::BTreeMap<String, String> {
+fn custom_taxs(db: &std::path::Path) -> std::collections::BTreeMap<String, String> { // gate-allow: blocking by contract — only called inside spawn_blocking
     crud::plugin_setting_json_map(db, "tourmaster", "tour_custom_taxs")
 }
 
@@ -36,6 +37,7 @@ pub(crate) async fn tax_new_filter_redirect() -> Response {
 }
 #[derive(Deserialize)]
 pub(crate) struct TaxDelete {
+    #[serde(default)]
     csrf: String,
     id: i64,
     tax: String,
@@ -81,7 +83,7 @@ fn term_pager(base: &str, search_q: &str, page: i64, per_page: i64, total: i64) 
 /// Parent `<select>` options for one hierarchical taxonomy: DFS so children
 /// print `&nbsp;`-indented under their parent. `desc` (self + descendants)
 /// are rendered `disabled` — WP's cycle guard.
-fn parent_opts(all: &[crud::TermRow], cur: i64, desc: &[i64], emitted: &mut std::collections::HashSet<i64>, out: &mut String) {
+fn parent_opts(all: &[crud::TermRow], cur: i64, desc: &[i64], emitted: &mut std::collections::HashSet<i64>, out: &mut String) { // gate-allow: blocking by contract — only called inside spawn_blocking
     let emit = |t: &crud::TermRow, depth: usize, emitted: &mut std::collections::HashSet<i64>, out: &mut String| {
         emitted.insert(t.id);
         let mut attrs = String::new();
@@ -112,7 +114,7 @@ fn parent_opts(all: &[crud::TermRow], cur: i64, desc: &[i64], emitted: &mut std:
     }
 }
 
-fn emit_kids(pid: i64, depth: usize, all: &[crud::TermRow], cur: i64, desc: &[i64], emitted: &mut std::collections::HashSet<i64>, out: &mut String) {
+fn emit_kids(pid: i64, depth: usize, all: &[crud::TermRow], cur: i64, desc: &[i64], emitted: &mut std::collections::HashSet<i64>, out: &mut String) { // gate-allow: blocking by contract — only called inside spawn_blocking
     if depth > 16 {
         return;
     }
@@ -135,7 +137,7 @@ fn emit_kids(pid: i64, depth: usize, all: &[crud::TermRow], cur: i64, desc: &[i6
     }
 }
 
-pub(crate) fn tax_page_html(db: &std::path::Path, s: &Sess, tax: &str, edit: Option<&crud::TermRow>, search_q: &str, page: i64) -> String {
+pub(crate) fn tax_page_html(db: &std::path::Path, s: &Sess, tax: &str, edit: Option<&crud::TermRow>, search_q: &str, page: i64) -> String { // gate-allow: blocking by contract — only called inside spawn_blocking
     // WP term screens all share one table; only the labels change.
     // category/post_tag are the WP defaults, everything else = tour taxonomy.
     let (title, noun) = tax_labels(db, tax);
@@ -434,114 +436,152 @@ fn tax_menu(tax: &str) -> &'static str {
 }
 
 pub(crate) async fn tax_page(State(app): State<App>, headers: HeaderMap, Path(tax): Path<String>, Query(q): Query<HashMap<String, String>>) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
 
-    if !crud::taxonomy_exists(&sc.db, &tax).unwrap_or(false)
-        && !custom_taxs(&sc.db).contains_key(tax.as_str())
-    {
-        return StatusCode::NOT_FOUND.into_response();
-    }
-    let search = q.get("s").cloned().unwrap_or_default();
-    // Screen Options save (GET form — no dedicated POST route exists):
-    // `screen_options=1` marks the submit so absent checkboxes mean hidden.
-    if q.get("screen_options").is_some() {
-        let mut hide = Vec::new();
-        for (param, col) in [
-            ("hide_description", "description"),
-            ("hide_slug", "slug"),
-            ("hide_count", "count"),
-        ] {
-            if q.get(param).is_none() {
-                hide.push(col.to_string());
-            }
+    // rusqlite is sync — offload the term queries + page render.
+    let (s2, sc2) = (s.clone(), sc.clone());
+    tokio::task::spawn_blocking(move || {
+        if !crud::taxonomy_exists(&sc2.db, &tax).unwrap_or(false)
+            && !custom_taxs(&sc2.db).contains_key(tax.as_str())
+        {
+            return StatusCode::NOT_FOUND.into_response();
         }
-        let per_page = q
-            .get("per_page")
-            .and_then(|v| v.parse::<i64>().ok())
-            .unwrap_or(20)
-            .clamp(1, 999);
-        let _ = crud::save_screen_opts(
-            &sc.db,
-            s.user_id,
-            &tax,
-            &crud::TaxScreenOpts { hide, per_page },
-        );
-        let back = if search.is_empty() {
-            format!("/admin/tax/{tax}")
-        } else {
-            format!("/admin/tax/{tax}?s={}", urlenc(&search))
-        };
-        return Redirect::to(&back).into_response();
-    }
-    let page: i64 = q.get("paged").and_then(|v| v.parse().ok()).unwrap_or(1);
-    html_admin(&s, "Terms", &tax_page_html(&sc.db, &s, &tax, None, &search, page), true, "edit-tags").into_response()
+        let search = q.get("s").cloned().unwrap_or_default();
+        // Screen Options save (GET form — no dedicated POST route exists):
+        // `screen_options=1` marks the submit so absent checkboxes mean hidden.
+        if q.get("screen_options").is_some() {
+            let mut hide = Vec::new();
+            for (param, col) in [
+                ("hide_description", "description"),
+                ("hide_slug", "slug"),
+                ("hide_count", "count"),
+            ] {
+                if q.get(param).is_none() {
+                    hide.push(col.to_string());
+                }
+            }
+            let per_page = q
+                .get("per_page")
+                .and_then(|v| v.parse::<i64>().ok())
+                .unwrap_or(20)
+                .clamp(1, 999);
+            let _ = crud::save_screen_opts(
+                &sc2.db,
+                s2.user_id,
+                &tax,
+                &crud::TaxScreenOpts { hide, per_page },
+            );
+            let back = if search.is_empty() {
+                format!("/admin/tax/{tax}")
+            } else {
+                format!("/admin/tax/{tax}?s={}", urlenc(&search))
+            };
+            return Redirect::to(&back).into_response();
+        }
+        let page: i64 = q.get("paged").and_then(|v| v.parse().ok()).unwrap_or(1);
+        html_admin(&s2, "Terms", &tax_page_html(&sc2.db, &s2, &tax, None, &search, page), true, "edit-tags").into_response()
+    })
+    .await
+    .unwrap_or_else(|e| {
+        eprintln!("tax_page join: {e:#}");
+        StatusCode::INTERNAL_SERVER_ERROR.into_response()
+    })
 }
 
 
 pub(crate) async fn tax_edit(State(app): State<App>, headers: HeaderMap, Path(id): Path<i64>) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
-    match crud::get_term(&sc.db, id) {
-        Ok(Some(t)) => {
-            let tax = crud::taxonomy_of(&sc.db, id).unwrap_or(None).unwrap_or_else(|| "category".into());
-            html_admin(&s, "Edit", &tax_page_html(&sc.db, &s, &tax, Some(&t), "", 1), true, "edit-tags").into_response()
+    // rusqlite is sync — offload the term queries + page render.
+    let (s2, sc2) = (s.clone(), sc.clone());
+    tokio::task::spawn_blocking(move || {
+        match crud::get_term(&sc2.db, id) {
+            Ok(Some(t)) => {
+                let tax = crud::taxonomy_of(&sc2.db, id).unwrap_or(None).unwrap_or_else(|| "category".into());
+                html_admin(&s2, "Edit", &tax_page_html(&sc2.db, &s2, &tax, Some(&t), "", 1), true, "edit-tags").into_response()
+            }
+            _ => StatusCode::NOT_FOUND.into_response(),
         }
-        _ => StatusCode::NOT_FOUND.into_response(),
-    }
+    })
+    .await
+    .unwrap_or_else(|e| {
+        eprintln!("tax_edit join: {e:#}");
+        StatusCode::INTERNAL_SERVER_ERROR.into_response()
+    })
 }
 
 pub(crate) async fn tax_save(State(app): State<App>, headers: HeaderMap, Form(f): Form<TaxForm>) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
         if let Err(r) = check_csrf(&s, &f.csrf) {
         return r;
     }
     let slug = if f.slug.trim().is_empty() {
-        crud::slugify(&f.name)
+        crud::slugify(&f.name) // gate-allow: pure string CPU — no DB
     } else {
         f.slug.clone()
     };
-    match crud::save_term(&sc.db, &f.tax, f.id, &f.name, &slug, &f.description, f.parent) {
-        Ok(_) => {
-            crate::admin::admin::bust_cache(&sc);
-            Redirect::to(&format!("/admin/tax/{}", f.tax)).into_response()
+    // rusqlite is sync — offload the save + cache sweep to a blocking thread.
+    let sc = sc.clone();
+    tokio::task::spawn_blocking(move || {
+        match crud::save_term(&sc.db, &f.tax, f.id, &f.name, &slug, &f.description, f.parent) {
+            Ok(_) => {
+                crate::admin::admin::bust_cache(&sc);
+                Redirect::to(&format!("/admin/tax/{}", f.tax)).into_response()
+            }
+            Err(_) => StatusCode::BAD_REQUEST.into_response(),
         }
-        Err(_) => StatusCode::BAD_REQUEST.into_response(),
-    }
+    })
+    .await
+    .unwrap_or_else(|e| {
+        eprintln!("tax_save join: {e:#}");
+        StatusCode::INTERNAL_SERVER_ERROR.into_response()
+    })
 }
 
 pub(crate) async fn tax_delete(State(app): State<App>, headers: HeaderMap, Form(f): Form<TaxDelete>) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
         if let Err(r) = check_csrf(&s, &f.csrf) {
         return r;
     }
-    let _ = crud::delete_term(&sc.db, f.id);
-    crate::admin::admin::bust_cache(&sc);
-    Redirect::to(&format!("/admin/tax/{}", f.tax)).into_response()
+    let back = format!("/admin/tax/{}", f.tax);
+    // rusqlite is sync — offload the delete + cache sweep to a blocking thread.
+    let sc = sc.clone();
+    let _ = tokio::task::spawn_blocking(move || {
+        let _ = crud::delete_term(&sc.db, f.id);
+        crate::admin::admin::bust_cache(&sc);
+    })
+    .await;
+    Redirect::to(&back).into_response()
 }
 
 pub(crate) async fn tax_bulk(State(app): State<App>, headers: HeaderMap, Form(map): Form<HashMap<String, String>>) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
     if !ct_eq(s.csrf.as_bytes(), map.get("csrf").map(|x| x.as_str()).unwrap_or("").as_bytes()) {
         return StatusCode::FORBIDDEN.into_response();
     }
     let tax = map.get("tax").cloned().unwrap_or_else(|| "category".into());
-    if map.get("action").map(|a| a.as_str()) == Some("delete") {
-        for k in map.keys() {
-            if let Some(id) = k.strip_prefix("d-").and_then(|x| x.parse::<i64>().ok()) {
-                let _ = crud::delete_term(&sc.db, id);
+    // rusqlite is sync — offload the bulk deletes + cache sweep to a blocking thread.
+    let sc = sc.clone();
+    let _ = tokio::task::spawn_blocking(move || {
+        if map.get("action").map(|a| a.as_str()) == Some("delete") {
+            for k in map.keys() {
+                if let Some(id) = k.strip_prefix("d-").and_then(|x| x.parse::<i64>().ok()) {
+                    let _ = crud::delete_term(&sc.db, id);
+                }
             }
+            crate::admin::admin::bust_cache(&sc);
         }
-        crate::admin::admin::bust_cache(&sc);
-    }
+    })
+    .await;
     Redirect::to(&format!("/admin/tax/{tax}")).into_response()
 }
 

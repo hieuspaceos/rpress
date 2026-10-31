@@ -388,7 +388,7 @@ fn icons(sc: &SiteCtx) -> Value {
 // namespace; reads fall back to the legacy bare key until phase 05's
 // key migration (write whitelist boundary, phase 06).
 
-fn get_setting(conn: &Connection, key: &str) -> Value {
+fn get_setting(conn: &Connection, key: &str) -> Value { // gate-allow: sync — every caller reaches this on a blocking thread (spawn_blocking / build / boot)
     crate::db::plugin_setting_json_value_conn(conn, "goodlayers", key)
 }
 
@@ -438,7 +438,7 @@ fn element_template(conn: &Connection, defs_e: &Value, n: &Map<String, Value>) -
 /// `get_preview`; our equivalent is the CMS frontend renderer (stable,
 /// and identical to what the public site outputs).
 
-fn element_preview_html(conn: &Connection, typ: &str, value: &Value) -> String {
+fn element_preview_html(conn: &Connection, typ: &str, value: &Value) -> String { // gate-allow: sync — every caller reaches this on a blocking thread (spawn_blocking / build / boot)
     let node = json!({"template": "element", "type": typ, "value": value});
     let tour_base = PB_TOUR_BASE.with(|t| t.borrow().clone());
     // Preview lang = site primary — the canvas has no per-post lang.

@@ -88,5 +88,70 @@ done < <(grep -rn --include='*.rs' -E '"fr"|"es"|"de"|"/es/"|"/fr/"|"/de/"' \
       { file=$1; line=$2; if (!(file in t) || line+0 < t[file]+0) print }' \
   $(grep -rlE --include='*.rs' '#\[cfg\(test\)\]|mod tests' src/ 2>/dev/null) -)
 
+# --- 6. blocking DB/argon2 calls on tokio threads (src/admin, src/plugins) ---
+# rusqlite + argon2 are synchronous — run inline on an async worker they stall
+# the whole runtime (audit-261031 §2.1 C1). Every DB-open / db-helper call /
+# argon2 call in src/admin and src/plugins must sit inside a
+# `tokio::task::spawn_blocking` closure (plugin adapters run on the same
+# tokio workers — tourmaster save-option was the live hole this covers).
+# Exempt: lines marked `// gate-allow: <reason>`, a whole fn whose
+# signature line carries gate-allow (sync helpers whose callers all wrap),
+# test code after the file's first `#[cfg(test)]`/`mod tests`, and the
+# `spawn_blocking` call line itself. The awk below tracks spawn ranges by
+# counting braces on a string/comment-stripped copy of each line.
+while IFS= read -r hit; do
+  echo "BLOCKING-ON-ASYNC $hit"
+  fail=1
+done < <(awk '
+  BEGIN { SQ = sprintf("%c", 39) }
+  FNR == 1 { depth = 0; pending = 0; testcode = 0; inraw = 0; rawn = 0; allowfn = 0 }
+  {
+    line = $0
+    # strings/comments stripped copy — braces inside literals must not
+    # skew the spawn_blocking depth tracking.
+    s = line; out = ""; n = length(s); i = 1
+    while (i <= n) {
+      c = substr(s, i, 1)
+      if (inraw) {
+        if (c == "\"" && substr(s, i + 1, rawn) == hashes) { inraw = 0; i += rawn + 1 } else { i++ }
+        continue
+      }
+      if (c == "/" && substr(s, i + 1, 1) == "/") break
+      if (c == "\"") {
+        i++
+        while (i <= n) {
+          d = substr(s, i, 1)
+          if (d == "\\") { i += 2; continue }
+          if (d == "\"") { i++; break }
+          i++
+        }
+        continue
+      }
+      if (c == "r" && match(substr(s, i + 1), /^#+"/)) {
+        rawn = RLENGTH - 1; hashes = substr(s, i + 1, rawn); inraw = 1; i += RLENGTH + 1; continue
+      }
+      if (c == SQ) {
+        # char literal (SQ x SQ or SQ \e SQ) → skip; bare lifetime keeps SQ
+        if (substr(s, i + 2, 1) == SQ) { i += 3; continue }
+        if (substr(s, i + 2, 1) == "\\" && substr(s, i + 4, 1) == SQ) { i += 5; continue }
+      }
+      out = out c; i++
+    }
+    if (line ~ /^[ \t]*(pub(\(crate\))? )?(async )?fn /) allowfn = (line ~ /gate-allow/)
+    if (!testcode && !allowfn && depth == 0 && line !~ /spawn_blocking/ && line !~ /gate-allow/ &&
+        line ~ /(crate::db|crate::auth|crud|udb|subdb|fdb|sdb|crate_auth)::(hash_password|verify_password)[ \t]*\(|(crate::db|crud|udb|subdb|fdb|sdb)(::[A-Za-z_][A-Za-z0-9_]*)+[ \t]*\(|rusqlite::Connection::open[ \t]*\(|dummy_hash[ \t]*\(|server_key[ \t]*\(|crate::lang::config[ \t]*\(/) {
+      print FILENAME ":" FNR ":" line
+    }
+    if (line ~ /^[ \t]*#\[cfg\(test\)\]|^[ \t]*mod[ \t]+tests/) testcode = 1
+    armed = (depth == 0 && out ~ /spawn_blocking/)
+    opens = gsub(/[{]/, "", out); closes = gsub(/[}]/, "", out)
+    if (depth > 0) {
+      depth += opens - closes
+      if (depth < 0) depth = 0
+    } else if (pending || armed) {
+      if (opens > 0) { depth = opens - closes; if (depth < 0) depth = 0; pending = 0 }
+    }
+  }' src/admin/*.rs src/plugins/*.rs src/plugins/*/*.rs)
+
 [ "$fail" = 0 ] && echo "layers OK"
 exit "$fail"

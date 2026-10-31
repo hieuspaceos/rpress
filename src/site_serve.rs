@@ -10,8 +10,6 @@
 use crate::admin;
 use crate::db::conn;
 use crate::site::{self, SiteEnv};
-#[allow(unused_imports)]
-use crate::sql;
 use anyhow::{bail, Context, Result};
 use rusqlite::params;
 use std::net::{TcpListener, TcpStream};

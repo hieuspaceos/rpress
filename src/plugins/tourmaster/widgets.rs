@@ -109,7 +109,7 @@ fn meta1(conn: &Connection, post_id: i64, key: &str) -> String {
 /// custom_html-13: thumbnail (sizes_json 'thumbnail' → 96×96, else the
 /// full image at 128×85), title, ribbon (promo-text or style term names
 /// with the tourmaster colours) and the De/Desde price block.
-fn tour_card(conn: &Connection, post_id: i64, site_url: &str, lang: &str, kind_base: &str) -> Result<Option<String>> {
+fn tour_card(conn: &Connection, post_id: i64, site_url: &str, lang: &str, kind_base: &str) -> Result<Option<String>> { // gate-allow: sync — every caller reaches this on a blocking thread (spawn_blocking / build / boot)
     let row: Option<(String, String, Option<i64>)> = conn
         .query_row(
             "SELECT slug, title, featured_media_id FROM posts WHERE id=?1 AND status='publish'",

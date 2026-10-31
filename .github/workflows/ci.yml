@@ -1,0 +1,31 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: cargo test
+        run: cargo test --locked
+
+      - name: architecture gate
+        run: bash scripts/check-layers.sh
+
+      - name: clippy (warn-only until codebase is clean)
+        run: cargo clippy --all-targets
+        continue-on-error: true
+      # e2e-bridge.sh intentionally absent — it needs php-cli + a live WP
+      # bridge and stays a manual gate (README).

@@ -72,8 +72,8 @@ pub(crate) fn conn(db: &std::path::Path) -> Result<Connection> {
 }
 
 /// Alias of `conn` — kept so write-path call sites read intent. All
-/// transactions are IMMEDIATE since phase-2.
-#[allow(dead_code)]
+/// transactions are IMMEDIATE since phase-2. Called by
+/// `db::posts::save_post` (not dead — the earlier allow was stale).
 pub(crate) fn conn_write(db: &std::path::Path) -> Result<Connection> {
     conn(db)
 }

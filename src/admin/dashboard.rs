@@ -31,7 +31,7 @@ fn two() -> u8 {
     2
 }
 
-fn dash_opts(sc: &SiteCtx, user_id: i64) -> DashOpts {
+fn dash_opts(sc: &SiteCtx, user_id: i64) -> DashOpts { // gate-allow: blocking by contract — only called inside spawn_blocking
     crud::comments::setting_get(&sc.db, &format!("dashboard_{user_id}"))
         .and_then(|raw| serde_json::from_str(&raw).ok())
         .unwrap_or(DashOpts {
@@ -89,7 +89,7 @@ fn screen_options(opts: &DashOpts, csrf: &str) -> String {
 
 /// At a Glance body: post/page/tour/media counts + comments/moderation +
 /// honest version footer.
-fn glance_box(c: &Connection) -> String {
+fn glance_box(c: &Connection) -> String { // gate-allow: blocking by contract — only called inside spawn_blocking
     let n = |sql: &str| -> i64 {
         c.query_row(sql, [], |r| r.get(0)).unwrap_or(0)
     };
@@ -133,7 +133,7 @@ fn glance_box(c: &Connection) -> String {
 
 /// One Activity "Recently Published" row: linked title + date + Edit/Trash
 /// row actions (trash posts to the existing `/admin/trash` handler).
-fn activity_post_row(r: &crud::posts::DashPostRow, csrf: &str) -> String {
+fn activity_post_row(r: &crud::posts::DashPostRow, csrf: &str) -> String { // gate-allow: blocking by contract — only called inside spawn_blocking
     let title = if r.title.trim().is_empty() {
         "(no title)".to_string()
     } else {
@@ -151,7 +151,7 @@ fn activity_post_row(r: &crud::posts::DashPostRow, csrf: &str) -> String {
 
 /// One Activity comment row: author + excerpt + "On: post" + inline
 /// Approve/Spam/Trash posting to `comments::comment_action` (`back=/admin`).
-fn activity_comment_row(r: &crud::comments::CommentRow, csrf: &str) -> String {
+fn activity_comment_row(r: &crud::comments::CommentRow, csrf: &str) -> String { // gate-allow: blocking by contract — only called inside spawn_blocking
     let body = r
         .body
         .split_whitespace()
@@ -190,7 +190,7 @@ fn activity_comment_row(r: &crud::comments::CommentRow, csrf: &str) -> String {
 
 /// Activity body: Awaiting Moderation (pending > 0), Recently Published,
 /// Comments — WP `wp_dashboard_recent_posts` + `wp_dashboard_recent_comments`.
-fn activity_box(_c: &Connection, sc: &SiteCtx, csrf: &str) -> String {
+fn activity_box(_c: &Connection, sc: &SiteCtx, csrf: &str) -> String { // gate-allow: blocking by contract — only called inside spawn_blocking
     let mut h = String::from("<div id=\"activity-widget\">");
     let pending = crate::db::pending_comments_count(&sc.db);
     if pending > 0 {
@@ -244,7 +244,7 @@ fn activity_box(_c: &Connection, sc: &SiteCtx, csrf: &str) -> String {
 
 /// Quick Draft body: title/content form → POST /admin/draft + the session
 /// user's 3 most recent drafts (WP `wp_dashboard_quick_press`).
-fn quick_draft_box(sc: &SiteCtx, s: &Sess) -> String {
+fn quick_draft_box(sc: &SiteCtx, s: &Sess) -> String { // gate-allow: blocking by contract — only called inside spawn_blocking
     let mut h = format!(
         r#"<form method="post" action="/admin/draft" id="quick-press">
 <input type="hidden" name="csrf" value="{}">
@@ -285,7 +285,7 @@ struct HealthCheck {
 
 /// Static verdict inputs (phase spec): db file < 200MB, `settings.last_backup`
 /// within 7 days, pending comments < 100.
-fn health_checks(c: &Connection, sc: &SiteCtx, pending: i64) -> Vec<HealthCheck> {
+fn health_checks(c: &Connection, sc: &SiteCtx, pending: i64) -> Vec<HealthCheck> { // gate-allow: blocking by contract — only called inside spawn_blocking
     let db_bytes = std::fs::metadata(&sc.db).map(|m| m.len()).unwrap_or(0);
     let db_mb = db_bytes / (1024 * 1024);
     let backup_raw = c
@@ -388,7 +388,7 @@ fn health_box(c: &Connection, sc: &SiteCtx, pending: i64) -> String {
 
 /// GET /admin — WP `index.php`: screen options + N-column widget layout.
 pub(crate) async fn dashboard(State(app): State<App>, headers: HeaderMap) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
     // Blocking: the box queries + render build are sync SQLite + string
@@ -401,7 +401,7 @@ pub(crate) async fn dashboard(State(app): State<App>, headers: HeaderMap) -> Res
     });
 }
 
-fn dashboard_sync(s: &Sess, sc: &SiteCtx) -> Response {
+fn dashboard_sync(s: &Sess, sc: &SiteCtx) -> Response { // gate-allow: blocking by contract — only called inside spawn_blocking
     let Ok(c) = crate::db::conn(&sc.db) else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
@@ -468,7 +468,7 @@ pub(crate) async fn save_draft(
     headers: HeaderMap,
     Form(f): Form<HashMap<String, String>>,
 ) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
     if !ct_eq(s.csrf.as_bytes(), f.get("csrf").map(|x| x.as_str()).unwrap_or("").as_bytes()) {
@@ -476,9 +476,17 @@ pub(crate) async fn save_draft(
     }
     let title = f.get("title").cloned().unwrap_or_default();
     let content = f.get("content").cloned().unwrap_or_default();
-    match crud::misc::insert_draft(&sc.db, &title, &content, s.user_id) {
-        Ok(id) => Redirect::to(&format!("/admin/edit/{id}")).into_response(),
-        Err(_) => Redirect::to("/admin").into_response(),
+    let db = sc.db.clone();
+    let uid = s.user_id;
+    // rusqlite is sync — offload the insert to a blocking thread.
+    let res = tokio::task::spawn_blocking(move || crud::misc::insert_draft(&db, &title, &content, uid)).await;
+    match res {
+        Ok(Ok(id)) => Redirect::to(&format!("/admin/edit/{id}")).into_response(),
+        Ok(Err(_)) => Redirect::to("/admin").into_response(),
+        Err(e) => {
+            eprintln!("save_draft join: {e:#}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
     }
 }
 
@@ -489,7 +497,7 @@ pub(crate) async fn screen_options_save(
     headers: HeaderMap,
     Form(f): Form<HashMap<String, String>>,
 ) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
     if !ct_eq(s.csrf.as_bytes(), f.get("csrf").map(|x| x.as_str()).unwrap_or("").as_bytes()) {
@@ -508,28 +516,36 @@ pub(crate) async fn screen_options_save(
         .map(|id| id.to_string())
         .collect();
     let value = serde_json::json!({ "columns": columns, "hidden": hidden }).to_string();
-    let _ = crud::comments::setting_set(&sc.db, &format!("dashboard_{}", s.user_id), &value);
+    // rusqlite is sync — offload the settings write to a blocking thread.
+    let db = sc.db.clone();
+    let _ = tokio::task::spawn_blocking(move || {
+        crud::comments::setting_set(&db, &format!("dashboard_{}", s.user_id), &value)
+    })
+    .await;
     Redirect::to("/admin").into_response()
 }
 
 /// GET /admin/health — Site Health screen. HTML page for browsers
 /// (Accept: text/html), JSON otherwise.
 pub(crate) async fn health_page(State(app): State<App>, headers: HeaderMap) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
-    let c = match crate::db::conn(&sc.db) {
-        Ok(c) => c,
-        Err(_) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(serde_json::json!({"status": "error"})),
-            )
-                .into_response()
-        }
+    // rusqlite is sync — offload conn open + health queries to a blocking thread.
+    let sc2 = sc.clone();
+    let checks = tokio::task::spawn_blocking(move || {
+        let c = crate::db::conn(&sc2.db).ok()?;
+        let pending = crate::db::pending_comments_count(&sc2.db);
+        Some(health_checks(&c, &sc2, pending))
+    })
+    .await;
+    let Ok(Some(checks)) = checks else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(serde_json::json!({"status": "error"})),
+        )
+            .into_response();
     };
-    let pending = crate::db::pending_comments_count(&sc.db);
-    let checks = health_checks(&c, sc, pending);
     let good = checks.iter().all(|x| x.pass);
 
     let wants_html = headers
@@ -562,14 +578,22 @@ pub(crate) async fn health_page(State(app): State<App>, headers: HeaderMap) -> R
             esc(&chk.detail)
         ));
     }
-    let body = format!(
-        r#"{}<div class="wrap"><h1>Site Health</h1>
+    // chrome() is sync DB — the HTML path rides a blocking thread (C1).
+    tokio::task::spawn_blocking(move || {
+        let body = format!(
+            r#"{}<div class="wrap"><h1>Site Health</h1>
 <div class="postbox"><h2 class="hndle">Site Health Status</h2><div class="inside">
 <p><span style="color:{color};font-size:2em;font-weight:600">{verdict}</span></p>
 <table class="widefat striped"><tbody>{items}</tbody></table>
 </div></div>
 </div>"#,
-        chrome("dashboard", &s)
-    );
-    html_page(&s, &format!("Site Health ‹ {}", s.site_name), &body, true).into_response()
+            chrome("dashboard", &s)
+        );
+        html_page(&s, &format!("Site Health ‹ {}", s.site_name), &body, true).into_response()
+    })
+    .await
+    .unwrap_or_else(|e| {
+        eprintln!("health_page join: {e:#}");
+        StatusCode::INTERNAL_SERVER_ERROR.into_response()
+    })
 }

@@ -660,7 +660,7 @@ fn comment_html(conn: &Connection, c: &Comment, depth: u32) -> String {
         depth = depth.min(10),
         depth_cls = depth_class,
         label = label,
-        author = esc(&c.author),
+        author = esc_attr(&c.author),
         grav = gravatar_hash(&c.email, &c.author),
         author_html = author_html,
         role_label = role_label,

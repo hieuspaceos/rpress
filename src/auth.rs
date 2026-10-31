@@ -152,19 +152,45 @@ pub fn totp_secret_new() -> String {
     base32_encode(&b)
 }
 
-/// 10 one-time backup codes `xxxx-xxxx` → (display Vec, JSON array of
-/// sha256 hashes for storage).
+/// 10 one-time backup codes → (display Vec, JSON array of sha256 hashes for
+/// storage). 128-bit entropy per code (16 random bytes, base32'd into 26
+/// chars shown as `xxxxx-xxxxx-xxxxx-xxxxx-xxxxx-x`): the previous 32-bit
+/// `xxxx-xxxx` format was offline-bruteforceable from a leaked rpress.db
+/// (audit-261031 §1.3). At ≥128 bit, bare SHA-256 storage is safe — the hash
+/// only needs to defeat DB disclosure, not guessing.
 pub fn backup_codes_new() -> (Vec<String>, String) {
     use sha2::{Digest, Sha256};
     let mut codes = Vec::new();
     let mut hashes = Vec::new();
     for _ in 0..10 {
-        let mut b = [0u8; 4];
+        let mut b = [0u8; 16];
         rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut b);
-        let c = format!("{:04x}-{:04x}", u16::from_be_bytes([b[0], b[1]]), u16::from_be_bytes([b[2], b[3]]));
-        let h = Sha256::digest(c.as_bytes());
+        let enc = base32_encode(&b); // 26 chars
+        let c = format!(
+            "{}-{}-{}-{}-{}-{}",
+            &enc[0..5],
+            &enc[5..10],
+            &enc[10..15],
+            &enc[15..20],
+            &enc[20..25],
+            &enc[25..]
+        );
+        // Hash the dashed display form — the verifier strips user-typed
+        // dashes/spaces then hashes the same canonical form (see
+        // backup_code_normalize).
+        let h = Sha256::digest(backup_code_normalize(&c).as_bytes());
         hashes.push(h.iter().map(|x| format!("{x:02x}")).collect::<String>());
         codes.push(c);
     }
     (codes, serde_json::to_string(&hashes).unwrap_or_default())
+}
+
+/// Canonical backup-code form for hashing: uppercase, dashes/whitespace
+/// removed (pasted codes often carry spaces, tabs, or newlines). Callers
+/// must normalize user input through this before SHA-256.
+pub fn backup_code_normalize(code: &str) -> String {
+    code.chars()
+        .filter(|c| !c.is_whitespace() && *c != '-')
+        .flat_map(|c| c.to_uppercase())
+        .collect()
 }

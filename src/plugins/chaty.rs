@@ -96,7 +96,7 @@ fn widget_fields(sfx: &str) -> Vec<FieldSpec> {
     }
 }
 
-fn settings<'a>(
+fn settings<'a>( // gate-allow: sync — every caller reaches this on a blocking thread (spawn_blocking / build / boot)
     _app: &'a App,
     s: &'a Sess,
     sc: &'a SiteCtx,

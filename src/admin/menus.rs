@@ -20,9 +20,21 @@ pub(crate) async fn menus_page(
     headers: HeaderMap,
     Query(q): Query<HashMap<String, String>>,
 ) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
+    // rusqlite is sync — offload conn+queries+render to a blocking thread
+    // (same pattern as dashboard; audit P1).
+    let (s2, sc2) = (s, sc.clone());
+    return tokio::task::spawn_blocking(move || menus_page_sync(s2, &sc2, &q))
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("menus_page join: {e:#}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        });
+}
+
+fn menus_page_sync(s: Sess, sc: &SiteCtx, q: &HashMap<String, String>) -> Response { // gate-allow: blocking by contract — only called inside spawn_blocking
     let menus = crud::list_menus(&sc.db).unwrap_or_default();
     let want = q.get("menu").and_then(|v| v.parse::<i64>().ok());
     let creating = menus.is_empty() || matches!(want, Some(0));
@@ -148,7 +160,7 @@ button.item-delete{border:none;background:none;padding:0}\
 
 /// Edit view: left metabox accordion + right Menu Structure column.
 /// `ms` gates per-user Screen Options (advanced fields + accordion sections).
-fn frame_html(sc: &SiteCtx, s: &Sess, m: &crud::Menu, ms: &crud::MenuScreen) -> String {
+fn frame_html(sc: &SiteCtx, s: &Sess, m: &crud::Menu, ms: &crud::MenuScreen) -> String { // gate-allow: blocking by contract — only called inside spawn_blocking
     let mut h = String::new();
     // Standalone POST forms referenced by `form=` attributes (forms inside
     // other forms or the accordion cannot nest).
@@ -245,7 +257,7 @@ Automatically add new top-level pages to this menu</label></p>\
 /// One accordion metabox listing publish posts of `kind` with inner
 /// Most Recent | View All | Search tabs. Checkboxes post `p-{id}` +
 /// `it-{id}` (type marker) through the shared `menu-add` form.
-fn object_box(kind: &str, title: &str, sc: &SiteCtx, lang: &str) -> String {
+fn object_box(kind: &str, title: &str, sc: &SiteCtx, lang: &str) -> String { // gate-allow: blocking by contract — only called inside spawn_blocking
     let recent = crud::panel_posts(&sc.db, kind, lang, true).unwrap_or_default();
     let all = crud::panel_posts(&sc.db, kind, lang, false).unwrap_or_default();
     let lis = |rows: &[(i64, String)]| -> String {
@@ -307,7 +319,7 @@ fn custom_link_box() -> String {
 
 /// Categories metabox (terms taxonomy `category`). Same 3-tab chrome;
 /// "Most Recent" = most used (count desc) to match WP's Most Used.
-fn category_box(sc: &SiteCtx) -> String {
+fn category_box(sc: &SiteCtx) -> String { // gate-allow: blocking by contract — only called inside spawn_blocking
     let mut terms = crud::list_terms(&sc.db, "category").unwrap_or_default();
     let lis = |rows: &[crud::TermRow]| -> String {
         if rows.is_empty() {
@@ -334,7 +346,7 @@ fn category_box(sc: &SiteCtx) -> String {
 /// Taxonomy metabox for any non-category taxonomy (tour taxonomies, post_tag,
 /// etc.). Checkbox key is `p-tax-{TAX}-{id}` where `TAX` = taxonomy slug with
 /// `-`→`_`; server decodes by `_`→`-` to find the term's taxonomy.
-fn taxonomy_box(sc: &SiteCtx, tax: &str) -> String {
+fn taxonomy_box(sc: &SiteCtx, tax: &str) -> String { // gate-allow: blocking by contract — only called inside spawn_blocking
     let mut terms = crud::list_terms(&sc.db, tax).unwrap_or_default();
     let key = tax.replace('-', "_");
     let lis = |rows: &[crud::TermRow]| -> String {
@@ -363,7 +375,7 @@ fn taxonomy_box(sc: &SiteCtx, tax: &str) -> String {
 /// Accordion metabox `(section-key, label)` pairs in render order — shared by
 /// the Screen Options checkboxes and the apply handler. Keys match the
 /// `.add-{key}` class each box renders (`tax-{escaped}` for taxonomies).
-fn section_keys(sc: &SiteCtx) -> Vec<(String, String)> {
+fn section_keys(sc: &SiteCtx) -> Vec<(String, String)> { // gate-allow: blocking by contract — only called inside spawn_blocking
     let mut v = vec![
         ("page".into(), "Pages".into()),
         ("post".into(), "Posts".into()),
@@ -391,7 +403,7 @@ fn section_keys(sc: &SiteCtx) -> Vec<(String, String)> {
 /// WP `#screen-meta` + `#screen-meta-links` for nav-menus.php: advanced menu
 /// property toggles (checked = field visible) + accordion section toggles.
 /// Fields default hidden (WP parity: advanced properties start unchecked).
-fn screen_options_html(sc: &SiteCtx, s: &Sess, ms: &crud::MenuScreen) -> String {
+fn screen_options_html(sc: &SiteCtx, s: &Sess, ms: &crud::MenuScreen) -> String { // gate-allow: blocking by contract — only called inside spawn_blocking
     // (key, label) — checkbox value doubles as the `.field-{key}` toggle class.
     const FIELDS: [(&str, &str); 5] = [
         ("title_attr", "Title Attribute"),
@@ -446,7 +458,7 @@ fn screen_options_html(sc: &SiteCtx, s: &Sess, ms: &crud::MenuScreen) -> String 
 /// Manage Locations tab — widefat table of `theme_locations_available`
 /// rows, each with an Assigned Menu dropdown; one Save Changes posts the
 /// whole grid (`assign-{location}` keys, empty = unassigned).
-fn locations_html(sc: &SiteCtx, s: &Sess, menus: &[crud::Menu]) -> String {
+fn locations_html(sc: &SiteCtx, s: &Sess, menus: &[crud::Menu]) -> String { // gate-allow: blocking by contract — only called inside spawn_blocking
     let locs = crud::available_locations(&sc.db);
     let assigned = crud::list_locations(&sc.db, &locs).unwrap_or_default();
     /* Per-lang assignment grid: each (location, lang) pair gets its own
@@ -497,7 +509,7 @@ fn locations_html(sc: &SiteCtx, s: &Sess, menus: &[crud::Menu]) -> String {
 
 
 /// Depth of an item = length of its parent chain (cycle-guarded).
-fn depth_of(it: &crud::MenuItem, all: &[crud::MenuItem]) -> usize {
+fn depth_of(it: &crud::MenuItem, all: &[crud::MenuItem]) -> usize { // gate-allow: blocking by contract — only called inside spawn_blocking
     let mut d = 0;
     let mut p = it.parent_id;
     while let Some(pid) = p {
@@ -514,7 +526,7 @@ fn depth_of(it: &crud::MenuItem, all: &[crud::MenuItem]) -> usize {
 }
 
 /// WP type label for `.item-type` (Custom Link / Page / Post / Tour / Category).
-fn type_label(sc: &SiteCtx, it: &crud::MenuItem) -> String {
+fn type_label(sc: &SiteCtx, it: &crud::MenuItem) -> String { // gate-allow: blocking by contract — only called inside spawn_blocking
     match it.item_type.as_str() {
         "post_type" => match it.post_kind.as_str() {
             "page" => "Page".into(),
@@ -542,7 +554,7 @@ fn type_label(sc: &SiteCtx, it: &crud::MenuItem) -> String {
 
 /// "Original:" link target — public permalink for posts, term editor for
 /// taxonomy items (WP uses the archive URL; no public term path exists here).
-fn original(it: &crud::MenuItem, sc: &SiteCtx) -> Option<(String, String)> {
+fn original(it: &crud::MenuItem, sc: &SiteCtx) -> Option<(String, String)> { // gate-allow: blocking by contract — only called inside spawn_blocking
     match it.item_type.as_str() {
         "post_type" if it.post_id.is_some() => Some((
             public_path(sc, &it.post_lang, &it.post_kind, &it.post_slug),
@@ -561,7 +573,7 @@ fn original(it: &crud::MenuItem, sc: &SiteCtx) -> Option<(String, String)> {
 /// with the advanced fields WP puts under "Show advanced menu properties" —
 /// each wrapped in `.field-{key}` and `hidden` unless enabled in Screen
 /// Options (`ms`), so the JS toggle can flip them without a reload.
-fn item_html(sc: &SiteCtx, menu_id: i64, it: &crud::MenuItem, prev: Option<&crud::MenuItem>, all: &[crud::MenuItem], ms: &crud::MenuScreen) -> String {
+fn item_html(sc: &SiteCtx, menu_id: i64, it: &crud::MenuItem, prev: Option<&crud::MenuItem>, all: &[crud::MenuItem], ms: &crud::MenuScreen) -> String { // gate-allow: blocking by contract — only called inside spawn_blocking
     let d = depth_of(it, all);
     let sub = if d > 0 {
         "<span class=\"is-submenu\">sub item</span>"
@@ -733,7 +745,7 @@ pub(crate) async fn menus_create(
     headers: HeaderMap,
     Form(map): Form<HashMap<String, String>>,
 ) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
     if !csrf_ok(&s, &map) {
@@ -744,16 +756,26 @@ pub(crate) async fn menus_create(
     if name.is_empty() {
         return Redirect::to("/admin/menus?menu=0").into_response();
     }
-    // New menus default to the site's primary language (N-lang — was
-    // hardwired "fr").
-    let primary = crate::db::conn(&sc.db)
-        .map(|c| crate::lang::config(&c).primary)
-        .unwrap_or_default();
-    match crud::create_menu(&sc.db, name, &primary) {
-        Ok(id) => {
-            crate::admin::admin::bust_cache(&sc);
-            Redirect::to(&format!("/admin/menus?menu={id}&msg=created")).into_response()
+    // rusqlite is sync — offload conn+insert to a blocking thread.
+    let sc2 = sc.clone();
+    let name = name.to_string();
+    let created = tokio::task::spawn_blocking(move || {
+        let Ok(c) = crate::db::conn(&sc2.db) else {
+            return Err(());
+        };
+        // New menus default to the site's primary language (N-lang — was
+        // hardwired "fr").
+        let primary = crate::lang::config(&c).primary;
+        let r = crud::create_menu(&sc2.db, &name, &primary);
+        if r.is_ok() {
+            crate::admin::admin::bust_cache(&sc2);
         }
+        r.map_err(|_| ())
+    })
+    .await
+    .unwrap_or(Err(()));
+    match created {
+        Ok(id) => Redirect::to(&format!("/admin/menus?menu={id}&msg=created")).into_response(),
         Err(_) => Redirect::to("/admin/menus").into_response(),
     }
 }
@@ -764,15 +786,20 @@ pub(crate) async fn menus_delete(
     headers: HeaderMap,
     Form(map): Form<HashMap<String, String>>,
 ) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
     if !csrf_ok(&s, &map) {
         return StatusCode::FORBIDDEN.into_response();
     }
     let id = map.get("menu").and_then(|v| v.parse().ok()).unwrap_or(0);
-    let _ = crud::delete_menu(&sc.db, id);
-    crate::admin::admin::bust_cache(&sc);
+    // rusqlite is sync — offload delete + cache bust to a blocking thread.
+    let sc2 = sc.clone();
+    let _ = tokio::task::spawn_blocking(move || {
+        let _ = crud::delete_menu(&sc2.db, id);
+        crate::admin::admin::bust_cache(&sc2);
+    })
+    .await;
     Redirect::to("/admin/menus?msg=deleted").into_response()
 }
 
@@ -784,7 +811,7 @@ pub(crate) async fn menus_add(
     headers: HeaderMap,
     body: String,
 ) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
     let pairs: Vec<(String, String)> =
@@ -821,43 +848,48 @@ pub(crate) async fn menus_add(
             order.push((ty.to_string(), id, ty == "cat"));
         }
     }
-    let mut items: Vec<crud::NewItem> = Vec::new();
-    for (_ty, id, is_tax) in order {
-        if is_tax {
-            if let Ok(Some((name, _))) = crud::term_label(&sc.db, id) {
-                items.push(crud::NewItem {
-                    label: name,
-                    url: String::new(),
-                    object_id: Some(id),
-                    item_type: "taxonomy".into(),
-                });
-            }
-        } else if let Ok(Some((title, _kind))) = crud::post_label(&sc.db, id) {
-            items.push(crud::NewItem {
-                label: title,
-                url: String::new(),
-                object_id: Some(id),
-                item_type: "post_type".into(),
-            });
-        }
-    }
     // Custom link fields ride the same form; add one when a URL was typed.
-    if let Some(url) = get("custom-url") {
-        let url = url.trim().to_string();
+    let custom_url = get("custom-url").map(|u| u.trim().to_string()).filter(|u| {
         // Scheme gate (audit M2): `javascript:`/`data:` never enter the
         // DB — WP's esc_url equivalent, enforced at write AND render.
-        if !url.is_empty() && url != "http://" && crate::url_util::safe_href(&url) {
-            let label = get("custom-label").map(|l| l.trim().to_string()).unwrap_or_default();
+        !u.is_empty() && u != "http://" && crate::url_util::safe_href(u)
+    });
+    let custom_label = get("custom-label").map(|l| l.trim().to_string()).unwrap_or_default();
+    // rusqlite is sync — offload label lookups + insert to a blocking thread.
+    let sc2 = sc.clone();
+    let _ = tokio::task::spawn_blocking(move || {
+        let mut items: Vec<crud::NewItem> = Vec::new();
+        for (_ty, id, is_tax) in order {
+            if is_tax {
+                if let Ok(Some((name, _))) = crud::term_label(&sc2.db, id) {
+                    items.push(crud::NewItem {
+                        label: name,
+                        url: String::new(),
+                        object_id: Some(id),
+                        item_type: "taxonomy".into(),
+                    });
+                }
+            } else if let Ok(Some((title, _kind))) = crud::post_label(&sc2.db, id) {
+                items.push(crud::NewItem {
+                    label: title,
+                    url: String::new(),
+                    object_id: Some(id),
+                    item_type: "post_type".into(),
+                });
+            }
+        }
+        if let Some(url) = custom_url {
             items.push(crud::NewItem {
-                label: if label.is_empty() { url.clone() } else { label },
+                label: if custom_label.is_empty() { url.clone() } else { custom_label },
                 url,
                 object_id: None,
                 item_type: "custom".into(),
             });
         }
-    }
-    let _ = crud::add_items(&sc.db, menu, &items);
-    crate::admin::admin::bust_cache(&sc);
+        let _ = crud::add_items(&sc2.db, menu, &items);
+        crate::admin::admin::bust_cache(&sc2);
+    })
+    .await;
     Redirect::to(&format!("/admin/menus?menu={menu}&msg=added")).into_response()
 }
 
@@ -871,7 +903,7 @@ pub(crate) async fn menus_save(
     headers: HeaderMap,
     Form(map): Form<HashMap<String, String>>,
 ) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
     if !csrf_ok(&s, &map) {
@@ -881,46 +913,52 @@ pub(crate) async fn menus_save(
     if menu <= 0 {
         return Redirect::to("/admin/menus").into_response();
     }
-    let mut items = Vec::new();
-    for k in map.keys() {
-        let Some(id) = k.strip_prefix("ord-").and_then(|x| x.parse::<i64>().ok()) else {
-            continue;
-        };
-        let deleted = map.get(&format!("del-{id}")).map(|v| v == "1").unwrap_or(false)
-            || map.contains_key(&format!("rm-{id}"));
-        items.push(crud::ItemForm {
-            id,
-            ord: map.get(k).and_then(|v| v.parse().ok()).unwrap_or(0),
-            parent_id: map
-                .get(&format!("parent-{id}"))
-                .and_then(|v| v.parse::<i64>().ok())
-                .filter(|p| *p > 0),
-            label: map.get(&format!("title-{id}")).cloned().unwrap_or_default(),
-            // Unsafe submitted URL: keep the *submitted* value, never
-            // silently blank it (the save would otherwise destroy an
-            // existing URL). Render-time `safe_href_or_hash` already
-            // neutralizes any unsafe scheme on output.
-            url: map.get(&format!("url-{id}")).cloned().unwrap_or_default(),
-            title_attr: map.get(&format!("title_attr-{id}")).cloned().unwrap_or_default(),
-            target: map
-                .get(&format!("target-{id}"))
-                .filter(|v| v.as_str() == "_blank")
-                .cloned()
-                .unwrap_or_default(),
-            classes: map.get(&format!("classes-{id}")).cloned().unwrap_or_default(),
-            xfn: map.get(&format!("xfn-{id}")).cloned().unwrap_or_default(),
-            description: map.get(&format!("description-{id}")).cloned().unwrap_or_default(),
-            delete: deleted,
-        });
-    }
-    let _ = crud::save_tree(
-        &sc.db,
-        menu,
-        map.get("menu-name").map(|s| s.as_str()),
-        &items,
-        Some(map.contains_key("auto_add")),
-    );
-    crate::admin::admin::bust_cache(&sc);
+    // rusqlite is sync — offload item build + tree save + cache bust to a
+    // blocking thread.
+    let sc2 = sc.clone();
+    let _ = tokio::task::spawn_blocking(move || {
+        let mut items = Vec::new();
+        for k in map.keys() {
+            let Some(id) = k.strip_prefix("ord-").and_then(|x| x.parse::<i64>().ok()) else {
+                continue;
+            };
+            let deleted = map.get(&format!("del-{id}")).map(|v| v == "1").unwrap_or(false)
+                || map.contains_key(&format!("rm-{id}"));
+            items.push(crud::ItemForm {
+                id,
+                ord: map.get(k).and_then(|v| v.parse().ok()).unwrap_or(0),
+                parent_id: map
+                    .get(&format!("parent-{id}"))
+                    .and_then(|v| v.parse::<i64>().ok())
+                    .filter(|p| *p > 0),
+                label: map.get(&format!("title-{id}")).cloned().unwrap_or_default(),
+                // Unsafe submitted URL: keep the *submitted* value, never
+                // silently blank it (the save would otherwise destroy an
+                // existing URL). Render-time `safe_href_or_hash` already
+                // neutralizes any unsafe scheme on output.
+                url: map.get(&format!("url-{id}")).cloned().unwrap_or_default(),
+                title_attr: map.get(&format!("title_attr-{id}")).cloned().unwrap_or_default(),
+                target: map
+                    .get(&format!("target-{id}"))
+                    .filter(|v| v.as_str() == "_blank")
+                    .cloned()
+                    .unwrap_or_default(),
+                classes: map.get(&format!("classes-{id}")).cloned().unwrap_or_default(),
+                xfn: map.get(&format!("xfn-{id}")).cloned().unwrap_or_default(),
+                description: map.get(&format!("description-{id}")).cloned().unwrap_or_default(),
+                delete: deleted,
+            });
+        }
+        let _ = crud::save_tree(
+            &sc2.db,
+            menu,
+            map.get("menu-name").map(|s| s.as_str()),
+            &items,
+            Some(map.contains_key("auto_add")),
+        );
+        crate::admin::admin::bust_cache(&sc2);
+    })
+    .await;
     Redirect::to(&format!("/admin/menus?menu={menu}&msg=saved")).into_response()
 }
 
@@ -932,7 +970,7 @@ pub(crate) async fn menus_move(
     Query(q): Query<HashMap<String, String>>,
     Form(map): Form<HashMap<String, String>>,
 ) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
     if !csrf_ok(&s, &map) {
@@ -944,9 +982,14 @@ pub(crate) async fn menus_move(
         .and_then(|v| v.parse().ok())
         .unwrap_or(0);
     let id: i64 = q.get("id").and_then(|v| v.parse().ok()).unwrap_or(0);
-    let dir = q.get("dir").map(|s| s.as_str()).unwrap_or("");
-    let _ = crud::move_item(&sc.db, menu, id, dir);
-    crate::admin::admin::bust_cache(&sc);
+    let dir = q.get("dir").cloned().unwrap_or_default();
+    // rusqlite is sync — offload move + cache bust to a blocking thread.
+    let sc2 = sc.clone();
+    let _ = tokio::task::spawn_blocking(move || {
+        let _ = crud::move_item(&sc2.db, menu, id, &dir);
+        crate::admin::admin::bust_cache(&sc2);
+    })
+    .await;
     Redirect::to(&format!("/admin/menus?menu={menu}&msg=moved")).into_response()
 }
 
@@ -959,7 +1002,7 @@ pub(crate) async fn menus_locations_save(
     Query(q): Query<HashMap<String, String>>,
     Form(map): Form<HashMap<String, String>>,
 ) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
     if !csrf_ok(&s, &map) {
@@ -970,36 +1013,42 @@ pub(crate) async fn menus_locations_save(
         .and_then(|v| v.parse::<i64>().ok())
         .map(|id| format!("menu={id}&"))
         .unwrap_or_default();
-    let locs = crud::available_locations(&sc.db);
-    /* Form posts `assign-{loc}` or `assign-{loc}-{lang}` selects; the lang
-       suffix splits on the LAST '-' segment so locations containing '-'
-       stay intact. */
-    let mut assignments: Vec<(String, String, Option<i64>)> = Vec::new();
-    for loc in &locs {
-        let suffixes: Vec<String> = std::iter::once(String::new())
-            .chain(
-                map.keys()
-                    .filter_map(|k| {
-                        k.strip_prefix(&format!("assign-{loc}-"))
-                            .map(|s| s.to_string())
-                    }),
-            )
-            .collect();
-        for suf in suffixes {
-            let key = if suf.is_empty() {
-                format!("assign-{loc}")
-            } else {
-                format!("assign-{loc}-{suf}")
-            };
-            let mid = map
-                .get(&key)
-                .and_then(|v| v.parse::<i64>().ok())
-                .filter(|id| *id > 0);
-            assignments.push((loc.clone(), suf, mid));
+    // rusqlite is sync — offload location read + assignment save to a
+    // blocking thread.
+    let sc2 = sc.clone();
+    let _ = tokio::task::spawn_blocking(move || {
+        let locs = crud::available_locations(&sc2.db);
+        /* Form posts `assign-{loc}` or `assign-{loc}-{lang}` selects; the lang
+           suffix splits on the LAST '-' segment so locations containing '-'
+           stay intact. */
+        let mut assignments: Vec<(String, String, Option<i64>)> = Vec::new();
+        for loc in &locs {
+            let suffixes: Vec<String> = std::iter::once(String::new())
+                .chain(
+                    map.keys()
+                        .filter_map(|k| {
+                            k.strip_prefix(&format!("assign-{loc}-"))
+                                .map(|s| s.to_string())
+                        }),
+                )
+                .collect();
+            for suf in suffixes {
+                let key = if suf.is_empty() {
+                    format!("assign-{loc}")
+                } else {
+                    format!("assign-{loc}-{suf}")
+                };
+                let mid = map
+                    .get(&key)
+                    .and_then(|v| v.parse::<i64>().ok())
+                    .filter(|id| *id > 0);
+                assignments.push((loc.clone(), suf, mid));
+            }
         }
-    }
-    let _ = crud::save_locations(&sc.db, &assignments);
-    crate::admin::admin::bust_cache(&sc);
+        let _ = crud::save_locations(&sc2.db, &assignments);
+        crate::admin::admin::bust_cache(&sc2);
+    })
+    .await;
     Redirect::to(&format!("/admin/menus?{menu_q}action=locations&msg=locations")).into_response()
 }
 
@@ -1011,24 +1060,35 @@ pub(crate) async fn menus_screen_save(
     headers: HeaderMap,
     Form(map): Form<HashMap<String, String>>,
 ) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
     if !csrf_ok(&s, &map) {
         return StatusCode::FORBIDDEN.into_response();
     }
-    let fields: Vec<String> = ["title_attr", "target", "classes", "xfn", "description"]
-        .iter()
-        .filter(|k| map.contains_key(&format!("show-{k}")))
-        .map(|k| k.to_string())
-        .collect();
-    let hidden: Vec<String> = section_keys(&sc)
-        .iter()
-        .filter(|(key, _)| !map.contains_key(&format!("sec-{key}")))
-        .map(|(key, _)| key.clone())
-        .collect();
-    let _ = crud::MenuScreen::save(&sc.db, s.user_id, &crud::MenuScreen { fields, hidden });
-    let back = list::back_or(&map, "/admin/menus");
-    let sep = if back.contains('?') { "&" } else { "?" };
-    Redirect::to(&format!("{back}{sep}msg=screen")).into_response()
+    // rusqlite is sync — offload section list + screen-options save to a
+    // blocking thread.
+    let sc2 = sc.clone();
+    let uid = s.user_id;
+    tokio::task::spawn_blocking(move || {
+        let fields: Vec<String> = ["title_attr", "target", "classes", "xfn", "description"]
+            .iter()
+            .filter(|k| map.contains_key(&format!("show-{k}")))
+            .map(|k| k.to_string())
+            .collect();
+        let hidden: Vec<String> = section_keys(&sc2)
+            .iter()
+            .filter(|(key, _)| !map.contains_key(&format!("sec-{key}")))
+            .map(|(key, _)| key.clone())
+            .collect();
+        let _ = crud::MenuScreen::save(&sc2.db, uid, &crud::MenuScreen { fields, hidden });
+        let back = list::back_or(&map, "/admin/menus");
+        let sep = if back.contains('?') { "&" } else { "?" };
+        Redirect::to(&format!("{back}{sep}msg=screen")).into_response()
+    })
+    .await
+    .unwrap_or_else(|e| {
+        eprintln!("menus_screen_save join: {e:#}");
+        StatusCode::INTERNAL_SERVER_ERROR.into_response()
+    })
 }

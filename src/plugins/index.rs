@@ -50,7 +50,7 @@ pub(crate) struct SettingsForm {
 
 /// Parse the imported `active_plugins` serialized option into plugin
 /// dir slugs (`chaty/cht-icons.php` → `chaty`).
-fn active_plugin_slugs(db: &Path) -> Vec<String> {
+fn active_plugin_slugs(db: &Path) -> Vec<String> { // gate-allow: sync — every caller reaches this on a blocking thread (spawn_blocking / build / boot)
     let Ok(c) = crate::db::conn(db) else { return Vec::new() };
     let raw: String = c
         .query_row(
@@ -76,14 +76,24 @@ fn active_plugin_slugs(db: &Path) -> Vec<String> {
 
 /// `/admin/plugins` — the index page.
 pub(crate) async fn index_page(State(app): State<App>, headers: HeaderMap) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
     if s.role != "admin" {
         return StatusCode::FORBIDDEN.into_response();
     }
-    let body = plugins_index_html(&s, &sc);
-    html_page(&s, "Plugins", &format!("{}{}", chrome("plugins", &s), body), true).into_response()
+    // plugins_index_html + chrome are sync SQLite (active_plugins option,
+    // comments counts, kind probes) — offload like every admin page (C1).
+    let sc_c = sc.clone();
+    tokio::task::spawn_blocking(move || {
+        let body = plugins_index_html(&s, &sc_c);
+        html_page(&s, "Plugins", &format!("{}{}", chrome("plugins", &s), body), true).into_response()
+    })
+    .await
+    .unwrap_or_else(|e| {
+        eprintln!("index_page join: {e:#}");
+        StatusCode::INTERNAL_SERVER_ERROR.into_response()
+    })
 }
 
 fn plugins_index_html(_s: &Sess, sc: &SiteCtx) -> String {
@@ -178,7 +188,7 @@ fn plugins_index_html(_s: &Sess, sc: &SiteCtx) -> String {
 /// Shared settings-screen save: `INSERT OR REPLACE` each posted key,
 /// then `regen_site`. Screen POST handlers call `need_auth` first, then
 /// this — it runs `check_csrf` itself.
-pub(crate) fn save_settings_fields(s: &Sess, sc: &SiteCtx, f: &SettingsForm, spec: &[FieldSpec]) -> Result<(), Response> {
+pub(crate) fn save_settings_fields(s: &Sess, sc: &SiteCtx, f: &SettingsForm, spec: &[FieldSpec]) -> Result<(), Response> { // gate-allow: sync — every caller reaches this on a blocking thread (spawn_blocking / build / boot)
     check_csrf(s, &f.csrf)?;
     let c = crate::db::conn(&sc.db).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())?;
     let tx = c.unchecked_transaction().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())?;
@@ -345,7 +355,7 @@ pub(crate) fn settings_form_html(
 /// Full-page settings screen — `chrome` + form + `chrome_end`. GET
 /// handlers return this; POST handlers call `save_settings_fields` then
 /// redirect back (WP parity).
-pub(crate) fn settings_page_html(
+pub(crate) fn settings_page_html( // gate-allow: sync — every caller reaches this on a blocking thread (spawn_blocking / build / boot)
     s: &Sess,
     sc: &SiteCtx,
     action: &str,

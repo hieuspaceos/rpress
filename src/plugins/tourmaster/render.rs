@@ -24,7 +24,7 @@ use crate::render::load_env_theme;
 /// Render one tour single page. `templates` is the template dir (for
 /// `single_tour.html` / base); the booking sidebar comes from the
 /// `sidebar-tour` widget rows.
-pub(crate) fn page(conn: &Connection, templates: &Path, ctx: &RenderCtx) -> Result<String> {
+pub(crate) fn page(conn: &Connection, templates: &Path, ctx: &RenderCtx) -> Result<String> { // gate-allow: sync — every caller reaches this on a blocking thread (spawn_blocking / build / boot)
     // featured image for hero background + JSON-LD image (lazy lookup —
     // one row, not the whole media table).
     let (featured_id, excerpt, seo_title, seo_desc): (Option<i64>, String, String, String) = conn
@@ -166,7 +166,7 @@ pub(crate) fn page(conn: &Connection, templates: &Path, ctx: &RenderCtx) -> Resu
 
 use crate::html_decode::{esc, esc_attr};
 
-fn url_prefix(conn: &Connection, lang: &str) -> String {
+fn url_prefix(conn: &Connection, lang: &str) -> String { // gate-allow: sync — every caller reaches this on a blocking thread (spawn_blocking / build / boot)
     crate::lang::url_prefix(&crate::lang::config(conn), lang)
 }
 
@@ -241,7 +241,7 @@ fn wp_slugify(s: &str) -> String {
         .join("-")
 }
 
-fn translation_urls(conn: &Connection, id: i64, site: &str, kind_base: &str) -> Vec<(String, String)> {
+fn translation_urls(conn: &Connection, id: i64, site: &str, kind_base: &str) -> Vec<(String, String)> { // gate-allow: sync — every caller reaches this on a blocking thread (spawn_blocking / build / boot)
     let cfg = crate::lang::config(conn);
     let group: Option<String> = conn
         .query_row("SELECT group_id FROM post_translation_members WHERE post_id=?1 LIMIT 1", [id], |r| r.get(0))
@@ -366,7 +366,7 @@ fn civil_year(z: i64) -> i64 {
 /// `site.tours` feed + the tourmaster option-derived keys (`search_url`,
 /// `search_months`) — moved from `render::site_data` in phase 03. Core
 /// merges the `(key, value)` pairs verbatim into the shared site map.
-pub(crate) fn site_data_feeds(
+pub(crate) fn site_data_feeds( // gate-allow: sync — every caller reaches this on a blocking thread (spawn_blocking / build / boot)
     conn: &Connection,
     lang: &str,
     site_url: &str,

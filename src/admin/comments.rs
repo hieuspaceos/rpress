@@ -18,7 +18,7 @@ type Cmt = crud::comments::CommentRow;
 
 /// `esc` plus `&#10;`/`&#13;` for newlines — attribute values carrying
 /// multiline comment bodies (HTML normalizes raw CR/LF to spaces in attrs).
-fn esc_attr(s: &str) -> String {
+fn esc_attr_lines(s: &str) -> String {
     esc(s).replace('\n', "&#10;").replace('\r', "&#13;")
 }
 
@@ -115,7 +115,7 @@ impl Cols {
         Cols { author: true, comment: true, response: true, date: true }
     }
     /// Missing/corrupt JSON → WP default: every column visible.
-    fn load(db: &std::path::Path, user_id: i64) -> Self {
+    fn load(db: &std::path::Path, user_id: i64) -> Self { // gate-allow: blocking by contract — only called inside spawn_blocking
         crud::comments::setting_get(db, &format!("comment_screen_{user_id}"))
             .and_then(|raw| serde_json::from_str(&raw).ok())
             .unwrap_or_else(Self::all)
@@ -183,10 +183,10 @@ fn row_html(sc: &SiteCtx, r: &Cmt, cols: &Cols, cls: &str) -> String {
         h_comment = cols.cls(cols.comment),
         h_response = cols.cls(cols.response),
         h_date = cols.cls(cols.date),
-        author_attr = esc_attr(&r.author),
-        email_attr = esc_attr(&r.email),
-        url_attr = esc_attr(&r.author_url),
-        body_attr = esc_attr(&r.body),
+        author_attr = esc_attr_lines(&r.author),
+        email_attr = esc_attr_lines(&r.email),
+        url_attr = esc_attr_lines(&r.author_url),
+        body_attr = esc_attr_lines(&r.body),
     )
 }
 
@@ -353,9 +353,21 @@ pub(crate) async fn comments_page(
     headers: HeaderMap,
     Query(q): Query<HashMap<String, String>>,
 ) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
+    // rusqlite is sync — offload conn+queries (counts, list, screen cols)
+    // and the page render built on them to a blocking thread (audit P1).
+    let (s2, sc2) = (s.clone(), sc.clone());
+    return tokio::task::spawn_blocking(move || comments_page_sync(&s2, &sc2, q))
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("comments_page join: {e:#}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        });
+}
+
+fn comments_page_sync(s: &Sess, sc: &SiteCtx, q: HashMap<String, String>) -> Response { // gate-allow: blocking by contract — only called inside spawn_blocking
     let view = q.get("status").map(|s| s.as_str()).unwrap_or("all");
     let view = match view {
         "mine" | "pending" | "approved" | "spam" | "trash" => view,
@@ -628,49 +640,59 @@ pub(crate) async fn comment_action(
     Query(q): Query<HashMap<String, String>>,
     Form(f): Form<HashMap<String, String>>,
 ) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
     if !ct_eq(s.csrf.as_bytes(), f.get("csrf").map(|x| x.as_str()).unwrap_or("").as_bytes()) {
         return StatusCode::FORBIDDEN.into_response();
     }
-    let back = list::back_or(&f, "/admin/comments");
+    let back = list::back_or(&f, "/admin/comments").to_string();
     let action = f
         .get("action")
         .or_else(|| q.get("action"))
-        .map(|s| s.as_str())
-        .unwrap_or("");
+        .cloned()
+        .unwrap_or_default();
     let id = f
         .get("id")
         .or_else(|| q.get("id"))
         .and_then(|v| v.parse::<i64>().ok())
         .unwrap_or(0);
     if id == 0 {
-        return Redirect::to(back).into_response();
+        return Redirect::to(&back).into_response();
     }
     // Approve/unapprove/spam/trash/delete all change what the post page
     // renders → queue the single-file regen (phase 4.4). The post id comes
     // from the row itself (before the delete path drops it).
-    let post_id = crud::comments::get(&sc.db, id)
-        .ok()
-        .flatten()
-        .and_then(|r| r.post_id)
-        .unwrap_or(0);
-    match action {
-        "delete" => {
-            let _ = crud::comments::delete_permanent(&sc.db, id);
-            admin::regen_posts(sc, &[post_id]);
-            redirect_back(back, "deleted", 1)
-        }
-        _ => match status_target(action) {
-            Some((st, m)) => {
-                let _ = crud::comments::set_status(&sc.db, id, st);
-                admin::regen_posts(sc, &[post_id]);
-                redirect_back(back, m, 1)
+    // rusqlite is sync — offload the read + status/delete mutation to a
+    // blocking thread (audit P1).
+    let (db, sc2) = (sc.db.clone(), sc.clone());
+    let Ok(res) = tokio::task::spawn_blocking(move || {
+        let post_id = crud::comments::get(&db, id)
+            .ok()
+            .flatten()
+            .and_then(|r| r.post_id)
+            .unwrap_or(0);
+        match action.as_str() {
+            "delete" => {
+                let _ = crud::comments::delete_permanent(&db, id);
+                admin::regen_posts(&sc2, &[post_id]);
+                redirect_back(&back, "deleted", 1)
             }
-            None => Redirect::to(back).into_response(),
-        },
-    }
+            _ => match status_target(&action) {
+                Some((st, m)) => {
+                    let _ = crud::comments::set_status(&db, id, st);
+                    admin::regen_posts(&sc2, &[post_id]);
+                    redirect_back(&back, m, 1)
+                }
+                None => Redirect::to(&back).into_response(),
+            },
+        }
+    })
+    .await
+    else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+    res
 }
 
 /// POST /admin/comments/bulk — `p-{id}` checkboxes + action/action2 (WP's
@@ -681,16 +703,16 @@ pub(crate) async fn comments_bulk(
     headers: HeaderMap,
     Form(f): Form<HashMap<String, String>>,
 ) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
     if !ct_eq(s.csrf.as_bytes(), f.get("csrf").map(|x| x.as_str()).unwrap_or("").as_bytes()) {
         return StatusCode::FORBIDDEN.into_response();
     }
     let back = list::back_or(&f, "/admin/comments");
-    let mut action = f.get("action").map(|s| s.as_str()).unwrap_or("-1");
+    let mut action = f.get("action").cloned().unwrap_or_else(|| "-1".to_string());
     if action == "-1" {
-        action = f.get("action2").map(|s| s.as_str()).unwrap_or("-1");
+        action = f.get("action2").cloned().unwrap_or_else(|| "-1".to_string());
     }
     let mut ids: Vec<i64> = f
         .keys()
@@ -698,41 +720,52 @@ pub(crate) async fn comments_bulk(
         .collect();
     ids.sort_unstable();
     ids.dedup();
-    let mut done = 0i64;
     // One regen per affected post after the mutations (phase 4.4).
-    let mut posts: Vec<i64> = Vec::new();
-    match action {
-        "delete" => {
-            for id in &ids {
-                if let Ok(Some(r)) = crud::comments::get(&sc.db, *id) {
-                    if let Some(pid) = r.post_id {
-                        posts.push(pid);
-                    }
-                }
-                if crud::comments::delete_permanent(&sc.db, *id).is_ok() {
-                    done += 1;
-                }
-            }
-        }
-        _ => {
-            if let Some((st, _)) = status_target(action) {
+    // rusqlite is sync — offload the get+mutate loop to a blocking thread
+    // (audit P1).
+    let db = sc.db.clone();
+    let act = action.clone();
+    let Ok((posts, done)) = tokio::task::spawn_blocking(move || {
+        let mut done = 0i64;
+        let mut posts: Vec<i64> = Vec::new();
+        match act.as_str() {
+            "delete" => {
                 for id in &ids {
-                    if let Ok(Some(r)) = crud::comments::get(&sc.db, *id) {
+                    if let Ok(Some(r)) = crud::comments::get(&db, *id) {
                         if let Some(pid) = r.post_id {
                             posts.push(pid);
                         }
                     }
-                    if crud::comments::set_status(&sc.db, *id, st).is_ok() {
+                    if crud::comments::delete_permanent(&db, *id).is_ok() {
                         done += 1;
                     }
                 }
             }
+            _ => {
+                if let Some((st, _)) = status_target(&act) {
+                    for id in &ids {
+                        if let Ok(Some(r)) = crud::comments::get(&db, *id) {
+                            if let Some(pid) = r.post_id {
+                                posts.push(pid);
+                            }
+                        }
+                        if crud::comments::set_status(&db, *id, st).is_ok() {
+                            done += 1;
+                        }
+                    }
+                }
+            }
         }
-    }
+        (posts, done)
+    })
+    .await
+    else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
     if done > 0 {
         admin::regen_posts(sc, &posts);
     }
-    let m = if action == "delete" { "deleted" } else { status_target(action).map(|x| x.1).unwrap_or("edited") };
+    let m = if action == "delete" { "deleted" } else { status_target(&action).map(|x| x.1).unwrap_or("edited") };
     if done == 0 {
         return Redirect::to(back).into_response();
     }
@@ -746,7 +779,7 @@ pub(crate) async fn comments_empty(
     Query(q): Query<HashMap<String, String>>,
     Form(f): Form<HashMap<String, String>>,
 ) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
     if !ct_eq(s.csrf.as_bytes(), f.get("csrf").map(|x| x.as_str()).unwrap_or("").as_bytes()) {
@@ -756,12 +789,17 @@ pub(crate) async fn comments_empty(
     let status = q
         .get("status")
         .or_else(|| f.get("status"))
-        .map(|s| s.as_str())
-        .unwrap_or("");
-    let n = match status {
-        "spam" | "trash" => crud::comments::empty_status(&sc.db, status).unwrap_or(0) as i64,
+        .cloned()
+        .unwrap_or_default();
+    // rusqlite is sync — offload the bulk-delete to a blocking thread
+    // (audit P1); a failed/joined delete yields 0 like the original Err.
+    let db = sc.db.clone();
+    let n = tokio::task::spawn_blocking(move || match status.as_str() {
+        "spam" | "trash" => crud::comments::empty_status(&db, &status).unwrap_or(0) as i64,
         _ => 0,
-    };
+    })
+    .await
+    .unwrap_or(0);
     redirect_back(back, "deleted", n)
 }
 
@@ -800,10 +838,16 @@ pub(crate) async fn edit_page(
     Path(id): Path<i64>,
     Query(q): Query<HashMap<String, String>>,
 ) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
-    let Ok(Some(r)) = crud::comments::get(&sc.db, id) else {
+    // rusqlite is sync — offload the row read to a blocking thread
+    // (audit P1).
+    let db = sc.db.clone();
+    let Ok(Some(r)) = tokio::task::spawn_blocking(move || crud::comments::get(&db, id))
+        .await
+        .unwrap_or(Ok(None))
+    else {
         return StatusCode::NOT_FOUND.into_response();
     };
     // `?frag=1` (htmx row-action) → just the inline editor <tr>, inserted
@@ -846,19 +890,29 @@ pub(crate) async fn edit_page(
         return Html(frag).into_response();
     }
     // Post title for the "In response to" sidebar line.
-    let mut in_response = "<em>Orphaned</em>".to_string();
-    if let Some(pid) = r.post_id {
-        if let Ok(Some(p)) = crud::load_post(&sc.db, pid) {
-            let link = posts::public_path(&sc, &p.lang, &p.kind, &p.slug);
-            let t = if p.title.is_empty() { "(no title)" } else { p.title.as_str() };
-            in_response = format!("<strong><a href=\"{}\" target=\"_blank\">{}</a></strong>", esc(&link), esc(t));
+    // rusqlite is sync — offload the post + parent lookups to a blocking
+    // thread (audit P1).
+    let (db, sc2, pid, pp) = (sc.db.clone(), sc.clone(), r.post_id, r.parent_id);
+    let Ok((in_response, in_reply)) = tokio::task::spawn_blocking(move || {
+        let mut in_response = "<em>Orphaned</em>".to_string();
+        if let Some(pid) = pid {
+            if let Ok(Some(p)) = crud::load_post(&db, pid) {
+                let link = posts::public_path(&sc2, &p.lang, &p.kind, &p.slug);
+                let t = if p.title.is_empty() { "(no title)" } else { p.title.as_str() };
+                in_response = format!("<strong><a href=\"{}\" target=\"_blank\">{}</a></strong>", esc(&link), esc(t));
+            }
         }
-    }
-    let in_reply = if let Some(pp) = r.parent_id {
-        let t = crud::comments::get(&sc.db, pp).ok().flatten().map(|p| p.author).unwrap_or_else(|| "#".into());
-        format!("{} <a href=\"/admin/comments/edit/{pp}\">Edit</a>", esc(&t))
-    } else {
-        "None".to_string()
+        let in_reply = if let Some(pp) = pp {
+            let t = crud::comments::get(&db, pp).ok().flatten().map(|p| p.author).unwrap_or_else(|| "#".into());
+            format!("{} <a href=\"/admin/comments/edit/{pp}\">Edit</a>", esc(&t))
+        } else {
+            "None".to_string()
+        };
+        (in_response, in_reply)
+    })
+    .await
+    else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
     let status_cur = match r.status.as_str() {
         "approved" => "Approved",
@@ -953,7 +1007,7 @@ pub(crate) async fn edit_save(
     headers: HeaderMap,
     Form(f): Form<HashMap<String, String>>,
 ) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
     if !ct_eq(s.csrf.as_bytes(), f.get("csrf").map(|x| x.as_str()).unwrap_or("").as_bytes()) {
@@ -996,21 +1050,31 @@ pub(crate) async fn edit_save(
     } else {
         None
     };
-    let _ = crud::comments::update_fields(
-        &sc.db,
-        id,
-        &get("author"),
-        &get("email"),
-        &get("url"),
-        &body,
-        status,
-        created.as_deref(),
-    );
-    let post_id = crud::comments::get(&sc.db, id)
-        .ok()
-        .flatten()
-        .and_then(|r| r.post_id)
-        .unwrap_or(0);
+    // rusqlite is sync — offload the update + post-id read to a blocking
+    // thread (audit P1).
+    let db = sc.db.clone();
+    let (author_v, email_v, url_v) = (get("author"), get("email"), get("url"));
+    let Ok(post_id) = tokio::task::spawn_blocking(move || {
+        let _ = crud::comments::update_fields(
+            &db,
+            id,
+            &author_v,
+            &email_v,
+            &url_v,
+            &body,
+            status,
+            created.as_deref(),
+        );
+        crud::comments::get(&db, id)
+            .ok()
+            .flatten()
+            .and_then(|r| r.post_id)
+            .unwrap_or(0)
+    })
+    .await
+    else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
     admin::regen_posts(sc, &[post_id]);
     redirect_back(back, "edited", 1)
 }
@@ -1024,7 +1088,7 @@ pub(crate) async fn quick_edit(
     headers: HeaderMap,
     Form(f): Form<HashMap<String, String>>,
 ) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
     if !ct_eq(s.csrf.as_bytes(), f.get("csrf").map(|x| x.as_str()).unwrap_or("").as_bytes()) {
@@ -1045,20 +1109,44 @@ pub(crate) async fn quick_edit(
     }
     let get = |k: &str| f.get(k).cloned().unwrap_or_default();
     // Keep the existing status — quick edit never sets it.
-    let (status, post_id) = match crud::comments::get(&sc.db, id) {
-        Ok(Some(r)) => (r.status, r.post_id.unwrap_or(0)),
-        _ => return Redirect::to(back).into_response(),
+    // rusqlite is sync — offload the get+update pair to a blocking thread
+    // (audit P1); a failed get redirects like the original Err/None.
+    let db = sc.db.clone();
+    let (author_v, email_v, url_v) = (get("author"), get("email"), get("url"));
+    let Some((_, post_id)) = tokio::task::spawn_blocking(move || {
+        let (status, post_id) = match crud::comments::get(&db, id) {
+            Ok(Some(r)) => (r.status, r.post_id.unwrap_or(0)),
+            _ => return None,
+        };
+        let _ = crud::comments::update_fields(&db, id, &author_v, &email_v, &url_v, &body, &status, None);
+        Some((status, post_id))
+    })
+    .await
+    .ok()
+    .flatten()
+    else {
+        return Redirect::to(back).into_response();
     };
-    let _ = crud::comments::update_fields(&sc.db, id, &get("author"), &get("email"), &get("url"), &body, &status, None);
     admin::regen_posts(sc, &[post_id]);
     if htmx {
         // `cls` rides the qe form (the origin row's class attribute) so the
         // replacement keeps its alternating/thread/depth parity tokens.
-        let cols = Cols::load(&sc.db, s.user_id);
         let cls = clean_cls(&get("cls"));
-        return match crud::comments::get(&sc.db, id) {
-            Ok(Some(r)) => Html(row_html(&sc, &r, &cols, &cls)).into_response(),
-            _ => StatusCode::NOT_FOUND.into_response(),
+        // rusqlite is sync — offload the cols read + row fetch + render to
+        // a blocking thread (audit P1).
+        let (sc2, uid) = (sc.clone(), s.user_id);
+        return match tokio::task::spawn_blocking(move || {
+            let cols = Cols::load(&sc2.db, uid);
+            crud::comments::get(&sc2.db, id)
+                .ok()
+                .flatten()
+                .map(|r| Html(row_html(&sc2, &r, &cols, &cls)).into_response())
+        })
+        .await
+        {
+            Ok(Some(res)) => res,
+            Ok(None) => StatusCode::NOT_FOUND.into_response(),
+            Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
         };
     }
     redirect_back(back, "edited", 1)
@@ -1073,17 +1161,23 @@ pub(crate) async fn reply_page(
     Path(id): Path<i64>,
     Query(q): Query<HashMap<String, String>>,
 ) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
-    let Ok(Some(r)) = crud::comments::get(&sc.db, id) else {
+    // rusqlite is sync — offload the row read to a blocking thread
+    // (audit P1).
+    let db = sc.db.clone();
+    let Ok(Some(r)) = tokio::task::spawn_blocking(move || crud::comments::get(&db, id))
+        .await
+        .unwrap_or(Ok(None))
+    else {
         return StatusCode::NOT_FOUND.into_response();
     };
     if is_htmx(&headers) {
         // Fields associate with the out-of-table #cmt-reply form (a <form>
         // inside <tbody> would be dropped by the HTML parser). `cls` is the
         // parent row's parity tokens for the reply row that replaces this.
-        let cls = esc_attr(&clean_cls(q.get("cls").map(|s| s.as_str()).unwrap_or("")));
+        let cls = esc_attr_lines(&clean_cls(q.get("cls").map(|s| s.as_str()).unwrap_or("")));
         let frag = format!(
             r##"<tr class="reply-row" style="display:table-row"><td colspan="5" class="colspanchange">
 <input form="cmt-reply" type="hidden" name="parent" value="{id}">
@@ -1136,7 +1230,7 @@ pub(crate) async fn reply_save(
     headers: HeaderMap,
     Form(f): Form<HashMap<String, String>>,
 ) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
     if !ct_eq(s.csrf.as_bytes(), f.get("csrf").map(|x| x.as_str()).unwrap_or("").as_bytes()) {
@@ -1151,29 +1245,55 @@ pub(crate) async fn reply_save(
         }
         return Redirect::to("/admin/comments?m=empty").into_response();
     }
-    let author = crud::comments::user_display_name(&sc.db, s.user_id, &s.email);
-    // A failed insert must not fake id 0 and claim success (would regen
-    // post 0 and redirect ?m=replied).
-    let Ok(new_id) = crud::comments::insert_reply(&sc.db, parent, &author, &s.email, &body) else {
+    // rusqlite is sync — offload the display-name lookup + insert to a
+    // blocking thread (audit P1). A failed insert must not fake id 0 and
+    // claim success (would regen post 0 and redirect ?m=replied).
+    let (db, uid, email) = (sc.db.clone(), s.user_id, s.email.clone());
+    let Some(new_id) = tokio::task::spawn_blocking(move || {
+        let author = crud::comments::user_display_name(&db, uid, &email);
+        crud::comments::insert_reply(&db, parent, &author, &email, &body).ok()
+    })
+    .await
+    .ok()
+    .flatten()
+    else {
         if htmx {
             return StatusCode::UNPROCESSABLE_ENTITY.into_response();
         }
         return Redirect::to("/admin/comments?m=empty").into_response();
     };
     // A new approved reply changes the parent post's page.
-    let reply_post = crud::comments::get(&sc.db, new_id)
-        .ok()
-        .flatten()
-        .and_then(|r| r.post_id)
-        .unwrap_or(0);
+    let db = sc.db.clone();
+    let Ok(reply_post) = tokio::task::spawn_blocking(move || {
+        crud::comments::get(&db, new_id)
+            .ok()
+            .flatten()
+            .and_then(|r| r.post_id)
+            .unwrap_or(0)
+    })
+    .await
+    else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
     admin::regen_posts(sc, &[reply_post]);
     if htmx {
-        let cols = Cols::load(&sc.db, s.user_id);
         // The reply is a child of the row it was opened under → depth+1.
         let cls = clean_cls(f.get("cls").map(|s| s.as_str()).unwrap_or(""));
         let cls = if cls.contains("depth-") { cls.replace("depth-1", "depth-2") } else { format!("{cls} depth-2") };
-        return match crud::comments::get(&sc.db, new_id) {
-            Ok(Some(r)) => Html(row_html(&sc, &r, &cols, &cls)).into_response(),
+        // rusqlite is sync — offload the cols read + row fetch + render to
+        // a blocking thread (audit P1); any failure redirects like the
+        // original Err/None.
+        let (sc2, uid) = (sc.clone(), s.user_id);
+        return match tokio::task::spawn_blocking(move || {
+            let cols = Cols::load(&sc2.db, uid);
+            crud::comments::get(&sc2.db, new_id)
+                .ok()
+                .flatten()
+                .map(|r| Html(row_html(&sc2, &r, &cols, &cls)).into_response())
+        })
+        .await
+        {
+            Ok(Some(res)) => res,
             _ => Redirect::to("/admin/comments?m=replied").into_response(),
         };
     }
@@ -1187,7 +1307,7 @@ pub(crate) async fn screen_options(
     headers: HeaderMap,
     Form(f): Form<HashMap<String, String>>,
 ) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
     if !ct_eq(s.csrf.as_bytes(), f.get("csrf").map(|x| x.as_str()).unwrap_or("").as_bytes()) {
@@ -1201,7 +1321,13 @@ pub(crate) async fn screen_options(
         date: f.contains_key("date-hide"),
     };
     if let Ok(json) = serde_json::to_string(&cols) {
-        let _ = crud::comments::setting_set(&sc.db, &format!("comment_screen_{}", s.user_id), &json);
+        // rusqlite is sync — offload the settings write to a blocking
+        // thread (audit P1); a failed write is swallowed like the original.
+        let (db, uid) = (sc.db.clone(), s.user_id);
+        let _ = tokio::task::spawn_blocking(move || {
+            let _ = crud::comments::setting_set(&db, &format!("comment_screen_{uid}"), &json);
+        })
+        .await;
     }
     Redirect::to(back).into_response()
 }

@@ -16,8 +16,6 @@
 use crate::db::conn;
 use crate::generate;
 use crate::site::{self, SiteEnv};
-#[allow(unused_imports)]
-use crate::sql;
 use anyhow::{bail, Context, Result};
 use rusqlite::params;
 use std::path::{Path, PathBuf};

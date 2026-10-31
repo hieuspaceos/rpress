@@ -25,7 +25,7 @@ pub(super) async fn plugin_screen(
     Path((slug, rest)): Path<(String, String)>,
     req: axum::extract::Request,
 ) -> Response {
-    let Ok((s, sc)) = need_auth_peer(&app, &headers, Some(peer)) else {
+    let Ok((s, sc)) = need_auth_peer(&app, &headers, Some(peer)).await else {
         return Redirect::to("/admin/login").into_response();
     };
     // Role gate per screen: settings surfaces stay admin-only, in-editor
@@ -86,7 +86,46 @@ pub(super) async fn plugin_screen(
         }
         req = axum::extract::Request::from_parts(parts, Body::from(bytes));
     }
-    (screen.handle)(&app, &s, sc, headers, &rest, req).await
+    // C1: adapter screen handlers do sync SQLite (tourmaster save-option
+    // tx) inside an async fn — run the whole future on a blocking thread.
+    // Nothing inside awaits IO, so it runs start-to-finish there; owned
+    // clones move in because the fn borrows app/s/sc.
+    let (app2, s2, sc2) = (app.clone(), s.clone(), sc.clone());
+    tokio::task::spawn_blocking(move || {
+        let fut = (screen.handle)(&app2, &s2, &sc2, headers, &rest, req);
+        futures_lite::block_on(fut)
+    })
+    .await
+    .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+/// `block_on` for the screen-handler offload above — std-only, no futures dep.
+mod futures_lite {
+    use std::future::Future;
+    use std::pin::pin;
+    use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+    fn noop_raw_waker() -> RawWaker {
+        fn no_op(_: *const ()) {}
+        fn clone(_: *const ()) -> RawWaker {
+            noop_raw_waker()
+        }
+        RawWaker::new(
+            std::ptr::null(),
+            &RawWakerVTable::new(clone, no_op, no_op, no_op),
+        )
+    }
+    /// Drive a future that never yields IO to completion — screen handlers
+    /// are sync work wrapped in `async fn`, so one poll finishes them.
+    /// Panics if the inner future pends (that would mean a real .await
+    /// slipped in and must run on a worker, not here).
+    pub(crate) fn block_on<T>(fut: impl Future<Output = T>) -> T {
+        let waker = unsafe { Waker::from_raw(noop_raw_waker()) };
+        let mut cx = Context::from_waker(&waker);
+        let mut fut = pin!(fut);
+        match fut.as_mut().poll(&mut cx) {
+            Poll::Ready(v) => v,
+            Poll::Pending => panic!("adapter screen handler yielded — needs a real runtime"),
+        }
+    }
 }
 
 /// Proxy `/admin/plugins/<slug>/<rest>` into a PhpBridge runtime.

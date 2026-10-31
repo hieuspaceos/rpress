@@ -5,8 +5,6 @@ use anyhow::Result;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use rand::RngCore;
-#[allow(unused_imports)]
-use crate::sql;
 
 use super::Sess;
 /// Authenticate and resolve the site in one step.
@@ -34,7 +32,7 @@ pub(crate) fn ct_eq(a: &[u8], b: &[u8]) -> bool {
 /// random value; it's HMAC(server_key, user_id:app_pass_hash) instead, so a
 /// client holding the app password can compute it but can't forge another
 /// user's. Minted into `settings.server_key` on first use.
-pub(crate) fn server_key(db: &std::path::Path) -> String {
+pub(crate) fn server_key(db: &std::path::Path) -> String { // gate-allow: blocking by contract — only called inside spawn_blocking
     let key = "server_key";
     if let Ok(c) = crate::db::conn(db) {
         if let Ok(v) = c.query_row(sql!("intake__select_setting"), [key], |r| r.get::<_, String>(0)) {

@@ -7,6 +7,7 @@
 //! there is no restore UI by design.
 
 use anyhow::{bail, Context, Result};
+use crate::sql;
 use std::path::{Path, PathBuf};
 
 /// Create a backup archive for the site whose workdir is `work/<site>`.
@@ -34,7 +35,7 @@ pub fn run_backup_db(work: &Path, db: &Path, env_file: &Path, keep: usize) -> Re
     }
     {
         let c = rusqlite::Connection::open(&db)?;
-        c.execute("VACUUM INTO ?1", [snap.to_string_lossy().as_ref()])?;
+        c.execute(sql!("backup__vacuum_into"), [snap.to_string_lossy().as_ref()])?;
     }
 
     // Stage with symlinks + `tar -h` (dereference) — archives

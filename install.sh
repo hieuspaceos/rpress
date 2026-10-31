@@ -104,6 +104,14 @@ fi
 
 UNIT="/etc/systemd/system/rpress-${SITE}.service"
 say "writing systemd unit $UNIT"
+# Dedicated unprivileged user — the service ran as root before audit-261031
+# §1.4; rpress + SQLite + the php -S bridge + bwrap children must not be
+# uid 0. work/ holds the mutable state (ReadWritePaths below).
+if ! id -u rpress >/dev/null 2>&1; then
+  as_root useradd --system --user-group --home "${ROOT}/work" --shell /usr/sbin/nologin rpress
+fi
+as_root mkdir -p "${ROOT}/work"
+as_root chown -R rpress:rpress "${ROOT}/work"
 # Loopback-only egress confines the PHP bridge (it can't be netns-isolated
 # without root; rpress itself needs no outbound traffic). Only safe when
 # the site binds loopback — a public BIND would also lose INBOUND
@@ -123,6 +131,8 @@ After=network.target
 
 [Service]
 Type=simple
+User=rpress
+Group=rpress
 WorkingDirectory=${ROOT}
 ExecStart=${BIN} site serve ${SITE}
 Restart=always

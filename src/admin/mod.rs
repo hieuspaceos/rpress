@@ -87,6 +87,11 @@ pub(crate) struct SiteCtx {
     /// pull), busted eagerly by `bust_cache` (every admin settings save
     /// already funnels through it).
     pub(crate) settings_cache: Arc<RwLock<Option<(Instant, Arc<HashMap<String, String>>)>>>,
+    /// Deduplicates the post-TTL background reload of `settings_cache` —
+    /// `settings()` serves the stale snapshot and one `spawn_blocking`
+    /// reloads it rather than running SQLite on the caller's async
+    /// thread (audit-261031 C1).
+    pub(crate) settings_refreshing: Arc<AtomicBool>,
     /// `publish_due` last run — throttles the minute-tick future scan
     /// (serve.rs); 30s granularity matches minute-level schedule semantics.
     pub(crate) publish_due_at: Arc<Mutex<Option<Instant>>>,
@@ -100,29 +105,61 @@ impl SiteCtx {
     /// Settings map, memory-resident within the TTL. The snapshot is a
     /// single `SELECT key,value` — cheaper than N single-key lookups even
     /// on a warm connection.
+    ///
+    /// Async-safety (audit-261031 C1): past the TTL (or right after
+    /// `settings_bust`, which keeps the snapshot but backdates it) this
+    /// serves the stale snapshot and hands the reload to one deduped
+    /// `spawn_blocking` (`settings_refreshing`) instead of running SQLite
+    /// on the caller's tokio worker. A blocking inline read only remains
+    /// for callers with no tokio runtime at all (unit tests, pre-spawn
+    /// boot). With no snapshot at all, request threads get an empty map —
+    /// `serve()` pre-warms the cache, so a bare `None` only happens after
+    /// an admin bust before any subsequent read.
     pub(crate) fn settings(&self) -> Arc<HashMap<String, String>> {
-        {
+        let stale = {
             let g = self.settings_cache.read();
-            if let Some((at, map)) = g.as_ref() {
-                if at.elapsed() < SETTINGS_TTL {
-                    return map.clone();
-                }
+            match g.as_ref() {
+                Some((at, map)) if at.elapsed() < SETTINGS_TTL => return map.clone(),
+                Some((_, map)) => Some(map.clone()),
+                None => None,
             }
-        }
-        let mut fresh = HashMap::new();
-        if let Ok(c) = crate::db::conn(&self.db) {
-            if let Ok(mut s) = c.prepare(sql!("settings__select_all")) {
-                if let Ok(rows) = s.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))) {
-                    for r in rows.flatten() {
-                        fresh.insert(r.0, r.1);
+        };
+        if tokio::runtime::Handle::try_current().is_ok() {
+            // Stale or empty → serve it; the reload runs on a blocking
+            // thread, deduped by `settings_refreshing`. FlagGuard drops the
+            // flag even on panic so the dedup can't wedge true forever.
+            if self
+                .settings_refreshing
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                let (db, cache, flag) = (
+                    self.db.clone(),
+                    self.settings_cache.clone(),
+                    self.settings_refreshing.clone(),
+                );
+                tokio::task::spawn_blocking(move || {
+                    struct FlagGuard(Arc<AtomicBool>);
+                    impl Drop for FlagGuard {
+                        fn drop(&mut self) {
+                            self.0.store(false, Ordering::Release);
+                        }
                     }
-                }
+                    let _guard = FlagGuard(flag);
+                    let fresh = Arc::new(read_settings_map(&db));
+                    *cache.write() = Some((Instant::now(), fresh));
+                });
             }
+            return stale.unwrap_or_default();
         }
-        let fresh = Arc::new(fresh);
+        // gate-allow: cold-miss fallback for callers with no runtime —
+        // unreachable on request threads (the runtime branch above returns
+        // first).
+        let fresh = Arc::new(read_settings_map(&self.db));
         *self.settings_cache.write() = Some((Instant::now(), fresh.clone()));
         fresh
     }
+
 
     /// Cached `setting_value` — misses and empties return `default`.
     pub(crate) fn setting(&self, key: &str, default: &str) -> String {
@@ -133,11 +170,32 @@ impl SiteCtx {
             .unwrap_or_else(|| default.to_string())
     }
 
-    /// Drop the settings snapshot — call from `bust_cache` after any admin
-    /// write that can change a setting.
+    /// Mark the settings snapshot stale — call from `bust_cache` after any
+    /// admin write that can change a setting. Keeps the last map but
+    /// backdates it so readers hit the stale-serve branch (deduped
+    /// `spawn_blocking` reload) instead of a bare `None`: post-save
+    /// requests never wait on nor run inline SQLite on a tokio worker.
     pub(crate) fn settings_bust(&self) {
-        *self.settings_cache.write() = None;
+        let mut g = self.settings_cache.write();
+        if let Some((at, _)) = g.as_mut() {
+            *at = Instant::now() - SETTINGS_TTL;
+        }
     }
+}
+/// Blocking full-table read backing `SiteCtx::settings` — split out so the
+/// cold-miss fallback and the `spawn_blocking` reload share one impl.
+fn read_settings_map(db: &std::path::Path) -> HashMap<String, String> { // gate-allow: blocking by contract — only runs in spawn_blocking or the no-runtime cold-miss path
+    let mut fresh = HashMap::new();
+    if let Ok(c) = crate::db::conn(db) {
+        if let Ok(mut s) = c.prepare(sql!("settings__select_all")) {
+            if let Ok(rows) = s.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))) {
+                for r in rows.flatten() {
+                    fresh.insert(r.0, r.1);
+                }
+            }
+        }
+    }
+    fresh
 }
 
 #[derive(Clone)]
@@ -154,6 +212,11 @@ pub(crate) struct App {
     /// Separate bucket for miss-render requests so bot scans can't burn
     /// the form-intake rate (or vice versa). Same in-memory semantics.
     pub(crate) miss_rate: Arc<Mutex<intake::Rate>>,
+    /// In-flight cache-miss renders keyed by request path — a scanner
+    /// fanning N concurrent IPs at the same uncached slug must trigger ONE
+    /// render, not N (audit-261031 §3 H4). Leader renders + writes the
+    /// cache; followers oneshot-wait and re-read the file cache.
+    pub(crate) inflight_renders: Arc<Mutex<HashMap<String, tokio::sync::watch::Sender<Option<()>>>>>,
 }
 
 pub(crate) const SESSION_COOKIE: &str = "rpress_session";
@@ -185,30 +248,43 @@ pub(crate) struct Sess {
 /// `out` = disposable HTML cache; `www` = persistent uploads/plugins/assets.
 pub async fn serve(db: PathBuf, templates: PathBuf, out: PathBuf, www: PathBuf, bind: SocketAddr, site_slug: String, host: String, name: String, tour_base: String, plugins_php: String) -> Result<()> {
     let kind_bases = plugins::resolve_bases(&tour_base);
-    // Schema must be current before we serve — the post_meta dedupe +
-    // unique-index migration lives here; silently continuing would serve
-    // on a wrong schema (audit M18).
-    schema::migrate(&db).map_err(|e| anyhow::anyhow!("schema migrate failed: {e}"))?;
-    let _ = crud::ensure_media_cols(&db);
-    let uploads_root = www.join("wp-content/uploads");
-    let _ = crud::media_backfill_dates(&db, &uploads_root);
-    plugins::migrate_all(&db);
-    // Boot duties that used to live inside `rpress generate`:
-    //   1. seed default widgets/sidebars so a fresh DB isn't empty
-    //   2. purge 30-day-old trash (WP _wp_scheduled_delete equivalent)
-    //   3. emit the utility files (sitemap/robots/feeds/404/search/
-    //      redirects.map) — cheap SQL→file, no renders
-    if let Ok(boot_conn) = crate::db::conn(&db) {
-        let _ = crate::widgets::ensure(&boot_conn);
-    }
-    crate::sitefx::purge_duties(&db, &out, &tour_base);
-    serve::purge_alias_caches(&db, &out);
-    {
-        let site_url_boot = crate::db::setting_value(&db, "site_url", "/");
-        if let Err(e) = crate::sitefx::emit_site_files(&db, &templates, &out, &site_url_boot, &tour_base) {
-            eprintln!("emit_site_files: {e:#}");
+    // Boot duties run on one blocking thread — migrate/seed/purge/emit are
+    // synchronous SQLite+fs work; the listener isn't bound yet but the
+    // async fn still runs on a tokio worker (audit-261031 C1).
+    let (db_b, uploads_root, out_b, tpl_b, tb_b) = (
+        db.clone(),
+        www.join("wp-content/uploads"),
+        out.clone(),
+        templates.clone(),
+        tour_base.clone(),
+    );
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        // Schema must be current before we serve — the post_meta dedupe +
+        // unique-index migration lives here; silently continuing would
+        // serve on a wrong schema (audit M18).
+        schema::migrate(&db_b).map_err(|e| anyhow::anyhow!("schema migrate failed: {e}"))?;
+        let _ = crud::ensure_media_cols(&db_b);
+        let _ = crud::media_backfill_dates(&db_b, &uploads_root);
+        plugins::migrate_all(&db_b);
+        // Boot duties that used to live inside `rpress generate`:
+        //   1. seed default widgets/sidebars so a fresh DB isn't empty
+        //   2. purge 30-day-old trash (WP _wp_scheduled_delete equivalent)
+        //   3. emit the utility files (sitemap/robots/feeds/404/search/
+        //      redirects.map) — cheap SQL→file, no renders
+        if let Ok(boot_conn) = crate::db::conn(&db_b) {
+            let _ = crate::widgets::ensure(&boot_conn);
         }
-    }
+        crate::sitefx::purge_duties(&db_b, &out_b, &tb_b);
+        serve::purge_alias_caches(&db_b, &out_b);
+        {
+            let site_url_boot = crate::db::setting_value(&db_b, "site_url", "/");
+            if let Err(e) = crate::sitefx::emit_site_files(&db_b, &tpl_b, &out_b, &site_url_boot, &tb_b) {
+                eprintln!("emit_site_files: {e:#}");
+            }
+        }
+        Ok(())
+    })
+    .await??;
     let site = SiteCtx {
         slug: site_slug.clone(),
         plugins_php,
@@ -221,6 +297,7 @@ pub async fn serve(db: PathBuf, templates: PathBuf, out: PathBuf, www: PathBuf, 
         bridges: bridge::Bridges::default(),
         generating: Arc::new(AtomicBool::new(false)),
         settings_cache: Arc::new(RwLock::new(None)),
+        settings_refreshing: Arc::new(AtomicBool::new(false)),
         publish_due_at: Arc::new(Mutex::new(None)),
     };
     let mut sites = HashMap::new();
@@ -233,6 +310,7 @@ pub async fn serve(db: PathBuf, templates: PathBuf, out: PathBuf, www: PathBuf, 
         pending_2fa: Arc::new(Mutex::new(HashMap::new())),
         intake_rate: Arc::new(Mutex::new(intake::Rate::default())),
         miss_rate: Arc::new(Mutex::new(intake::Rate::default())),
+        inflight_renders: Arc::new(Mutex::new(HashMap::new())),
     };
     let app = Router::new()
         .route("/", get(serve::public_root))
@@ -384,15 +462,34 @@ pub async fn serve(db: PathBuf, templates: PathBuf, out: PathBuf, www: PathBuf, 
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(Duration::from_secs(60)).await;
-                for sc in sites.values() {
-                    serve::publish_due(sc);
-                    for k in bridge::reap(&sc.bridges, bridge::TTL_IDLE) {
-                        eprintln!("bridge: idle kill {k}");
+                // publish_due/sweep_sessions are synchronous SQLite — one
+                // spawn_blocking keeps their sequential order off the
+                // worker threads (audit-261031 C1).
+                let (sites_b, app_b) = (sites.clone(), app_tick.clone());
+                tokio::task::spawn_blocking(move || {
+                    for sc in sites_b.values() {
+                        serve::publish_due(sc);
+                        for k in bridge::reap(&sc.bridges, bridge::TTL_IDLE) {
+                            eprintln!("bridge: idle kill {k}");
+                        }
                     }
-                }
-                sweep_sessions(&app_tick);
+                    sweep_sessions(&app_b);
+                })
+                .await
+                .ok();
             }
         });
+    }
+    // Pre-warm the settings snapshots before requests arrive — after this
+    // `SiteCtx::settings()` never opens a conn on a tokio worker (the
+    // no-runtime fallback stays for tests/pre-spawn callers).
+    for sc in state.sites.values() {
+        let sc = sc.clone();
+        tokio::task::spawn_blocking(move || {
+            sc.settings();
+        })
+        .await
+        .ok();
     }
     let listener = tokio::net::TcpListener::bind(bind).await?;
     eprintln!("rpress listening on http://{bind}");
@@ -402,9 +499,16 @@ pub async fn serve(db: PathBuf, templates: PathBuf, out: PathBuf, www: PathBuf, 
     // loopback address forever — warn once so ops notices the missing
     // RPRESS_TRUSTED_PROXY.
     {
-        let su = state.sites.values().next()
-            .map(|sc| crate::db::setting_value(&sc.db, "site_url", ""))
-            .unwrap_or_default();
+        // One setting read — still synchronous SQLite, so it rides a
+        // blocking thread like every other DB call in serve() (C1).
+        let sites_warn = state.sites.clone();
+        let su = tokio::task::spawn_blocking(move || {
+            sites_warn.values().next()
+                .map(|sc| crate::db::setting_value(&sc.db, "site_url", ""))
+                .unwrap_or_default()
+        })
+        .await
+        .unwrap_or_default();
         let localhosty = su.is_empty() || su == "/" || su.contains("localhost") || su.contains("127.0.0.1") || su.contains("[::1]");
         if (bind.ip().is_loopback() || bind.ip().is_unspecified()) && TRUSTED_PROXIES.is_empty() && !localhosty {
             eprintln!(
@@ -525,19 +629,25 @@ fn cookie_all<'a>(headers: &'a HeaderMap, name: &str) -> Vec<String> {
     out
 }
 
-pub(crate) fn get_sess<'a>(app: &'a App, sc: &'a SiteCtx, headers: &HeaderMap) -> Option<Sess> {
+pub(crate) async fn get_sess<'a>(app: &'a App, sc: &'a SiteCtx, headers: &HeaderMap) -> Option<Sess> {
     // WP `wp_schedule_publish` equivalent lives on the serve() minute tick
     // (see above): auth must not be required for scheduled posts to go live.
     //
     // Lock discipline (audit P2): the sessions mutex guards MAP OPS ONLY.
     // SQLite calls (session_get/set_csrf/touch — each a fresh conn open +
     // 6 PRAGMAs + query, ~100-500µs) run outside the lock or every admin
-    // request serializes behind another request's disk I/O.
+    // request serializes behind another request's disk I/O — and since
+    // rusqlite is synchronous they also ride `spawn_blocking` so the DB
+    // I/O never stalls a tokio worker (audit-261031 C1).
     for tok in cookie_all(headers, SESSION_COOKIE) {
         // Rehydrate from the `sessions` table on a map miss — cookie logins
         // now survive a restart (sessions are persisted, decision B).
         if !app.sessions.lock().contains_key(&tok) {
-            if let Ok(Some((_t, user_id, email, role, csrf))) = crud::users::session_get(&sc.db, &tok) {
+            let (db_r, tok_r) = (sc.db.clone(), tok.clone());
+            let row = tokio::task::spawn_blocking(move || crud::users::session_get(&db_r, &tok_r))
+                .await
+                .unwrap_or(Ok(None));
+            if let Ok(Some((_t, user_id, email, role, csrf))) = row {
                 // Persisted csrf survives restarts so a mid-edit form still
                 // submits (M20). '' = row written before the column existed:
                 // mint once, persist it, keep it stable from then on.
@@ -545,7 +655,13 @@ pub(crate) fn get_sess<'a>(app: &'a App, sc: &'a SiteCtx, headers: &HeaderMap) -
                     let mut b = [0u8; 16];
                     rand::thread_rng().fill_bytes(&mut b);
                     let v = hex(&b);
-                    if let Err(e) = crud::users::session_set_csrf(&sc.db, &tok, &v) {
+                    let (db_c, tok_c, v_c) = (sc.db.clone(), tok.clone(), v.clone());
+                    let res = tokio::task::spawn_blocking(move || {
+                        crud::users::session_set_csrf(&db_c, &tok_c, &v_c)
+                    })
+                    .await
+                    .ok();
+                    if let Some(Err(e)) = res {
                         eprintln!("session_set_csrf persist failed for rehydrated token: {e}");
                     }
                     v
@@ -586,7 +702,8 @@ pub(crate) fn get_sess<'a>(app: &'a App, sc: &'a SiteCtx, headers: &HeaderMap) -
         // runs unlocked; touched is stamped after so a crashed touch can't
         // starve the row (worst case: one redundant UPDATE next request).
         if stale {
-            let _ = crud::users::session_touch(&sc.db, &tok);
+            let (db_t, tok_t) = (sc.db.clone(), tok.clone());
+            let _ = tokio::task::spawn_blocking(move || crud::users::session_touch(&db_t, &tok_t)).await;
             if let Some(s) = app.sessions.lock().get_mut(&tok) {
                 s.touched = Instant::now();
             }
@@ -612,12 +729,17 @@ pub(crate) fn get_sess<'a>(app: &'a App, sc: &'a SiteCtx, headers: &HeaderMap) -
 /// expired entries when their token was re-presented, so dead sessions
 /// grew forever. Called from the serve() tick alongside publish_due.
 /// The table purge is bounded DELETE on already-expired rows.
-pub(crate) fn sweep_sessions(app: &App) {
+pub(crate) fn sweep_sessions(app: &App) { // gate-allow: blocking by contract — only called inside the minute-tick spawn_blocking
     let now = Instant::now();
     app.sessions.lock().retain(|_, s| s.exp > now);
     for sc in app.sites.values() {
         if let Ok(c) = crate::db::conn(&sc.db) {
-            let _ = c.execute(sql!("sessions__delete_expired"), []);
+            if let Err(e) = c.execute(sql!("sessions__delete_expired"), []) {
+                // Expired tokens linger in the sessions table (and any
+                // backup taken before the next sweep) — log, never silent
+                // (audit §2.2).
+                eprintln!("sweep_sessions {}: {e:#}", sc.slug);
+            }
         }
     }
 }
@@ -671,20 +793,20 @@ async fn clear_dead_session_cookie(
     res
 }
 
-pub(crate) fn need_auth<'a>(app: &'a App, headers: &HeaderMap) -> Result<(Sess, &'a SiteCtx), Response> {
-    need_auth_peer(app, headers, None)
+pub(crate) async fn need_auth<'a>(app: &'a App, headers: &HeaderMap) -> Result<(Sess, &'a SiteCtx), Response> {
+    need_auth_peer(app, headers, None).await
 }
 
 /// `need_auth` + the real peer socket addr — used by handlers that extract
 /// `ConnectInfo` so app-password `last_ip` records an address, not "unknown".
-pub(crate) fn need_auth_peer<'a>(app: &'a App, headers: &HeaderMap, peer: Option<SocketAddr>) -> Result<(Sess, &'a SiteCtx), Response> {
+pub(crate) async fn need_auth_peer<'a>(app: &'a App, headers: &HeaderMap, peer: Option<SocketAddr>) -> Result<(Sess, &'a SiteCtx), Response> {
     let sc = site_for(app, headers);
-    if let Some(s) = get_sess(app, sc, headers) {
+    if let Some(s) = get_sess(app, sc, headers).await {
         return Ok((s, sc));
     }
     // WP Application Passwords: `Authorization: Basic base64(email:app_pass)`
     // authenticates without a session — used by `/api/v1/*` clients.
-    if let Some(s) = auth::app_pass_sess(sc, headers, peer) {
+    if let Some(s) = auth::app_pass_sess(sc, headers, peer).await {
         return Ok((s, sc));
     }
     // Stale/expired cookie → clear it so the browser stops resending a dead

@@ -28,7 +28,7 @@ fn humanize(slug: &str) -> String {
 }
 
 /// Inbox "From" cell: `name` from data_json, falling back to the name column.
-fn from_of(r: &subdb::Submission) -> String {
+fn from_of(r: &subdb::Submission) -> String { // gate-allow: blocking by contract — only called inside spawn_blocking
     let map: serde_json::Map<String, Value> = serde_json::from_str(&r.data_json).unwrap_or_default();
     let name = map.get("name").and_then(|v| v.as_str()).unwrap_or(r.name.as_str());
     let email = map.get("email").and_then(|v| v.as_str()).unwrap_or("");
@@ -166,7 +166,7 @@ fn view_actions(view: &str, kind: &str, status: &str) -> Vec<(&'static str, &'st
 /// `.row-actions` markup: inbox rows get a View link first; POST forms carry
 /// the per-view verbs (WP uses GET+nonce; we use POST+CSRF like
 /// `list::row_actions`, plus a named `action` submit button for the verb).
-fn inbox_row_actions(s: &Sess, r: &subdb::Submission, view: &str, back: &str) -> String {
+fn inbox_row_actions(s: &Sess, r: &subdb::Submission, view: &str, back: &str) -> String { // gate-allow: blocking by contract — only called inside spawn_blocking
     let mut out = String::from("<div class=\"row-actions\">");
     let mut first = true;
     if view == "inbox" {
@@ -220,53 +220,60 @@ fn notice(msg: &str) -> String {
 /// Screen A: `/admin/contact` — CF7 Contact Forms parity.
 /// Lists `forms` table rows; title links to `/edit` (CF7-style editor).
 pub(crate) async fn forms_page(State(app): State<App>, headers: HeaderMap) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
-    let counts = subdb::form_counts(&sc.db).unwrap_or_default();
-    let forms = fdb::list(&sc.db).unwrap_or_default();
-    let mut rows = String::new();
-    if forms.is_empty() {
-        rows.push_str(&list::empty_row(6, "No contact forms found."));
-    }
-    for r in &forms {
-        let slug = r.slug.as_str();
-        let n = counts.get(slug).copied().unwrap_or(0);
-        rows.push_str(&format!(
-            "<tr id=\"form-{slug}\">\
-             <th scope=\"row\" class=\"check-column\"><input type=\"checkbox\" name=\"p-{slug}\" disabled></th>\
-             <td class=\"title column-title column-primary\"><strong><a class=\"row-title\" href=\"/admin/contact/form/{slug}/edit\">{title}</a></strong>\
-             <div class=\"row-actions\"><span class=\"edit\"><a href=\"/admin/contact/form/{slug}/edit\">Edit</a></span> | <span class=\"view\"><a href=\"/admin/contact/form/{slug}\">View</a></span> | <span class=\"submissions\"><a href=\"{INBOX}?form={slug}\">Submissions</a></span> | <span class=\"delete\"><button type=\"submit\" class=\"button-link submitdelete\" form=\"form-del\" name=\"slug\" value=\"{slug}\" onclick=\"return confirm('Permanently delete this contact form?')\">Delete</button></span></div></td>\
-             <td class=\"shortcode\"><code>[contact-form-7 id=\"{slug}\" title=\"{title_attr}\"]</code></td>\
-             <td class=\"submissions\"><a href=\"{INBOX}?form={slug}\">{n}</a></td>\
-             <td class=\"date\">—</td>\
-             <td class=\"lang\">{lang}</td></tr>",
-            slug = slug,
-            title = esc(&r.title),
-            title_attr = esc(&r.title),
-            n = n,
-            lang = r.lang,
-        ));
-    }
-    let body = format!(
-        "{}<div class=\"wrap\"><h1 class=\"wp-heading-inline\">Contact Forms</h1>\
-         <a href=\"/admin/contact/new\" class=\"page-title-action\">Add New</a>\
-         <hr class=\"wp-header-end\">\
-         <table class=\"wp-list-table widefat fixed striped table-view-list\">\
-         <thead><tr>\
-         <td class=\"manage-column column-cb check-column\"><input type=\"checkbox\" disabled></td>\
-         <th scope=\"col\" class=\"manage-column column-title column-primary\">Title</th>\
-         <th scope=\"col\" class=\"manage-column column-shortcode\">Shortcode</th>\
-         <th scope=\"col\" class=\"manage-column column-submissions num\">Submissions</th>\
-         <th scope=\"col\" class=\"manage-column column-date sortable desc\"><a href=\"#\"><span>Date</span></a></th>\
-         <th scope=\"col\" class=\"manage-column column-lang\">Lang</th>\
-         </tr></thead><tbody>{}</tbody></table>\
-         <form method=\"post\" action=\"/admin/contact/form/delete\" id=\"form-del\"><input type=\"hidden\" name=\"csrf\" value=\"{}\"></form></div>",
-        chrome("contact", &s),
-        rows,
-        s.csrf
-    );
-    html_admin(&s, "Contact Forms", &body, true, "edit-php").into_response()
+    // rusqlite is sync — offload the whole page build (counts + forms
+    // queries, table HTML) to a blocking thread.
+    let db = sc.db.clone();
+    tokio::task::spawn_blocking(move || {
+        let counts = subdb::form_counts(&db).unwrap_or_default();
+        let forms = fdb::list(&db).unwrap_or_default();
+        let mut rows = String::new();
+        if forms.is_empty() {
+            rows.push_str(&list::empty_row(6, "No contact forms found."));
+        }
+        for r in &forms {
+            let slug = r.slug.as_str();
+            let n = counts.get(slug).copied().unwrap_or(0);
+            rows.push_str(&format!(
+                "<tr id=\"form-{slug}\">\
+                 <th scope=\"row\" class=\"check-column\"><input type=\"checkbox\" name=\"p-{slug}\" disabled></th>\
+                 <td class=\"title column-title column-primary\"><strong><a class=\"row-title\" href=\"/admin/contact/form/{slug}/edit\">{title}</a></strong>\
+                 <div class=\"row-actions\"><span class=\"edit\"><a href=\"/admin/contact/form/{slug}/edit\">Edit</a></span> | <span class=\"view\"><a href=\"/admin/contact/form/{slug}\">View</a></span> | <span class=\"submissions\"><a href=\"{INBOX}?form={slug}\">Submissions</a></span> | <span class=\"delete\"><button type=\"submit\" class=\"button-link submitdelete\" form=\"form-del\" name=\"slug\" value=\"{slug}\" onclick=\"return confirm('Permanently delete this contact form?')\">Delete</button></span></div></td>\
+                 <td class=\"shortcode\"><code>[contact-form-7 id=\"{slug}\" title=\"{title_attr}\"]</code></td>\
+                 <td class=\"submissions\"><a href=\"{INBOX}?form={slug}\">{n}</a></td>\
+                 <td class=\"date\">—</td>\
+                 <td class=\"lang\">{lang}</td></tr>",
+                slug = slug,
+                title = esc(&r.title),
+                title_attr = esc(&r.title),
+                n = n,
+                lang = r.lang,
+            ));
+        }
+        let body = format!(
+            "{}<div class=\"wrap\"><h1 class=\"wp-heading-inline\">Contact Forms</h1>\
+             <a href=\"/admin/contact/new\" class=\"page-title-action\">Add New</a>\
+             <hr class=\"wp-header-end\">\
+             <table class=\"wp-list-table widefat fixed striped table-view-list\">\
+             <thead><tr>\
+             <td class=\"manage-column column-cb check-column\"><input type=\"checkbox\" disabled></td>\
+             <th scope=\"col\" class=\"manage-column column-title column-primary\">Title</th>\
+             <th scope=\"col\" class=\"manage-column column-shortcode\">Shortcode</th>\
+             <th scope=\"col\" class=\"manage-column column-submissions num\">Submissions</th>\
+             <th scope=\"col\" class=\"manage-column column-date sortable desc\"><a href=\"#\"><span>Date</span></a></th>\
+             <th scope=\"col\" class=\"manage-column column-lang\">Lang</th>\
+             </tr></thead><tbody>{}</tbody></table>\
+             <form method=\"post\" action=\"/admin/contact/form/delete\" id=\"form-del\"><input type=\"hidden\" name=\"csrf\" value=\"{}\"></form></div>",
+            chrome("contact", &s),
+            rows,
+            s.csrf
+        );
+        html_admin(&s, "Contact Forms", &body, true, "edit-php").into_response()
+    })
+    .await
+    .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 /// `POST /admin/contact/form/delete` — drop a `forms` row by slug. Submissions
 /// keep their `form_slug` (orphaned, not deleted — same as WP/CF7).
@@ -275,16 +282,22 @@ pub(crate) async fn form_delete(
     headers: HeaderMap,
     Form(f): Form<HashMap<String, String>>,
 ) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
     if !ct_eq(s.csrf.as_bytes(), f.get("csrf").map(|x| x.as_str()).unwrap_or("").as_bytes()) {
         return StatusCode::FORBIDDEN.into_response();
     }
     let slug = f.get("slug").cloned().unwrap_or_default();
-    if let Ok(Some(row)) = fdb::get_by_slug(&sc.db, &slug) {
-        let _ = fdb::delete(&sc.db, row.id);
-    }
+    // rusqlite is sync — offload the forms lookup + delete to a
+    // blocking thread.
+    let db = sc.db.clone();
+    let _ = tokio::task::spawn_blocking(move || {
+        if let Ok(Some(row)) = fdb::get_by_slug(&db, &slug) {
+            let _ = fdb::delete(&db, row.id);
+        }
+    })
+    .await;
     Redirect::to("/admin/contact").into_response()
 }
 
@@ -295,7 +308,7 @@ pub(crate) async fn inbox_page(
     headers: HeaderMap,
     Query(q): Query<HashMap<String, String>>,
 ) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
     let view = q.get("view").map(|s| s.as_str()).unwrap_or("inbox");
@@ -321,27 +334,56 @@ pub(crate) async fn inbox_page(
         return inbox_export(State(app), headers, Query(q)).await;
     }
 
-    let counts = subdb::counts(&sc.db).unwrap_or_default();
+    // rusqlite is sync — offload the counts + both list queries + the
+    // forms dropdown to a blocking thread. Count first so Pager knows
+    // `total` before the bounded query runs.
+    let db = sc.db.clone();
+    let (c_view, c_form, c_kind, c_search, c_from, c_to, c_sort, c_dir, c_q, slug2) = (
+        view.to_string(),
+        form.clone(),
+        kind.clone(),
+        search.clone(),
+        from.clone(),
+        to.clone(),
+        sort.clone(),
+        dir.clone(),
+        q.clone(),
+        form.clone(),
+    );
+    let data = tokio::task::spawn_blocking(move || {
+        let counts = subdb::counts(&db).unwrap_or_default();
+        let pre = subdb::Filter {
+            status: c_view.clone(), form_slug: c_form.clone(), kind: c_kind.clone(), s: c_search.clone(),
+            limit: 0, offset: 0, from: c_from.clone(), to: c_to.clone(), sort: c_sort.clone(), dir: c_dir.clone(),
+        };
+        let (_, total) = subdb::list(&db, &pre).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())?;
+        let pager = list::Pager::new(&c_q, total);
+        let flt = subdb::Filter {
+            status: c_view, form_slug: c_form, kind: c_kind, s: c_search,
+            limit: pager.limit(), offset: pager.offset(), from: c_from, to: c_to, sort: c_sort, dir: c_dir,
+        };
+        let (rows, _) = subdb::list(&db, &flt).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())?;
+        let mut opts = String::from("<option value=\"\">View all forms</option>");
+        if let Ok(forms) = crate::db::forms::list(&db) {
+            for f in &forms {
+                let sel = if f.slug == slug2 { " selected" } else { "" };
+                opts.push_str(&format!(
+                    "<option value=\"{}\"{}>{}</option>",
+                    esc(&f.slug),
+                    sel,
+                    esc(&if_empty(&f.title, humanize(&f.slug)))
+                ));
+            }
+        }
+        Ok::<(HashMap<String, i64>, list::Pager, Vec<subdb::Submission>, String), Response>((counts, pager, rows, opts))
+    })
+    .await;
+    let Ok(Ok((counts, pager, rows, opts))) = data else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
     let inbox_n = counts.get("new").copied().unwrap_or(0) + counts.get("pending").copied().unwrap_or(0);
     let spam_n = counts.get("spam").copied().unwrap_or(0);
     let trash_n = counts.get("trash").copied().unwrap_or(0) + counts.get("delete").copied().unwrap_or(0);
-
-    // Count first so Pager knows `total` before the list query runs.
-    let pre = subdb::Filter {
-        status: view.into(), form_slug: form.clone(), kind: kind.clone(), s: search.clone(),
-        limit: 0, offset: 0, from: from.clone(), to: to.clone(), sort: sort.clone(), dir: dir.clone(),
-    };
-    let Ok((_, total)) = subdb::list(&sc.db, &pre) else {
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    };
-    let pager = list::Pager::new(&q, total);
-    let f = subdb::Filter {
-        status: view.into(), form_slug: form.clone(), kind: kind.clone(), s: search.clone(),
-        limit: pager.limit(), offset: pager.offset(), from: from.clone(), to: to.clone(), sort: sort.clone(), dir: dir.clone(),
-    };
-    let Ok((rows, _)) = subdb::list(&sc.db, &f) else {
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    };
 
     let extra_views = extra(&q, false);
     let extra_pager = extra(&q, true);
@@ -358,18 +400,6 @@ pub(crate) async fn inbox_page(
     );
 
     // Filter (GET): form dropdown + search box + Filter button.
-    let mut opts = String::from("<option value=\"\">View all forms</option>");
-    if let Ok(forms) = crate::db::forms::list(&sc.db) {
-        for f in &forms {
-            let sel = if f.slug == form { " selected" } else { "" };
-            opts.push_str(&format!(
-                "<option value=\"{}\"{}>{}</option>",
-                esc(&f.slug),
-                sel,
-                esc(&if_empty(&f.title, humanize(&f.slug)))
-            ));
-        }
-    }
     let view_hidden = if view == "inbox" {
         String::new()
     } else {
@@ -472,84 +502,90 @@ pub(crate) async fn inbox_page(
 
 /// Screen C: `/admin/contact/inbox/{id}` — submission detail.
 pub(crate) async fn detail_page(State(app): State<App>, headers: HeaderMap, Path(id): Path<i64>) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
-    let Some(r) = subdb::get(&sc.db, id).unwrap_or(None) else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-    let view = match r.status.as_str() {
-        "spam" => "spam",
-        "trash" | "delete" => "trash",
-        _ => "inbox",
-    };
-    let map: serde_json::Map<String, Value> = serde_json::from_str(&r.data_json).unwrap_or_default();
-    let subject = subject_of(&r.data_json);
-    let subject = if subject.is_empty() { "(no subject)".to_string() } else { subject };
-
-    // Meta header: From / Form / Date / IP / Page / Tour / Kind / Status.
-    let meta_row = |k: &str, v: String| format!("<tr><th scope=\"row\">{k}</th><td>{v}</td></tr>");
-    let mut meta = String::new();
-    meta.push_str(&meta_row("From", from_of(&r)));
-    meta.push_str(&meta_row("Form", if r.form_slug.is_empty() { "—".into() } else { esc(&r.form_slug) }));
-    meta.push_str(&meta_row("Date", esc(&r.created_at)));
-    meta.push_str(&meta_row("IP", if r.ip.is_empty() { "—".into() } else { esc(&r.ip) }));
-    meta.push_str(&meta_row("Page", if r.page.is_empty() { "—".into() } else { esc(&r.page) }));
-    meta.push_str(&meta_row("Tour", if r.tour.is_empty() { "—".into() } else { esc(&r.tour) }));
-    meta.push_str(&meta_row("Kind", esc(&r.kind)));
-    meta.push_str(&meta_row("Status", esc(&r.status)));
-
-    let mut kv = String::new();
-    for (k, v) in &map {
-        let val = v.as_str().map(|x| x.to_string()).unwrap_or_else(|| v.to_string());
-        kv.push_str(&format!(
-            "<tr><th scope=\"row\">{}</th><td>{}</td></tr>",
-            esc(k),
-            esc(&val)
-        ));
-    }
-    if kv.is_empty() {
-        kv.push_str("<tr><td colspan=\"2\">No fields recorded.</td></tr>");
-    }
-
-    // Action buttons mirror the row actions of this row's current view.
-    let mut buttons = String::new();
-    for (verb, label, _class, confirm) in view_actions(view, &r.kind, &r.status) {
-        let onclick = if confirm.is_empty() {
-            String::new()
-        } else {
-            format!(" onclick=\"return confirm('{}')\"", esc(confirm))
+    // rusqlite is sync — offload the fetch + page build to a blocking thread.
+    let db = sc.db.clone();
+    tokio::task::spawn_blocking(move || {
+        let Some(r) = subdb::get(&db, id).unwrap_or(None) else {
+            return StatusCode::NOT_FOUND.into_response();
         };
-        buttons.push_str(&format!(
-            "<form method=\"post\" action=\"{INBOX}/action\" style=\"display:inline\">\
-             <input type=\"hidden\" name=\"csrf\" value=\"{}\">\
-             <input type=\"hidden\" name=\"id\" value=\"{}\">\
-             <input type=\"hidden\" name=\"back\" value=\"{INBOX}?view={view}\">\
-             <button type=\"submit\" name=\"action\" value=\"{}\" class=\"button\"{}>{}</button></form> ",
-            s.csrf,
-            r.id,
-            verb,
-            onclick,
-            esc(label)
-        ));
-    }
+        let view = match r.status.as_str() {
+            "spam" => "spam",
+            "trash" | "delete" => "trash",
+            _ => "inbox",
+        };
+        let map: serde_json::Map<String, Value> = serde_json::from_str(&r.data_json).unwrap_or_default();
+        let subject = subject_of(&r.data_json);
+        let subject = if subject.is_empty() { "(no subject)".to_string() } else { subject };
 
-    let body = format!(
-        "{}<div class=\"wrap\"><h1 class=\"wp-heading-inline\">Inbound Message</h1>\
-         <a href=\"{INBOX}?view={view}\" class=\"page-title-action\">← Back to list</a>\
-         <hr class=\"wp-header-end\">\
-         <h2>{}</h2>\
-         <table class=\"form-table\"><tbody>{}</tbody></table>\
-         <h2>Fields</h2>\
-         <table class=\"widefat striped\"><tbody>{}</tbody></table>\
-         <p class=\"submit\">{}</p></div>",
-        chrome("contact", &s),
-        esc(&subject),
-        meta,
-        kv,
-        buttons
-    );
-    html_page(&s, "Inbound Message", &body, true).into_response()
+        // Meta header: From / Form / Date / IP / Page / Tour / Kind / Status.
+        let meta_row = |k: &str, v: String| format!("<tr><th scope=\"row\">{k}</th><td>{v}</td></tr>");
+        let mut meta = String::new();
+        meta.push_str(&meta_row("From", from_of(&r)));
+        meta.push_str(&meta_row("Form", if r.form_slug.is_empty() { "—".into() } else { esc(&r.form_slug) }));
+        meta.push_str(&meta_row("Date", esc(&r.created_at)));
+        meta.push_str(&meta_row("IP", if r.ip.is_empty() { "—".into() } else { esc(&r.ip) }));
+        meta.push_str(&meta_row("Page", if r.page.is_empty() { "—".into() } else { esc(&r.page) }));
+        meta.push_str(&meta_row("Tour", if r.tour.is_empty() { "—".into() } else { esc(&r.tour) }));
+        meta.push_str(&meta_row("Kind", esc(&r.kind)));
+        meta.push_str(&meta_row("Status", esc(&r.status)));
+
+        let mut kv = String::new();
+        for (k, v) in &map {
+            let val = v.as_str().map(|x| x.to_string()).unwrap_or_else(|| v.to_string());
+            kv.push_str(&format!(
+                "<tr><th scope=\"row\">{}</th><td>{}</td></tr>",
+                esc(k),
+                esc(&val)
+            ));
+        }
+        if kv.is_empty() {
+            kv.push_str("<tr><td colspan=\"2\">No fields recorded.</td></tr>");
+        }
+
+        // Action buttons mirror the row actions of this row's current view.
+        let mut buttons = String::new();
+        for (verb, label, _class, confirm) in view_actions(view, &r.kind, &r.status) {
+            let onclick = if confirm.is_empty() {
+                String::new()
+            } else {
+                format!(" onclick=\"return confirm('{}')\"", esc(confirm))
+            };
+            buttons.push_str(&format!(
+                "<form method=\"post\" action=\"{INBOX}/action\" style=\"display:inline\">\
+                 <input type=\"hidden\" name=\"csrf\" value=\"{}\">\
+                 <input type=\"hidden\" name=\"id\" value=\"{}\">\
+                 <input type=\"hidden\" name=\"back\" value=\"{INBOX}?view={view}\">\
+                 <button type=\"submit\" name=\"action\" value=\"{}\" class=\"button\"{}>{}</button></form> ",
+                s.csrf,
+                r.id,
+                verb,
+                onclick,
+                esc(label)
+            ));
+        }
+
+        let body = format!(
+            "{}<div class=\"wrap\"><h1 class=\"wp-heading-inline\">Inbound Message</h1>\
+             <a href=\"{INBOX}?view={view}\" class=\"page-title-action\">← Back to list</a>\
+             <hr class=\"wp-header-end\">\
+             <h2>{}</h2>\
+             <table class=\"form-table\"><tbody>{}</tbody></table>\
+             <h2>Fields</h2>\
+             <table class=\"widefat striped\"><tbody>{}</tbody></table>\
+             <p class=\"submit\">{}</p></div>",
+            chrome("contact", &s),
+            esc(&subject),
+            meta,
+            kv,
+            buttons
+        );
+        html_page(&s, "Inbound Message", &body, true).into_response()
+    })
+    .await
+    .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
 /// Screen D: `/admin/contact/form/{slug}` — CF7 "Edit Contact Form" parity.
@@ -557,79 +593,83 @@ pub(crate) async fn detail_page(State(app): State<App>, headers: HeaderMap, Path
 /// the binary), so the screen is read-only: slug, endpoint, lang, counts,
 /// and the most recent submissions.
 pub(crate) async fn form_detail(State(app): State<App>, headers: HeaderMap, Path(slug): Path<String>) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
-    let Ok(form_row) = crate::db::forms::get_by_slug(&sc.db, &slug) else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-    let Some(form_row) = form_row else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-    let counts = subdb::form_counts(&sc.db).unwrap_or_default();
-    let n = counts.get(slug.as_str()).copied().unwrap_or(0);
-    let lang = crate::lang::lang_label(&form_row.lang);
-    let mut meta = String::new();
-    let mr = |k: &str, v: String| format!("<tr><th scope=\"row\">{k}</th><td>{v}</td></tr>");
-    meta.push_str(&mr("Title", esc(&if_empty(&form_row.title, humanize(&slug)))));
-    meta.push_str(&mr("Slug", esc(&slug)));
-    meta.push_str(&mr("Endpoint", format!("<code>POST /form/{}</code>", esc(&slug))));
-    meta.push_str(&mr("Lang", lang.to_string()));
-    meta.push_str(&mr("Submissions", format!(
-        "<a href=\"{INBOX}?form={}\">{}</a>",
-        esc(&slug),
-        n
-    )));
+    // rusqlite is sync — offload the form lookup + counts + recent-
+    // submissions query and the page build to a blocking thread.
+    let db = sc.db.clone();
+    tokio::task::spawn_blocking(move || {
+        let Ok(Some(form_row)) = crate::db::forms::get_by_slug(&db, &slug) else {
+            return StatusCode::NOT_FOUND.into_response();
+        };
+        let counts = subdb::form_counts(&db).unwrap_or_default();
+        let n = counts.get(slug.as_str()).copied().unwrap_or(0);
+        let lang = crate::lang::lang_label(&form_row.lang);
+        let mut meta = String::new();
+        let mr = |k: &str, v: String| format!("<tr><th scope=\"row\">{k}</th><td>{v}</td></tr>");
+        meta.push_str(&mr("Title", esc(&if_empty(&form_row.title, humanize(&slug)))));
+        meta.push_str(&mr("Slug", esc(&slug)));
+        meta.push_str(&mr("Endpoint", format!("<code>POST /form/{}</code>", esc(&slug))));
+        meta.push_str(&mr("Lang", lang.to_string()));
+        meta.push_str(&mr("Submissions", format!(
+            "<a href=\"{INBOX}?form={}\">{}</a>",
+            esc(&slug),
+            n
+        )));
 
-    // Recent submissions for this form (last 10, newest first).
-    let mut rows = String::new();
-    match subdb::list(&sc.db, &subdb::Filter {
-        status: "".into(),
-        form_slug: slug.clone(),
-        s: String::new(),
-        kind: "form".into(),
-        limit: 10,
-        offset: 0,
-        from: String::new(),
-        to: String::new(),
-        sort: "date".into(),
-        dir: "desc".into(),
-    }) {
-        Ok((rs, _total)) => {
-            for r in &rs {
-                let subject = subject_of(&r.data_json);
-                let subject = if subject.is_empty() { "(no subject)".to_string() } else { esc(&subject) };
-                rows.push_str(&format!(
-                    "<tr><td><a href=\"{INBOX}/{}\">{}</a></td><td>{}</td><td>{}</td><td>{}</td></tr>",
-                    r.id,
-                    subject,
-                    from_of(r),
-                    esc(&r.status),
-                    esc(&r.created_at)
-                ));
+        // Recent submissions for this form (last 10, newest first).
+        let mut rows = String::new();
+        match subdb::list(&db, &subdb::Filter {
+            status: "".into(),
+            form_slug: slug.clone(),
+            s: String::new(),
+            kind: "form".into(),
+            limit: 10,
+            offset: 0,
+            from: String::new(),
+            to: String::new(),
+            sort: "date".into(),
+            dir: "desc".into(),
+        }) {
+            Ok((rs, _total)) => {
+                for r in &rs {
+                    let subject = subject_of(&r.data_json);
+                    let subject = if subject.is_empty() { "(no subject)".to_string() } else { esc(&subject) };
+                    rows.push_str(&format!(
+                        "<tr><td><a href=\"{INBOX}/{}\">{}</a></td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                        r.id,
+                        subject,
+                        from_of(r),
+                        esc(&r.status),
+                        esc(&r.created_at)
+                    ));
+                }
             }
+            Err(_) => {}
         }
-        Err(_) => {}
-    }
-    if rows.is_empty() {
-        rows.push_str("<tr><td colspan=\"4\">No submissions yet.</td></tr>");
-    }
+        if rows.is_empty() {
+            rows.push_str("<tr><td colspan=\"4\">No submissions yet.</td></tr>");
+        }
 
-    let body = format!(
-        "{}<div class=\"wrap\"><h1 class=\"wp-heading-inline\">Contact Form</h1>\
-         <a href=\"/admin/contact\" class=\"page-title-action\">← Back to list</a>\
-         <hr class=\"wp-header-end\">\
-         <h2>{}</h2>\
-         <table class=\"form-table\"><tbody>{}</tbody></table>\
-         <h2>Recent Submissions</h2>\
-         <table class=\"widefat striped\"><thead><tr><th>Subject</th><th>From</th><th>Status</th><th>Date</th></tr></thead><tbody>{}</tbody></table>\
-         </div>",
-        chrome("contact", &s),
-        esc(&if_empty(&form_row.title, humanize(&slug))),
-        meta,
-        rows
-    );
-    html_admin(&s, "Contact Form", &body, false, "edit-php").into_response()
+        let body = format!(
+            "{}<div class=\"wrap\"><h1 class=\"wp-heading-inline\">Contact Form</h1>\
+             <a href=\"/admin/contact\" class=\"page-title-action\">← Back to list</a>\
+             <hr class=\"wp-header-end\">\
+             <h2>{}</h2>\
+             <table class=\"form-table\"><tbody>{}</tbody></table>\
+             <h2>Recent Submissions</h2>\
+             <table class=\"widefat striped\"><thead><tr><th>Subject</th><th>From</th><th>Status</th><th>Date</th></tr></thead><tbody>{}</tbody></table>\
+             </div>",
+            chrome("contact", &s),
+            esc(&if_empty(&form_row.title, humanize(&slug))),
+            meta,
+            rows
+        );
+        html_admin(&s, "Contact Form", &body, false, "edit-php").into_response()
+    })
+    .await
+    .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
 /// Screen E: `/admin/reviews` — Site Reviews inbox. Same table as Inbox,
@@ -654,30 +694,39 @@ pub(crate) async fn inbox_export(
     headers: HeaderMap,
     Query(q): Query<HashMap<String, String>>,
 ) -> Response {
-    let Ok((_s, sc)) = need_auth(&app, &headers) else {
+    let Ok((_s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
     let view = q.get("view").map(|s| s.as_str()).unwrap_or("inbox");
-    let view = if matches!(view, "spam" | "trash") { view } else { "inbox" };
-    let f = subdb::Filter {
-        status: view.into(),
-        form_slug: q.get("form").cloned().unwrap_or_default(),
-        kind: q.get("kind").cloned().unwrap_or_default(),
-        s: q.get("s").cloned().unwrap_or_default(),
-        from: date_ok(q.get("from").map(|s| s.as_str()).unwrap_or("")),
-        to: date_ok(q.get("to").map(|s| s.as_str()).unwrap_or("")),
-        limit: 0,
-        offset: 0,
-        sort: q.get("sort").cloned().unwrap_or_default(),
-        dir: q.get("dir").cloned().unwrap_or_default(),
-    };
-    let Ok(csv) = subdb::export_csv(&sc.db, &f, EXPORT_CAP) else {
+    let status: String = if matches!(view, "spam" | "trash") { view } else { "inbox" }.to_string();
+    let is_review = q.get("kind").map(|k| k.as_str()) == Some("review");
+    // rusqlite is sync — offload the CSV export + date lookup to a
+    // blocking thread.
+    let db = sc.db.clone();
+    let data = tokio::task::spawn_blocking(move || {
+        let f = subdb::Filter {
+            status,
+            form_slug: q.get("form").cloned().unwrap_or_default(),
+            kind: q.get("kind").cloned().unwrap_or_default(),
+            s: q.get("s").cloned().unwrap_or_default(),
+            from: date_ok(q.get("from").map(|s| s.as_str()).unwrap_or("")),
+            to: date_ok(q.get("to").map(|s| s.as_str()).unwrap_or("")),
+            limit: 0,
+            offset: 0,
+            sort: q.get("sort").cloned().unwrap_or_default(),
+            dir: q.get("dir").cloned().unwrap_or_default(),
+        };
+        let csv = subdb::export_csv(&db, &f, EXPORT_CAP)?;
+        let day: String = crate::db::conn(&db).ok()
+            .and_then(|c| c.query_row(sql!("admin__select_today_ymd"), [], |r| r.get(0)).ok())
+            .unwrap_or_default();
+        Ok::<(String, String), anyhow::Error>((csv, day))
+    })
+    .await;
+    let Ok(Ok((csv, day))) = data else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
-    let day: String = crate::db::conn(&sc.db).ok()
-        .and_then(|c| c.query_row(sql!("admin__select_today_ymd"), [], |r| r.get(0)).ok())
-        .unwrap_or_default();
-    let base = if f.kind == "review" { "reviews" } else { "inbound-messages" };
+    let base = if is_review { "reviews" } else { "inbound-messages" };
     (
         [
             (header::CONTENT_TYPE, "text/csv; charset=utf-8".to_string()),
@@ -705,7 +754,7 @@ pub(crate) async fn inbox_action(
     headers: HeaderMap,
     Form(f): Form<HashMap<String, String>>,
 ) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
     if let Err(r) = check_csrf(&s, f.get("csrf").map(|x| x.as_str()).unwrap_or("")) {
@@ -718,7 +767,12 @@ pub(crate) async fn inbox_action(
     let id: i64 = f.get("id").and_then(|x| x.parse().ok()).unwrap_or(0);
     if id > 0 {
         // Approving a comment/review submission republishes its post page.
-        if let Ok(pid) = intake::moderate(&sc.db, id, verb) {
+        // rusqlite is sync — moderate off the async thread.
+        let db = sc.db.clone();
+        let pid = tokio::task::spawn_blocking(move || intake::moderate(&db, id, verb))
+            .await
+            .unwrap_or_else(|_| Err(anyhow::anyhow!("join")));
+        if let Ok(pid) = pid {
             admin::regen_posts(sc, &[pid]);
         }
     }
@@ -732,7 +786,7 @@ pub(crate) async fn inbox_bulk(
     headers: HeaderMap,
     Form(f): Form<HashMap<String, String>>,
 ) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
     if let Err(r) = check_csrf(&s, f.get("csrf").map(|x| x.as_str()).unwrap_or("")) {
@@ -755,14 +809,18 @@ pub(crate) async fn inbox_bulk(
     let Some(verb) = verb else {
         return Redirect::to(&back).into_response();
     };
-    let mut posts: Vec<i64> = Vec::new();
-    for (k, _) in &f {
-        if let Some(id) = k.strip_prefix("p-").and_then(|x| x.parse::<i64>().ok()) {
-            if let Ok(pid) = intake::moderate(&sc.db, id, verb) {
-                posts.push(pid);
-            }
-        }
-    }
+    // rusqlite is sync — one blocking pass moderates every checked row.
+    let db = sc.db.clone();
+    let ids: Vec<i64> = f.keys()
+        .filter_map(|k| k.strip_prefix("p-").and_then(|x| x.parse::<i64>().ok()))
+        .collect();
+    let posts: Vec<i64> = tokio::task::spawn_blocking(move || {
+        ids.iter()
+            .filter_map(|&id| intake::moderate(&db, id, verb).ok())
+            .collect()
+    })
+    .await
+    .unwrap_or_default();
     admin::regen_posts(sc, &posts);
     let sep = if back.contains('?') { '&' } else { '?' };
     Redirect::to(&format!("{back}{sep}msg={verb}")).into_response()
@@ -786,7 +844,7 @@ pub(crate) async fn submissions_mod_redirect(
     headers: HeaderMap,
     Form(m): Form<intake::Moderation>,
 ) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
     if let Err(r) = check_csrf(&s, &m.csrf) {
@@ -794,7 +852,13 @@ pub(crate) async fn submissions_mod_redirect(
     }
     let msg = verb_of(&m.action).unwrap_or("");
     if !msg.is_empty() {
-        if let Ok(pid) = intake::moderate(&sc.db, m.id, msg) {
+        // rusqlite is sync — moderate off the async thread.
+        let db = sc.db.clone();
+        let id = m.id;
+        let pid = tokio::task::spawn_blocking(move || intake::moderate(&db, id, msg))
+            .await
+            .unwrap_or_else(|_| Err(anyhow::anyhow!("join")));
+        if let Ok(pid) = pid {
             admin::regen_posts(sc, &[pid]);
         }
     }

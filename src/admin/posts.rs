@@ -1,5 +1,3 @@
-#[allow(unused_imports)]
-use crate::sql;
 use super::*;
 
 /// Content-type registry: kind/section → `plugins::KindDef`.
@@ -23,55 +21,66 @@ pub(crate) async fn section(
     Path(section): Path<String>,
     Query(q): Query<HashMap<String, String>>,
 ) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
-    let lang = q.get("lang").map(|s| s.as_str()).unwrap_or("");
-    if matches!(section.as_str(), "media" | "redirects" | "publish") {
-        let inner = format!(
-            "{}<div class=\"wrap\"><h1>{}</h1><p class=muted>Use the dedicated screen in the menu.</p></div>",
-            chrome(&section, &s),
-            section
+    // rusqlite is sync — list_admin + render_list + chrome all hit the
+    // DB, so the whole body runs on a blocking thread (H14).
+    let (s2, sc2) = (s, sc.clone());
+    tokio::task::spawn_blocking(move || {
+        let (s, sc) = (s2, sc2);
+        let lang = q.get("lang").map(|s| s.as_str()).unwrap_or("");
+        if matches!(section.as_str(), "media" | "redirects" | "publish") {
+            let inner = format!(
+                "{}<div class=\"wrap\"><h1>{}</h1><p class=muted>Use the dedicated screen in the menu.</p></div>",
+                chrome(&section, &s),
+                section
+            );
+            return html_page(&s, &section, &inner, true).into_response();
+        }
+        let Some(spec) = kind_for(&section) else {
+            return StatusCode::NOT_FOUND.into_response();
+        };
+        let kind = spec.kind;
+        let status = q.get("status").map(|s| s.as_str()).unwrap_or("");
+        let tax = q.get("tax").map(|s| s.as_str()).unwrap_or("");
+        let cat = q.get("cat").map(|s| s.as_str()).unwrap_or("");
+        // Taxonomy count links (/admin/tax/*) pass a terms.id; resolved to
+        // taxonomy+slug inside list_admin.
+        let term: i64 = q.get("term").and_then(|s| s.parse().ok()).unwrap_or(0);
+        let search = q.get("s").map(|s| s.as_str()).unwrap_or("");
+        let page: i64 = q.get("paged").and_then(|s| s.parse().ok()).unwrap_or(1);
+        let per_page = 20i64;
+        let (rows, total, counts) = match crud::list_admin(&sc.db, kind, status, lang, tax, cat, term, search, page, per_page)
+        {
+            Ok(v) => v,
+            Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        };
+        let inner = render_list(
+            &sc,
+            &section, kind, &s, &rows, total, &counts, status, lang, tax, cat, search, page, per_page,
         );
-        return html_page(&s, &section, &inner, true).into_response();
-    }
-    let Some(spec) = kind_for(&section) else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-    let kind = spec.kind;
-    let status = q.get("status").map(|s| s.as_str()).unwrap_or("");
-    let tax = q.get("tax").map(|s| s.as_str()).unwrap_or("");
-    let cat = q.get("cat").map(|s| s.as_str()).unwrap_or("");
-    // Taxonomy count links (/admin/tax/*) pass a terms.id; resolved to
-    // taxonomy+slug inside list_admin.
-    let term: i64 = q.get("term").and_then(|s| s.parse().ok()).unwrap_or(0);
-    let search = q.get("s").map(|s| s.as_str()).unwrap_or("");
-    let page: i64 = q.get("paged").and_then(|s| s.parse().ok()).unwrap_or(1);
-    let per_page = 20i64;
-    let (rows, total, counts) = match crud::list_admin(&sc.db, kind, status, lang, tax, cat, term, search, page, per_page)
-    {
-        Ok(v) => v,
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
-    let inner = render_list(
-        sc,
-        &section, kind, &s, &rows, total, &counts, status, lang, tax, cat, search, page, per_page,
-    );
-    html_admin(&s,
-        match kind_for(&section) {
-            Some(k) => k.list_title,
-            None => "List",
-        },
-        &inner,
-        true,
-        "edit-php",
-    )
-    .into_response()
+        html_admin(&s,
+            match kind_for(&section) {
+                Some(k) => k.list_title,
+                None => "List",
+            },
+            &inner,
+            true,
+            "edit-php",
+        )
+        .into_response()
+    })
+    .await
+    .unwrap_or_else(|e| {
+        eprintln!("section join: {e:#}");
+        StatusCode::INTERNAL_SERVER_ERROR.into_response()
+    })
 }
 
 /// Absolute preview URL on the *public* site (settings.site_url),
 /// e.g. https://test.example.com/voyage/slug/ — never admin-host relative.
-pub(crate) fn public_path(sc: &SiteCtx, lang: &str, kind: &str, slug: &str) -> String {
+pub(crate) fn public_path(sc: &SiteCtx, lang: &str, kind: &str, slug: &str) -> String { // gate-allow: blocking by contract — only called inside spawn_blocking
     let base = site_url(sc).trim_end_matches('/').to_string();
     // LangConfig is settings-derived; a failed conn falls back to the
     // primary-only config (empty prefix) rather than panicking on a
@@ -95,7 +104,7 @@ pub(crate) fn dash(s: &str) -> String {
     }
 }
 
-pub(crate) fn pll_cell(r: &crud::AdminListRow, kind: &str, langs: &crate::lang::LangConfig) -> String {
+pub(crate) fn pll_cell(r: &crud::AdminListRow, kind: &str, langs: &crate::lang::LangConfig) -> String { // gate-allow: blocking by contract — only called inside spawn_blocking
     let flag = |code: &str, id: Option<i64>| match id {
         Some(n) => format!(
             r#"<span class="pll-column-flag"><a href="/admin/edit/{n}">{code}</a></span>"#
@@ -141,7 +150,7 @@ pub(crate) fn qs(status: &str, lang: &str, tax: &str, page: i64) -> String {
     }
 }
 
-pub(crate) fn render_list(
+pub(crate) fn render_list( // gate-allow: blocking by contract — only called inside spawn_blocking
     sc: &SiteCtx,
     section: &str,
     kind: &str,
@@ -572,30 +581,45 @@ document.querySelectorAll('[data-seo-id]').forEach(function(td){{
 
 #[derive(Deserialize)]
 pub(crate) struct TrashForm {
+    #[serde(default)]
     csrf: String,
     id: i64,
     status: String,
 }
 
 pub(crate) async fn trash_post(State(app): State<App>, headers: HeaderMap, Form(f): Form<TrashForm>) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
         if let Err(r) = check_csrf(&s, &f.csrf) {
         return r;
     }
-    let _ = crud::set_post_status(&sc.db, f.id, &f.status);
+    // rusqlite is sync — offload the status write to a blocking thread;
+    // regen spawns its own blocking task internally. On failure don't regen
+    // (it would delete the cached file for a post still live) and don't
+    // pretend success — 500 so the UI shows the error (audit §2.2).
+    let sc2 = sc.clone();
+    let status_w = f.status.clone();
+    let ok = tokio::task::spawn_blocking(move || {
+        crud::set_post_status(&sc2.db, f.id, &status_w)
+    })
+    .await
+    .unwrap_or_else(|e| Err(anyhow::anyhow!("trash join: {e}")));
+    if let Err(e) = ok {
+        eprintln!("trash post {}: {e:#}", f.id);
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
     // Status flips both ways matter: trash removes the file, restore rewrites it.
     admin::regen_posts(&sc, &[f.id]);
     Redirect::to("/admin/posts").into_response()
 }
 
 pub(crate) async fn bulk_posts(State(app): State<App>, headers: HeaderMap, Form(map): Form<HashMap<String, String>>) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
-    if !ct_eq(s.csrf.as_bytes(), map.get("csrf").map(|x| x.as_str()).unwrap_or("").as_bytes()) {
-        return StatusCode::FORBIDDEN.into_response();
+    if let Err(r) = check_csrf(&s, map.get("csrf").map(|x| x.as_str()).unwrap_or("")) {
+        return r;
     }
     let mut ids: Vec<i64> = Vec::new();
     if let Some(csv) = map.get("ids") {
@@ -626,13 +650,13 @@ pub(crate) async fn bulk_posts(State(app): State<App>, headers: HeaderMap, Form(
             match action.as_deref() {
                 Some("trash") => {
                     for id in &ids {
-                        let _ = crud::set_post_status(&sc.db, *id, "trash");
+                        if let Err(e) = crud::set_post_status(&sc.db, *id, "trash") { eprintln!("bulk trash {id}: {e:#}"); }
                     }
                     admin::regen_posts(&sc, &ids);
                 }
                 Some("edit") => {
                     for id in &ids {
-                        let _ = crud::bulk_apply(&sc.db, *id, &bstatus, &bcats, &btags);
+                        if let Err(e) = crud::bulk_apply(&sc.db, *id, &bstatus, &bcats, &btags) { eprintln!("bulk edit {id}: {e:#}"); }
                     }
                     admin::regen_posts(&sc, &ids);
                     admin::bust_cache(&sc); // taxonomy assignments hit archive pages too
@@ -668,7 +692,7 @@ struct PreSave {
     files: Vec<PathBuf>,
 }
 
-fn snapshot_before_save(sc: &SiteCtx, id: i64) -> Option<PreSave> {
+fn snapshot_before_save(sc: &SiteCtx, id: i64) -> Option<PreSave> { // gate-allow: blocking by contract — only called inside spawn_blocking
     let conn = crate::db::conn(&sc.db).ok()?;
     let (slug, lang, kind): (String, String, String) = conn
         .query_row(sql!("posts__select_slug_lang_kind"), [id], |r| {
@@ -697,11 +721,11 @@ pub(crate) async fn posts_empty(
     Query(q): Query<HashMap<String, String>>,
     Form(f): Form<HashMap<String, String>>,
 ) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
-    if !ct_eq(s.csrf.as_bytes(), f.get("csrf").map(|x| x.as_str()).unwrap_or("").as_bytes()) {
-        return StatusCode::FORBIDDEN.into_response();
+    if let Err(r) = check_csrf(&s, f.get("csrf").map(|x| x.as_str()).unwrap_or("")) {
+        return r;
     }
     let kind = q
         .get("kind")
@@ -712,63 +736,75 @@ pub(crate) async fn posts_empty(
         return StatusCode::NOT_FOUND.into_response();
     };
     let kind = spec.kind;
-    // 1. Snapshot doomed id → file-variant paths while the rows exist.
-    // A snapshot failure means files would be orphaned silently — fail
-    // loudly and skip the delete rather than strand stale pages.
-    let mut doomed: Vec<PathBuf> = Vec::new();
-    let ids = match crud::ids_matching(&sc.db, sql!("posts__select_id_kind_trash"), [kind]) {
-        Ok(ids) => ids,
-        Err(e) => {
-            eprintln!("empty_trash: list doomed ids: {e:#}");
+    // rusqlite is sync — snapshot + empty_trash + file cleanup run on a
+    // blocking thread (bust_cache spawns its own task internally).
+    let sc2 = sc.clone();
+    tokio::task::spawn_blocking(move || {
+        let sc = sc2;
+        // 1. Snapshot doomed id → file-variant paths while the rows exist.
+        // A snapshot failure means files would be orphaned silently — fail
+        // loudly and skip the delete rather than strand stale pages.
+        let mut doomed: Vec<PathBuf> = Vec::new();
+        let ids = match crud::ids_matching(&sc.db, sql!("posts__select_id_kind_trash"), [kind]) {
+            Ok(ids) => ids,
+            Err(e) => {
+                eprintln!("empty_trash: list doomed ids: {e:#}");
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+        };
+        match crate::db::conn(&sc.db) {
+            Ok(conn) => {
+                for id in ids {
+                    match generate::file_variants_for(&conn, id, crate::admin::tour_base(&sc)) {
+                        Ok(v) => doomed.extend(v.into_iter().map(|r| sc.out.join(r))),
+                        Err(e) => eprintln!("empty_trash: resolve post {id}: {e:#}"),
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("empty_trash: snapshot conn: {e:#}");
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+        }
+        // 2. The hard delete — propagate the error, don't swallow it.
+        if let Err(e) = crud::empty_trash(&sc.db, kind) {
+            eprintln!("empty_trash: {e:#}");
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
-    };
-    match crate::db::conn(&sc.db) {
-        Ok(conn) => {
-            for id in ids {
-                match generate::file_variants_for(&conn, id, crate::admin::tour_base(sc)) {
-                    Ok(v) => doomed.extend(v.into_iter().map(|r| sc.out.join(r))),
-                    Err(e) => eprintln!("empty_trash: resolve post {id}: {e:#}"),
+        // 3. Remove the files; retry failures once, then bust the cache dir —
+        // a served stale file is worse than a cold cache.
+        doomed.sort();
+        doomed.dedup();
+        let mut remaining: Vec<PathBuf> = Vec::new();
+        for p in &doomed {
+            if p.is_file() {
+                if let Err(e) = std::fs::remove_file(p) {
+                    eprintln!("empty_trash: remove {}: {e}", p.display());
+                    remaining.push(p.clone());
                 }
             }
         }
-        Err(e) => {
-            eprintln!("empty_trash: snapshot conn: {e:#}");
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-        }
-    }
-    // 2. The hard delete — propagate the error, don't swallow it.
-    if let Err(e) = crud::empty_trash(&sc.db, kind) {
-        eprintln!("empty_trash: {e:#}");
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    }
-    // 3. Remove the files; retry failures once, then bust the cache dir —
-    // a served stale file is worse than a cold cache.
-    doomed.sort();
-    doomed.dedup();
-    let mut remaining: Vec<PathBuf> = Vec::new();
-    for p in &doomed {
-        if p.is_file() {
-            if let Err(e) = std::fs::remove_file(p) {
-                eprintln!("empty_trash: remove {}: {e}", p.display());
-                remaining.push(p.clone());
+        for p in std::mem::take(&mut remaining) {
+            if p.is_file() && std::fs::remove_file(&p).is_err() {
+                remaining.push(p);
             }
         }
-    }
-    for p in std::mem::take(&mut remaining) {
-        if p.is_file() && std::fs::remove_file(&p).is_err() {
-            remaining.push(p);
+        if !remaining.is_empty() {
+            eprintln!("empty_trash: {} file(s) survived removal — busting cache", remaining.len());
+            admin::bust_cache(&sc);
         }
-    }
-    if !remaining.is_empty() {
-        eprintln!("empty_trash: {} file(s) survived removal — busting cache", remaining.len());
-        admin::bust_cache(&sc);
-    }
-    Redirect::to(&format!("/admin/{}?status=trash", spec.section)).into_response()
+        Redirect::to(&format!("/admin/{}?status=trash", spec.section)).into_response()
+    })
+    .await
+    .unwrap_or_else(|e| {
+        eprintln!("posts_empty join: {e:#}");
+        StatusCode::INTERNAL_SERVER_ERROR.into_response()
+    })
 }
 
 #[derive(Deserialize)]
 pub(crate) struct CloneForm {
+    #[serde(default)]
     csrf: String,
     id: i64,
     #[serde(default)]
@@ -777,6 +813,7 @@ pub(crate) struct CloneForm {
 
 #[derive(Deserialize)]
 pub(crate) struct QuickEditForm {
+    #[serde(default)]
     csrf: String,
     id: i64,
     title: String,
@@ -790,7 +827,7 @@ pub(crate) struct QuickEditForm {
     lang: String,
 }
 pub(crate) async fn quick_edit(State(app): State<App>, headers: HeaderMap, Form(f): Form<QuickEditForm>) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
         if let Err(r) = check_csrf(&s, &f.csrf) {
@@ -798,76 +835,108 @@ pub(crate) async fn quick_edit(State(app): State<App>, headers: HeaderMap, Form(
     }
     let cats: Vec<String> = f.cats.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect();
     let tags: Vec<String> = f.tags.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect();
-    let status = match f.status.as_str() {
-        "publish" | "future" | "draft" | "pending" | "trash" => f.status.as_str(),
-        _ => "draft",
-    };
-    // N-language whitelist: the submitted lang must be one of the site's
-    // configured languages — anything else falls back to unset.
-    let lang_cfg = crate::db::conn(&sc.db).map(|c| crate::lang::config(&c)).unwrap_or_default();
-    let lang = if lang_cfg.langs.iter().any(|l| l == &f.lang) { f.lang.as_str() } else { "" };
-    // Snapshot old path + term set BEFORE commit (see PreSave).
-    let pre = snapshot_before_save(&sc, f.id);
-    match crud::quick_update(&sc.db, f.id, &f.title, &f.slug, status, lang, &cats, &tags) {
-        Ok(()) => {
-            // Post-commit: retire every variant of the OLD path — a slug
-            // rename must kill the old URL's file and its alias copies
-            // (index.md, {dir}.html, lang-prefixed), not just index.html.
-            if let Some(p) = &pre {
-                let eff_lang = if lang.is_empty() { p.lang.as_str() } else { lang };
-                if f.slug != p.slug || eff_lang != p.lang {
-                    for v in &p.files {
-                        let _ = std::fs::remove_file(sc.out.join(v));
+    // rusqlite is sync — lang whitelist, pre-save snapshot, quick_update,
+    // and the old-URL cleanup all run on a blocking thread.
+    let sc2 = sc.clone();
+    tokio::task::spawn_blocking(move || {
+        let sc = sc2;
+        let status = match f.status.as_str() {
+            "publish" | "future" | "draft" | "pending" | "trash" => f.status.as_str(),
+            _ => "draft",
+        };
+        // N-language whitelist: the submitted lang must be one of the site's
+        // configured languages — anything else falls back to unset.
+        let lang_cfg = crate::db::conn(&sc.db).map(|c| crate::lang::config(&c)).unwrap_or_default();
+        let lang = if lang_cfg.langs.iter().any(|l| l == &f.lang) { f.lang.as_str() } else { "" };
+        // Snapshot old path + term set BEFORE commit (see PreSave).
+        let pre = snapshot_before_save(&sc, f.id);
+        match crud::quick_update(&sc.db, f.id, &f.title, &f.slug, status, lang, &cats, &tags) {
+            Ok(()) => {
+                // Post-commit: retire every variant of the OLD path — a slug
+                // rename must kill the old URL's file and its alias copies
+                // (index.md, {dir}.html, lang-prefixed), not just index.html.
+                if let Some(p) = &pre {
+                    let eff_lang = if lang.is_empty() { p.lang.as_str() } else { lang };
+                    if f.slug != p.slug || eff_lang != p.lang {
+                        for v in &p.files {
+                            let _ = std::fs::remove_file(sc.out.join(v));
+                        }
                     }
                 }
+                let extra: Vec<(i64, String, String)> = pre
+                    .as_ref()
+                    .map(|p| p.terms.iter().map(|(t, s)| (f.id, t.clone(), s.clone())).collect())
+                    .unwrap_or_default();
+                admin::regen_posts_with_terms(&sc, &[f.id], &extra);
+                Redirect::to("/admin/posts").into_response()
             }
-            let extra: Vec<(i64, String, String)> = pre
-                .as_ref()
-                .map(|p| p.terms.iter().map(|(t, s)| (f.id, t.clone(), s.clone())).collect())
-                .unwrap_or_default();
-            admin::regen_posts_with_terms(&sc, &[f.id], &extra);
-            Redirect::to("/admin/posts").into_response()
+            Err(_) => StatusCode::BAD_REQUEST.into_response(),
         }
-        Err(_) => StatusCode::BAD_REQUEST.into_response(),
-    }
+    })
+    .await
+    .unwrap_or_else(|e| {
+        eprintln!("quick_edit join: {e:#}");
+        StatusCode::INTERNAL_SERVER_ERROR.into_response()
+    })
 }
 
 pub(crate) async fn post_data(State(app): State<App>, headers: HeaderMap, Path(id): Path<i64>) -> Response {
-    let Ok((_s, sc)) = need_auth(&app, &headers) else {
+    let Ok((_s, sc)) = need_auth(&app, &headers).await else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
-    let cats = crud::term_slugs_for(&sc.db, id, "category").unwrap_or_default();
-    let tag_names = crud::tag_names_for(&sc.db, id).unwrap_or_default();
-    let lang = crud::lang_of(&sc.db, id).unwrap_or_default();
-    /* Category checklist scope = the post's language: a term stays visible
-       when (a) it is attached to this post, (b) a post of the same lang
-       uses it, or (c) nothing uses it yet. */
-    let allowed_cats: Vec<String> = (|| {
-        let c = crate::db::conn(&sc.db).ok()?;
-        let mut st = c.prepare(
-            sql!("posts__select_allowed_category_slugs"),
-        ).ok()?;
-        let rows = st
-            .query_map(rusqlite::params![lang, id], |r| r.get::<_, String>(0))
-            .ok()?;
-        rows.collect::<Result<Vec<String>, _>>().ok()
-    })()
-    .unwrap_or_default();
-    let body = serde_json::json!({"cats": cats, "tags": tag_names, "lang": lang, "allowed_cats": allowed_cats}).to_string();
+    // rusqlite is sync — the term/lang/allowed-cat lookups run on a
+    // blocking thread; only the JSON encoding stays inline.
+    let sc2 = sc.clone();
+    let body = match tokio::task::spawn_blocking(move || {
+        let sc = sc2;
+        let cats = crud::term_slugs_for(&sc.db, id, "category").unwrap_or_default();
+        let tag_names = crud::tag_names_for(&sc.db, id).unwrap_or_default();
+        let lang = crud::lang_of(&sc.db, id).unwrap_or_default();
+        /* Category checklist scope = the post's language: a term stays visible
+           when (a) it is attached to this post, (b) a post of the same lang
+           uses it, or (c) nothing uses it yet. */
+        let allowed_cats: Vec<String> = (|| {
+            let c = crate::db::conn(&sc.db).ok()?;
+            let mut st = c.prepare(
+                sql!("posts__select_allowed_category_slugs"),
+            ).ok()?;
+            let rows = st
+                .query_map(rusqlite::params![lang, id], |r| r.get::<_, String>(0))
+                .ok()?;
+            rows.collect::<Result<Vec<String>, _>>().ok()
+        })()
+        .unwrap_or_default();
+        serde_json::json!({"cats": cats, "tags": tag_names, "lang": lang, "allowed_cats": allowed_cats}).to_string()
+    })
+    .await
+    {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("post_data join: {e:#}");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
     ([(header::CONTENT_TYPE, "application/json")], body).into_response()
 }
 
 pub(crate) async fn clone_post(State(app): State<App>, headers: HeaderMap, Form(f): Form<CloneForm>) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
         if let Err(r) = check_csrf(&s, &f.csrf) {
         return r;
     }
-    match crud::clone_post(&sc.db, f.id, !f.draft.is_empty()) {
-        Ok(new_id) => Redirect::to(&format!("/admin/edit/{new_id}")).into_response(),
+    // rusqlite is sync — the clone (insert + copies) runs on a blocking thread.
+    let (id, draft) = (f.id, !f.draft.is_empty());
+    let sc2 = sc.clone();
+    match tokio::task::spawn_blocking(move || crud::clone_post(&sc2.db, id, draft)).await {
+        Ok(Ok(new_id)) => Redirect::to(&format!("/admin/edit/{new_id}")).into_response(),
+        Ok(Err(e)) => {
+            eprintln!("clone_post {id} failed: {e:#}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
         Err(e) => {
-            eprintln!("clone_post {} failed: {e:#}", f.id);
+            eprintln!("clone_post {id} join: {e:#}");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
@@ -880,25 +949,36 @@ pub(crate) fn kind_from_section(s: &str) -> Option<&'static str> {
 }
 
 pub(crate) async fn new_post(State(app): State<App>, headers: HeaderMap, Path(kind): Path<String>, Query(q): Query<HashMap<String, String>>) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
     let Some(k) = kind_from_section(&kind) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    // Default lang = site primary; the PLL "+" links carry ?lang=<code>
-    // (validated against the configured set).
-    let lang_cfg = crate::db::conn(&sc.db).map(|c| crate::lang::config(&c)).unwrap_or_default();
-    let lang = q.get("lang")
-        .filter(|l| lang_cfg.langs.contains(l))
-        .cloned()
-        .unwrap_or_else(|| lang_cfg.primary.clone());
-    let f = crud::PostForm { kind: k.into(), lang, status: "draft".into(), body_json: "[]".into(), ..Default::default() };
-    html_admin(&s, "New", &edit_html(sc, &s, &f), true, "post-php").into_response()
+    // rusqlite is sync — lang config + edit_html (term/media/revision
+    // queries, chrome) run on a blocking thread.
+    let (s2, sc2) = (s, sc.clone());
+    tokio::task::spawn_blocking(move || {
+        let (s, sc) = (s2, sc2);
+        // Default lang = site primary; the PLL "+" links carry ?lang=<code>
+        // (validated against the configured set).
+        let lang_cfg = crate::db::conn(&sc.db).map(|c| crate::lang::config(&c)).unwrap_or_default();
+        let lang = q.get("lang")
+            .filter(|l| lang_cfg.langs.contains(l))
+            .cloned()
+            .unwrap_or_else(|| lang_cfg.primary.clone());
+        let f = crud::PostForm { kind: k.into(), lang, status: "draft".into(), body_json: "[]".into(), ..Default::default() };
+        html_admin(&s, "New", &edit_html(&sc, &s, &f), true, "post-php").into_response()
+    })
+    .await
+    .unwrap_or_else(|e| {
+        eprintln!("new_post join: {e:#}");
+        StatusCode::INTERNAL_SERVER_ERROR.into_response()
+    })
 }
 
 pub(crate) async fn edit_post(State(app): State<App>, headers: HeaderMap, Path(id): Path<i64>) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
     // Sync DB load + editor render off the reactor — gdlr builds are
@@ -1043,7 +1123,7 @@ document.getElementById('content-tmce') && document.getElementById('content-tmce
 }
 
 
-pub(crate) fn edit_html(sc: &SiteCtx, s: &Sess, f: &crud::PostForm) -> String {
+pub(crate) fn edit_html(sc: &SiteCtx, s: &Sess, f: &crud::PostForm) -> String { // gate-allow: blocking by contract — only called inside spawn_blocking
     let id = f.id.map(|n| n.to_string()).unwrap_or_default();
     let id_field = if id.is_empty() {
         String::new()
@@ -1583,7 +1663,7 @@ renderTagChips();
 }
 
 pub(crate) async fn save_post(State(app): State<App>, headers: HeaderMap, Form(f): Form<crud::PostForm>) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
         if let Err(r) = check_csrf(&s, &f.csrf) {
@@ -1595,37 +1675,48 @@ pub(crate) async fn save_post(State(app): State<App>, headers: HeaderMap, Form(f
     if !rm_raw.is_empty() && serde_json::from_str::<serde_json::Value>(rm_raw).is_err() {
         return (StatusCode::BAD_REQUEST, "invalid rank_math payload").into_response();
     }
-    // Capture the old output path + term set BEFORE the save so a slug /
-    // lang / kind change can delete the stale file at the old URL and
-    // invalidate the archives the post is leaving.
-    let pre = f.id.and_then(|id| snapshot_before_save(&sc, id));
-    match crud::save_post(&sc.db, &f) {
-        Ok(id) => {
-            // nav-menus.php auto-add: a brand-new top-level page joins every
-            // menu flagged "Automatically add new top-level pages".
-            if f.id.is_none() && f.kind == "page" {
-                let _ = crud::menus::auto_add_page(&sc.db, id);
-            }
-            // Write-back: the post file must hold the just-saved version;
-            // a slug/lang/kind change kills the old URL's whole variant
-            // set (index.md, {dir}.html, per-lang copies), not just its
-            // index.html.
-            if let Some(p) = &pre {
-                if f.slug != p.slug || f.lang != p.lang || f.kind != p.kind {
-                    for v in &p.files {
-                        let _ = std::fs::remove_file(sc.out.join(v));
+    // rusqlite is sync — the pre-save snapshot, save_post, menu auto-add,
+    // and the old-URL file cleanup all run on a blocking thread.
+    let sc2 = sc.clone();
+    tokio::task::spawn_blocking(move || {
+        let sc = sc2;
+        // Capture the old output path + term set BEFORE the save so a slug /
+        // lang / kind change can delete the stale file at the old URL and
+        // invalidate the archives the post is leaving.
+        let pre = f.id.and_then(|id| snapshot_before_save(&sc, id));
+        match crud::save_post(&sc.db, &f) {
+            Ok(id) => {
+                // nav-menus.php auto-add: a brand-new top-level page joins every
+                // menu flagged "Automatically add new top-level pages".
+                if f.id.is_none() && f.kind == "page" {
+                    let _ = crud::menus::auto_add_page(&sc.db, id);
+                }
+                // Write-back: the post file must hold the just-saved version;
+                // a slug/lang/kind change kills the old URL's whole variant
+                // set (index.md, {dir}.html, per-lang copies), not just its
+                // index.html.
+                if let Some(p) = &pre {
+                    if f.slug != p.slug || f.lang != p.lang || f.kind != p.kind {
+                        for v in &p.files {
+                            let _ = std::fs::remove_file(sc.out.join(v));
+                        }
                     }
                 }
+                let extra: Vec<(i64, String, String)> = pre
+                    .as_ref()
+                    .map(|p| p.terms.iter().map(|(t, s)| (id, t.clone(), s.clone())).collect())
+                    .unwrap_or_default();
+                admin::regen_posts_with_terms(&sc, &[id], &extra);
+                Redirect::to(&format!("/admin/edit/{id}")).into_response()
             }
-            let extra: Vec<(i64, String, String)> = pre
-                .as_ref()
-                .map(|p| p.terms.iter().map(|(t, s)| (id, t.clone(), s.clone())).collect())
-                .unwrap_or_default();
-            admin::regen_posts_with_terms(&sc, &[id], &extra);
-            Redirect::to(&format!("/admin/edit/{id}")).into_response()
+            Err(e) => (StatusCode::BAD_REQUEST, format!("{e}")).into_response(),
         }
-        Err(e) => (StatusCode::BAD_REQUEST, format!("{e}")).into_response(),
-    }
+    })
+    .await
+    .unwrap_or_else(|e| {
+        eprintln!("save_post join: {e:#}");
+        (StatusCode::BAD_REQUEST, format!("{e}")).into_response()
+    })
 }
 
 
@@ -1640,23 +1731,34 @@ pub(crate) async fn preview_post(
     headers: HeaderMap,
     Path(id): Path<i64>,
 ) -> Response {
-    let Ok((_s, sc)) = need_auth(&app, &headers) else {
+    let Ok((_s, sc)) = need_auth(&app, &headers).await else {
         return Redirect::to("/admin/login").into_response();
     };
-    match crate::render::render_preview(&sc.db, &sc.templates, id, &site_url(sc), crate::admin::tour_base(sc)) {
-        Ok(html) => (
-            [
-                (header::CONTENT_TYPE, "text/html; charset=utf-8"),
-                (header::HeaderName::from_static("x-robots-tag"), "noindex"),
-            ],
-            html,
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::NOT_FOUND,
-            format!("preview unavailable: {e}"),
-        )
-            .into_response(),
-    }
+    // rusqlite + the render pipeline are sync — the whole preview render
+    // runs on a blocking thread (same offload as the public renderer).
+    let sc2 = sc.clone();
+    tokio::task::spawn_blocking(move || {
+        let sc = sc2;
+        match crate::render::render_preview(&sc.db, &sc.templates, id, &site_url(&sc), crate::admin::tour_base(&sc)) {
+            Ok(html) => (
+                [
+                    (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+                    (header::HeaderName::from_static("x-robots-tag"), "noindex"),
+                ],
+                html,
+            )
+                .into_response(),
+            Err(e) => (
+                StatusCode::NOT_FOUND,
+                format!("preview unavailable: {e}"),
+            )
+                .into_response(),
+        }
+    })
+    .await
+    .unwrap_or_else(|e| {
+        eprintln!("preview_post join: {e:#}");
+        StatusCode::INTERNAL_SERVER_ERROR.into_response()
+    })
 }
 
