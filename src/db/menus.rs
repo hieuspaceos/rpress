@@ -502,3 +502,54 @@ impl MenuScreen {
         !self.hidden.iter().any(|h| h == key)
     }
 }
+
+/// Batch post lookup for menu resolution: wp_id → (id, slug, lang, kind,
+/// title) for every published post whose wp_id is in `ids`. Chunked IN
+/// queries (400/bind-limit) — the SQL is generated, so it lives here in
+/// db/, not in the renderer.
+pub(crate) fn posts_by_wp_ids(
+    conn: &rusqlite::Connection,
+    ids: &[i64],
+) -> std::collections::HashMap<i64, (i64, String, String, String, String)> {
+    let mut out = std::collections::HashMap::new();
+    for chunk in ids.chunks(400) {
+        if chunk.is_empty() { continue; }
+        let qs = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let q = format!(
+            "SELECT wp_id, id, slug, lang, kind, title FROM posts WHERE status='publish' AND wp_id IN ({qs})"
+        );
+        if let Ok(mut st) = conn.prepare(&q) {
+            if let Ok(rows) = st.query_map(rusqlite::params_from_iter(chunk.iter()), |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?, r.get::<_, String>(4)?, r.get::<_, String>(5)?))
+            }) {
+                for row in rows.flatten() {
+                    out.insert(row.0, (row.1, row.2, row.3, row.4, row.5));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Batch term lookup for menu resolution: terms.id → (taxonomy, slug).
+pub(crate) fn terms_by_ids(
+    conn: &rusqlite::Connection,
+    ids: &[i64],
+) -> std::collections::HashMap<i64, (String, String)> {
+    let mut out = std::collections::HashMap::new();
+    for chunk in ids.chunks(400) {
+        if chunk.is_empty() { continue; }
+        let qs = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let q = format!("SELECT id, taxonomy, slug FROM terms WHERE id IN ({qs})");
+        if let Ok(mut st) = conn.prepare(&q) {
+            if let Ok(rows) = st.query_map(rusqlite::params_from_iter(chunk.iter()), |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+            }) {
+                for row in rows.flatten() {
+                    out.insert(row.0, (row.1, row.2));
+                }
+            }
+        }
+    }
+    out
+}

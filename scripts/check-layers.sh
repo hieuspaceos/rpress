@@ -40,5 +40,48 @@ if [ -n "$missing" ]; then
   fail=1
 fi
 
+# --- 4. site/domain literals (the "site-agnostic binary" gate) --------------
+# Curated site names + site-specific taxonomy slugs must not appear in src/
+# outside exempted paths (verbatim-WP-port modules, the importer's seed
+# data), test code (everything after a file's first `#[cfg(test)]`), comment-
+# only lines, or lines marked `// gate-allow: <reason>`.
+# Add a site name to SITE_WORDS when a new reference site lands.
+SITE_WORDS='traveltour|tevily|aucoeur|duree|duracion|region-es|estilo|perfil|blueskies|imagetravel'
+while IFS= read -r hit; do
+  echo "SITE-LITERAL $hit"
+  fail=1
+done < <(grep -rn --include='*.rs' -E "$SITE_WORDS" src/ 2>/dev/null \
+  | grep -vE '^src/(import\.rs|plugins/(theme_traveltour|goodlayers)/)' \
+  | grep -v 'gate-allow' \
+  | grep -vE ':[0-9]+:[[:space:]]*(//|\*|/\*)' \
+  | awk -F: '
+      # pass 1 (real files): lowest #[cfg(test)]/mod tests line per file —
+      # hits at/after it are test code and exempt.
+      FILENAME != "-" {
+        if ($0 ~ /^[[:space:]]*#\[cfg\(test\)\]|^[[:space:]]*mod[[:space:]]+tests/ && (!(FILENAME in t) || FNR < t[FILENAME])) t[FILENAME] = FNR;
+        next
+      }
+      { file=$1; line=$2; if (!(file in t) || line+0 < t[file]+0) print }' \
+  $(grep -rlE --include='*.rs' '#\[cfg\(test\)\]|mod tests' src/ 2>/dev/null) -)
+
+# --- 5. language literals on the live path ----------------------------------
+# fr/es/de (and /xx/ prefixes) belong to lang config data, not code: only
+# lang.rs internals, test code, comments, and gate-allow lines may carry them.
+while IFS= read -r hit; do
+  echo "LANG-LITERAL $hit"
+  fail=1
+done < <(grep -rn --include='*.rs' -E '"fr"|"es"|"de"|"/es/"|"/fr/"|"/de/"' \
+  src/admin/ src/render.rs src/render_post.rs src/render_archive.rs src/render/ \
+  src/site_build.rs src/site_serve.rs src/site_deploy.rs src/site_init.rs 2>/dev/null \
+  | grep -v 'gate-allow' \
+  | grep -vE ':[0-9]+:[[:space:]]*(//|\*|/\*)' \
+  | awk -F: '
+      FILENAME != "-" {
+        if ($0 ~ /^[[:space:]]*#\[cfg\(test\)\]|^[[:space:]]*mod[[:space:]]+tests/ && (!(FILENAME in t) || FNR < t[FILENAME])) t[FILENAME] = FNR;
+        next
+      }
+      { file=$1; line=$2; if (!(file in t) || line+0 < t[file]+0) print }' \
+  $(grep -rlE --include='*.rs' '#\[cfg\(test\)\]|mod tests' src/ 2>/dev/null) -)
+
 [ "$fail" = 0 ] && echo "layers OK"
 exit "$fail"

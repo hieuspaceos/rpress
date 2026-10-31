@@ -1,1 +1,2 @@
-SELECT COUNT(*) FROM post_translations t WHERE (t.fr_post_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM posts p WHERE p.id=t.fr_post_id)) OR (t.es_post_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM posts p WHERE p.id=t.es_post_id))
+SELECT COUNT(*) FROM post_translation_members m
+WHERE NOT EXISTS(SELECT 1 FROM posts p WHERE p.id=m.post_id)

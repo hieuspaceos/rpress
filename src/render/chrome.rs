@@ -208,30 +208,16 @@ pub(crate) fn iso8601(dt: &str) -> String {
 }
 
 /// body_class per WP body_class(): the theme suffix comes from the
-/// `site_body_suffix` setting (seeded per site/theme), falling back to
-/// traveltour's value only when unset.
+/// `site_body_suffix` setting (seeded per site/theme), then the resolved
+/// theme's `body_suffix` (adapter, TOML spec, or the neutral default).
 pub(crate) fn body_class(conn: &Connection, _lang: &str, kind: &str, id: i64, is_front: bool) -> String {
-    // Resolution order: explicit `site_body_suffix` seed → the matched
-    // theme adapter's `body_suffix` → traveltour (legacy default).
     let suffix = conn
         .query_row(sql!("chrome__select_body_suffix"), [], |r| {
             r.get::<_, String>(0)
         })
         .ok()
         .filter(|s| !s.is_empty())
-        .or_else(|| {
-            let stylesheet: String = conn
-                .query_row(sql!("render__select_stylesheet"), [], |r| {
-                    r.get::<_, String>(0)
-                })
-                .unwrap_or_default();
-            crate::plugins::theme_for_stylesheet(&stylesheet)
-                .filter(|d| !d.body_suffix.is_empty())
-                .map(|d| d.body_suffix.to_string())
-        })
-        .unwrap_or_else(|| {
-            "wp-theme-traveltour wp-child-theme-traveltour-child gdlr-core-body tourmaster-body metaslider-plugin traveltour-body traveltour-body-front traveltour-full  traveltour-with-sticky-navigation gdlr-core-link-to-lightbox".into()
-        });
+        .unwrap_or_else(|| crate::plugins::theme_for_site(conn).body_suffix.to_string());
     let core = if is_front {
         format!("home wp-singular page-template-default page page-id-{id}")
     } else {
@@ -240,7 +226,8 @@ pub(crate) fn body_class(conn: &Connection, _lang: &str, kind: &str, id: i64, is
                 "wp-singular post-template-default single single-post postid-{id} single-format-standard"
             ),
             "tour" => format!(
-                "wp-singular tour-template-default single single-tour postid-{id} wp-theme-traveltour wp-child-theme-traveltour-child gdlr-core-body tourmaster-bottom-booking-bar tourmaster-mobile-read-more tourmaster-body metaslider-plugin traveltour-body traveltour-body-front traveltour-full  traveltour-with-sticky-navigation gdlr-core-link-to-lightbox"
+                "wp-singular tour-template-default single single-tour postid-{id} {} tourmaster-bottom-booking-bar tourmaster-mobile-read-more",
+                suffix
             ),
             _ => format!("wp-singular page-template-default page page-id-{id}"),
         }
@@ -554,7 +541,7 @@ pub(crate) fn chrome_vars(
 
     /* `gdlr-core-page-option` enable-header-area=disable → WP renders no
        header/topbar/mobile-header at all and marks the outer wrapper
-       `traveltour-header-disable` (origin-verified on pages like
+       `traveltour-header-disable` — gate-allow: WP body-class name in comment — (origin-verified on pages like
        idees-rencontres-ethniques). */
     let header_disable = {
         let raw = meta("gdlr-core-page-option");
@@ -599,7 +586,8 @@ pub(crate) fn chrome_vars(
                     .unwrap_or_default()
             }
         };
-        format!("<div class=\"traveltour-page-title-wrap  traveltour-style-large traveltour-center-align\"{bg} ><div class=\"traveltour-header-transparent-substitute\" ></div><div class=\"traveltour-page-title-overlay\"  ></div><div class=\"traveltour-page-title-container traveltour-container\" ><div class=\"traveltour-page-title-content traveltour-item-pdlr\"  ><h1 class=\"traveltour-page-title\"  >{}</h1></div></div></div>", esc(title))
+        let theme = crate::plugins::theme_for_site(conn);
+        (theme.page_title_wrap)(theme, &bg, None, &esc(title))
     } else {
         String::new()
     };
@@ -615,7 +603,7 @@ pub(crate) fn chrome_vars(
        WP Additional CSS (`wp-custom-css`). Ordering matters: this plugin
        default color is blue, and the site's custom CSS overrides it to
        Traveltour/Aucoeur colors. */
-    let wcw = include_str!("../plugins/theme_traveltour/seed/wcw-inlinecss.html");
+    let wcw = include_str!("../plugins/theme_traveltour/seed/wcw-inlinecss.html"); // gate-allow: theme-adapter seed asset path
     let custom_css_tag = if custom_css.trim().is_empty() {
         String::new()
     } else {

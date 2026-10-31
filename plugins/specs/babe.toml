@@ -1,6 +1,34 @@
 slug = "babe"
+name = "BA Book Everything"
+blurb = "Booking post type + tour taxonomy stack (BA Book Everything)."
 claim_types = ["to_book"]
 option_prefixes = ["babe_"]
+
+# Declarative settings screen — /admin/plugins/babe/settings. Fields write
+# the same option rows the plugin used in wp_options.
+[[screens]]
+path = "settings"
+title = "BA Book Settings"
+[[screens.fields]]
+key = "babe_settings_booking"
+label = "Booking engine"
+kind = "checkbox"
+help = "Serve booking pages from the harvest cache."
+[[screens.fields]]
+key = "babe_settings_timezone"
+label = "Site timezone"
+kind = "text"
+help = "PHP timezone string, e.g. Europe/Paris."
+[[screens.fields]]
+key = "babe_settings_currency"
+label = "Currency"
+kind = "select"
+options = [["EUR", "EUR"], ["USD", "USD"], ["VND", "VND"]]
+[[screens.fields]]
+key = "babe_settings_note"
+label = ""
+kind = "note"
+help = "Values save to the plugin's wp_options keys verbatim."
 
 [[kinds]]
 kind = "to_book"
@@ -12,3 +40,25 @@ url_base = "booking"
 taxonomies = ["categories", "ba_location", "ba_type", "ba_features"]
 menu_icon = "dashicons-tickets-alt"
 harvest = true
+
+# Declarative metabox inside the booking editor — flat post_meta rows.
+[kinds.metabox]
+title = "Booking Details"
+[[kinds.metabox.fields]]
+key = "ba_booking_code"
+label = "Booking code"
+kind = "text"
+[[kinds.metabox.fields]]
+key = "ba_booking_status"
+label = "Booking status"
+kind = "select"
+options = [["pending", "Pending"], ["confirmed", "Confirmed"], ["cancelled", "Cancelled"]]
+[[kinds.metabox.fields]]
+key = "ba_booking_paid"
+label = "Paid"
+kind = "checkbox"
+[[kinds.metabox.fields]]
+key = "ba_booking_notes"
+label = "Internal notes"
+kind = "textarea"
+help = "Not shown on the public site."

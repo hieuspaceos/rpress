@@ -31,11 +31,17 @@
    terms but preserves other taxonomies.
 8. **Warnings = 0.** `cargo build` must emit none. Unused vars get `_`
    prefix; dead code gets deleted, not `#[allow]`ed.
-9. **No site/domain literals in `src/`.** Site identity comes from CLI args
-   (`SiteCtx`) or `settings.*` in that site's DB (`site_url`, `site_name`,
-   `legacy_origin`). Seeded content that is the reference theme's lives in
-   `src/seed/*.json` (loaded via `include_str!`), never inline `r#"..."#`
-   blobs in `src/*.rs`.
+9. **No site/domain literals in `src/` — enforced by `check-layers.sh`
+   rules 4–5.** Site identity comes from CLI args (`SiteCtx`), `settings.*`
+   in that site's DB (`site_url`, `site_name`, `legacy_origin`, lang
+   config), or `ThemeDef`/`KindDef` data. The gate fails on `traveltour`,
+   `tevily`, `aucoeur`, `duree`, `duracion`, `region-es`, `estilo`,
+   `perfil`, `blueskies`, `imagetravel` (extend `SITE_WORDS` for new
+   reference sites) and on live-path `"fr"`/`"es"`/`"de"` — exempt paths:
+   `src/import.rs` + `src/plugins/theme_traveltour/` + `src/plugins/goodlayers/`
+   (verbatim-WP-port surfaces), `#[cfg(test)]` regions, comment-only
+   lines, and any line carrying `// gate-allow: <reason>` (write a real
+   reason — "verbatim WP X", "template anchor", never just a dash).
 10. **WP→rpress bootstrap is `rpress migrate <dump>`.** One command runs
     import → admin creation (random password, printed once) → generate.
     Keep it thin: it calls `import::run`, `auth::add_user`, `generate::run` —

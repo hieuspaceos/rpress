@@ -30,8 +30,8 @@ use std::pin::Pin;
 use std::sync::LazyLock;
 
 pub(crate) mod spec;
-pub(crate) mod theme_tevily;
-pub(crate) mod theme_traveltour;
+// theme_tevily lives in themes/specs/tevily.toml — the declarative-demo spec.
+pub(crate) mod theme_traveltour; // gate-allow: adapter module registration is the contract
 pub(crate) mod tourmaster;
 pub(crate) mod goodlayers;
 /// `/admin/plugins` index + shared settings-screen helpers.
@@ -70,7 +70,7 @@ pub(crate) struct KindDef {
     /// `<thead>` for the list table.
     pub(crate) head: &'static str,
     /// Extra `<td>` columns after the Title cell.
-    pub(crate) row_cols: fn(&crud::AdminListRow, &str) -> String,
+    pub(crate) row_cols: fn(&crud::AdminListRow, &str, &crate::lang::LangConfig) -> String,
     /// Settings key carrying this kind's public URL base (e.g.
     /// `tour_base`); `None` for kinds served at the root. Consumed by
     /// the url-base threading in phase 03.
@@ -367,22 +367,22 @@ pub(crate) trait PluginAdapter: Sync {
 
 // --- Core built-in kinds -------------------------------------------------
 
-const HEAD_POST: &str = r#"<tr><td class="manage-column column-cb check-column"></td><th scope="col" class="manage-column column-title column-primary">Title</th><th scope="col">Author</th><th scope="col">Categories</th><th scope="col">FR / ES</th><th scope="col">Comments</th><th scope="col" class="rm-seo-col">SEO Details</th></tr>"#;
-const HEAD_PAGE: &str = r#"<tr><td class="manage-column column-cb check-column"></td><th scope="col" class="manage-column column-title column-primary">Title</th><th scope="col">Author</th><th scope="col">FR / ES</th><th scope="col">Comments</th><th scope="col" class="rm-seo-col">SEO Details</th></tr>"#;
+const HEAD_POST: &str = r#"<tr><td class="manage-column column-cb check-column"></td><th scope="col" class="manage-column column-title column-primary">Title</th><th scope="col">Author</th><th scope="col">Categories</th><th scope="col">Languages</th><th scope="col">Comments</th><th scope="col" class="rm-seo-col">SEO Details</th></tr>"#;
+const HEAD_PAGE: &str = r#"<tr><td class="manage-column column-cb check-column"></td><th scope="col" class="manage-column column-title column-primary">Title</th><th scope="col">Author</th><th scope="col">Languages</th><th scope="col">Comments</th><th scope="col" class="rm-seo-col">SEO Details</th></tr>"#;
 
-fn post_row_cols(r: &crud::AdminListRow, kind: &str) -> String {
+fn post_row_cols(r: &crud::AdminListRow, kind: &str, langs: &crate::lang::LangConfig) -> String {
     format!(
         "<td>—</td><td class=\"categories\">{}</td><td class=\"pll\">{}</td><td class=\"comments\">{}</td>",
         crate::admin::posts::dash(&r.categories),
-        crate::admin::posts::pll_cell(r, kind),
+        crate::admin::posts::pll_cell(r, kind, langs),
         r.comments,
     )
 }
 
-fn page_row_cols(r: &crud::AdminListRow, kind: &str) -> String {
+fn page_row_cols(r: &crud::AdminListRow, kind: &str, langs: &crate::lang::LangConfig) -> String {
     format!(
         "<td>—</td><td class=\"pll\">{}</td><td class=\"comments\">{}</td>",
-        crate::admin::posts::pll_cell(r, kind),
+        crate::admin::posts::pll_cell(r, kind, langs),
         r.comments,
     )
 }
@@ -409,8 +409,8 @@ static CORE_KINDS: &[KindDef] = &[
 /// Registered adapters — the compile-time plugin list.
 static ADAPTERS: &[&'static dyn PluginAdapter] = &[
     &tourmaster::ADAPTER,
-    &theme_traveltour::ADAPTER,
-    &theme_tevily::ADAPTER,
+    &theme_traveltour::ADAPTER, // gate-allow: registry entry
+    // tevily: themes/specs/tevily.toml — TOML spec, no Rust adapter.
     &goodlayers::ADAPTER,
     &chaty::ADAPTER,
     &misc::WPDISCUZ,
@@ -491,9 +491,9 @@ pub(crate) fn adapters() -> &'static [&'static dyn PluginAdapter] {
 /// Only theme adapters return `Some(theme())`; `PluginAdapter::theme`
 /// defaults to `None`.
 #[derive(Clone, Copy)]
-#[allow(dead_code)] // body_suffix/page_title_wrap/preferred_locations are
-                    // consumed by the phase-04/06 chrome+menu work; declared
-                    // now so the contract is stable.
+#[allow(dead_code)] // TOML themes can't carry the fn-pointer fields
+                    // (page_title_wrap/wrap_page_sidebar are data-theme
+                    // generic) — keep the allow for future spec fields.
 pub(crate) struct ThemeDef {
     /// `settings.stylesheet` may be a child theme name
     /// (`traveltour-child`, `tevily_child`) — the adapter decides.
@@ -503,10 +503,232 @@ pub(crate) struct ThemeDef {
     pub template_dir: &'static str,
     /// `site.theme.body_suffix` value seeded into settings at migrate.
     pub body_suffix: &'static str,
-    /// `site.theme.page_title_wrap` value ("" → no wrap).
-    pub page_title_wrap: &'static str,
+    /// `site.theme.page_title_wrap` — the archive/page title banner
+    /// scaffold; `default_page_title` for data themes, Rust themes own
+    /// their byte-parity markup. Args: (bg_style_attr, caption_opt, title).
+    pub page_title_wrap: fn(&ThemeDef, &str, Option<&str>, &str) -> String,
     /// Menu locations this theme prefers, in pick order (phase-01).
     pub preferred_locations: &'static [&'static str],
+    /// Settings key carrying the theme's taxonomy-map JSON
+    /// (`{prefix}taxonomy_map`) — drives `theme_cat_path`/`theme_tag_base`/
+    /// `theme_cat_lang`. Empty = generic flat `{tax}/{slug}` archives.
+    pub taxonomy_map_key: &'static str,
+    /// Compile-time fallback for `taxonomy_map_key` when the settings
+    /// row is absent (unit tests, pre-migrate DBs) — the theme ships
+    /// `include_str!` of its seed JSON. Empty = no map.
+    pub taxonomy_map_json: &'static str,
+    /// post_tag archive base when the map doesn't supply one (`etiquette`,
+    /// `tag`). Empty = fall through to map / "tag".
+    pub tag_base: &'static str,
+    /// Widget chrome class prefix (`traveltour-widget` → `widget`).
+    pub widget_class: &'static str,
+    /// Sidebar wrapper classes around page bodies with sidebars.
+    pub sidebar_wrap_class: &'static str,
+    /// Live-edit builder body class suffix (goodlayers Live Mode).
+    pub body_class: &'static str,
+    /// Theme option prefix in settings (`traveltour_`).
+    pub settings_key_prefix: &'static str,
+    /// (taxonomy → lang) pairs — archives for a taxonomy with no post
+    /// lang land in this lang instead of primary.
+    pub tax_lang: &'static [(&'static str, &'static str)],
+    /// Primary↔twin taxonomy pairs — `localized_taxonomy` picks the
+    /// member whose `tax_lang` matches the requested language.
+    pub tax_pairs: &'static [(&'static str, &'static str)],
+    /// Element id of the theme's core stylesheet <link> — the anchor
+    /// `inject_post_assets` inserts eztoc CSS before. Empty = append.
+    pub css_link_id: &'static str,
+    /// Element id of the theme's core inline-script — anchor for
+    /// footer asset injection. Empty = append.
+    pub js_extra_id: &'static str,
+    /// Mega-menu root class (`traveltour-mega-menu` → `mega-menu`).
+    pub mega_class: &'static str,
+    /// Non-mega flyout marker class on top-level items
+    /// (`traveltour-normal-menu` → `normal-menu`).
+    pub normal_menu_class: &'static str,
+    /// Menu <li> markup variant — `Wp` = superfish/WP default,
+    /// `Caret` = elementor-style `<span class="menu-title">` + caret.
+    pub menu_renderer: MenuRenderer,
+    /// (taxonomy → (plural, singular)) admin labels for theme-claimed
+    /// taxonomies (duree/region/… live in `tax_label`'s builtin table).
+    pub tax_labels: &'static [(&'static str, &'static str, &'static str)],
+    /// Page-with-sidebar scaffold: wraps `body` + `sidebar_html` in the
+    /// theme's container markup. `default_page_sidebar` for data themes;
+    /// Rust themes preserve their byte-parity wrapper.
+    pub wrap_page_sidebar: fn(&ThemeDef, body: &str, sidebar_html: &str, pos: &str) -> String,
+}
+
+/// Menu markup family a theme's base template expects.
+#[derive(Clone, Copy)]
+pub(crate) enum MenuRenderer {
+    /// WP/superfish: `<li class><a href>{title}</a><ul class="sub-menu">`.
+    Wp,
+    /// Elementor/tevily: `<a><span class="menu-title">{t}</span>{caret}</a>`
+    /// inside `<ul class="submenu-inner">`.
+    Caret,
+}
+
+/// Generic page-sidebar scaffold — a TOML theme's `sidebar_wrap_class`
+/// drives the outer container; inner divs are unbranded.
+pub(crate) fn default_page_sidebar(theme: &ThemeDef, body: &str, sidebar_html: &str, pos: &str) -> String {
+    format!(
+        "<div class=\"{wrap}\"><div class=\"sidebar-wrap clearfix sidebar-style-{pos}\"><div class=\"sidebar-center\"><div class=\"content-area\">{body}</div></div>{sidebar_html}</div>",
+        wrap = theme.sidebar_wrap_class,
+    )
+}
+
+/// Generic page-title banner — unbranded classes; `page_title_wrap` for
+/// data themes. `caption` renders only when the archive supplies one.
+pub(crate) fn default_page_title(_t: &ThemeDef, bg: &str, caption: Option<&str>, title: &str) -> String {
+    let cap = caption.map(|c| format!("<h3 class=\"page-caption\">{c}</h3>")).unwrap_or_default();
+    format!("<div class=\"page-title-wrap\"{bg}><div class=\"page-title-container\"><div class=\"page-title-content\">{cap}<h1 class=\"page-title\">{title}</h1></div></div></div>")
+}
+
+/// Shared taxonomy-map readers — themes with a `taxonomy_map_key` get
+/// `cat_path`/`tag_base`/`cat_lang`/`taxonomy_base` for free; themes
+/// without one get the generic flat shape (`{tax}/{slug}`, category
+/// unnested at root, tag under `tag`).
+fn tax_map(conn: &rusqlite::Connection, theme: &ThemeDef) -> serde_json::Value {
+    if theme.taxonomy_map_key.is_empty() && theme.taxonomy_map_json.is_empty() {
+        return serde_json::Value::Null;
+    }
+    conn.query_row(
+        "SELECT value FROM settings WHERE key=?1",
+        [theme.taxonomy_map_key],
+        |r| r.get::<_, String>(0),
+    )
+    .ok()
+    .and_then(|s| serde_json::from_str(&s).ok())
+    .or_else(|| serde_json::from_str(theme.taxonomy_map_json).ok())
+    .unwrap_or(serde_json::Value::Null)
+}
+
+/// Parent slug of a category in the theme's map (`None` = root/unknown).
+fn map_parent(map: &serde_json::Value, slug: &str) -> Option<String> {
+    map["cat_edges"].get(slug)?.as_str().map(str::to_string)
+}
+
+/// Hierarchical category archive path for the resolved theme
+/// (`grand/parent/child`); generic themes stay flat (`{slug}`).
+pub(crate) fn theme_cat_path(conn: &rusqlite::Connection, theme: &ThemeDef, slug: &str) -> String {
+    let map = tax_map(conn, theme);
+    let mut chain = vec![slug.to_string()];
+    let mut cur = slug.to_string();
+    let mut guard = 0;
+    while let Some(p) = map_parent(&map, &cur) {
+        if p == cur { break; }
+        chain.insert(0, p.clone());
+        cur = p;
+        guard += 1;
+        if guard > 6 { break; }
+    }
+    chain.join("/")
+}
+
+/// Categories whose parent is `slug` in the theme's map — the inverse
+/// of `theme_cat_path`'s walk. Empty for map-less themes.
+pub(crate) fn theme_cat_children(conn: &rusqlite::Connection, theme: &ThemeDef, slug: &str) -> Vec<String> {
+    let map = tax_map(conn, theme);
+    let mut v: Vec<String> = Vec::new();
+    if let Some(obj) = map["cat_edges"].as_object() {
+        for (c, p) in obj {
+            if p.as_str() == Some(slug) {
+                v.push(c.clone());
+            }
+        }
+    }
+    v
+}
+
+/// The post_tag archive base for the resolved theme — the map's
+/// `taxonomy_bases.post_tag`, else the theme's `tag_base`, else `tag`.
+pub(crate) fn theme_tag_base(conn: &rusqlite::Connection, theme: &ThemeDef) -> String {
+    tax_map(conn, theme)["taxonomy_bases"]
+        .get("post_tag")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .or_else(|| (!theme.tag_base.is_empty()).then(|| theme.tag_base.to_string()))
+        .unwrap_or_else(|| "tag".to_string())
+}
+
+/// Public archive base for any taxonomy in the theme's map —
+/// `None` → the generic `{tax}` segment.
+pub(crate) fn theme_taxonomy_base(conn: &rusqlite::Connection, theme: &ThemeDef, tax: &str) -> Option<String> {
+    tax_map(conn, theme)["taxonomy_bases"]
+        .get(tax)?
+        .as_str()
+        .map(str::to_string)
+}
+
+/// Whether `slug`'s category chain resolves inside a non-primary root
+/// set — the theme declares `es_roots` (map) or `tax_lang` pairs;
+/// generic: slug ends in `-es` and the theme maps "es" via tax_lang.
+pub(crate) fn theme_cat_lang(conn: &rusqlite::Connection, theme: &ThemeDef, slug: &str, primary: &str) -> Option<String> {
+    let map = tax_map(conn, theme);
+    if let Some(roots) = map["es_roots"].as_array() {
+        let roots: Vec<String> = roots.iter().filter_map(|v| v.as_str().map(str::to_string)).collect();
+        let mut cur = slug.to_string();
+        let mut guard = 0;
+        loop {
+            if roots.contains(&cur) {
+                return map["es_roots_lang"]
+                    .as_str()
+                    .map(str::to_string)
+                    .or_else(|| Some("es".to_string()));
+            }
+            match map_parent(&map, &cur) {
+                Some(p) if p != cur => cur = p,
+                _ => break,
+            }
+            guard += 1;
+            if guard > 6 { break; }
+        }
+    }
+    // Polylang convention the retired cat_path_is_es kept unconditional:
+    // a `-es` slug suffix means the non-primary tree even when the map
+    // has no es_roots entry (theme declares cat_edges only).
+    if slug.ends_with("-es") {
+        return map["es_roots_lang"].as_str().map(str::to_string).or_else(|| Some("es".to_string()));
+    }
+    Some(primary.to_string())
+}
+
+/// Taxonomy → lang for archive paths with no post-lang signal — the
+/// theme's `tax_lang` pairs, else the site primary.
+pub(crate) fn theme_tax_lang<'a>(theme: &'a ThemeDef, tax: &str, primary: &'a str) -> &'a str {
+    theme
+        .tax_lang
+        .iter()
+        .find(|(t, _)| *t == tax)
+        .map(|(_, l)| *l)
+        .unwrap_or(primary)
+}
+
+/// Taxonomy translation pairs on `ThemeDef::tax_pairs`:
+/// (primary-lang taxonomy, twin taxonomy) — ("style","estilo"),
+/// ("duree","duracion"). `lang` resolves the twin through `tax_lang`,
+/// so callers pass the primary name + lang and get the right taxonomy —
+/// no per-lang taxonomy literals outside theme data. `lang == primary`
+/// (or an unmapped lang) returns `name`.
+pub(crate) fn localized_taxonomy<'a>(theme: &'a ThemeDef, name: &'a str, lang: &str, primary: &str) -> &'a str {
+    if lang == primary {
+        return name;
+    }
+    for (a, b) in theme.tax_pairs {
+        if *a == name {
+            return if theme_tax_lang(theme, b, primary) == lang { b } else { name };
+        }
+    }
+    name
+}
+
+/// Admin label override for theme-claimed taxonomies — `tax_label`
+/// consults this before its builtin table.
+pub(crate) fn theme_tax_label<'a>(theme: &'a ThemeDef, tax: &str) -> Option<(&'a str, &'a str)> {
+    theme
+        .tax_labels
+        .iter()
+        .find(|(t, _, _)| *t == tax)
+        .map(|(_, plural, singular)| (*plural, *singular))
 }
 
 /// The adapter carrying this stylesheet's theme, if any.
@@ -518,6 +740,50 @@ pub(crate) fn theme_for_stylesheet(stylesheet: &str) -> Option<&'static ThemeDef
         .filter_map(|a| a.theme())
         .find(|t| (t.matches_stylesheet)(stylesheet))
 }
+
+/// Neutral fallback when no adapter (Rust or TOML) claims the site's
+/// stylesheet — generic flat archives, no brand classes. Sites on a
+/// vendored theme we haven't ported still render legibly instead of
+/// leaking another theme's chrome.
+pub(crate) static DEFAULT_THEME: ThemeDef = ThemeDef {
+    matches_stylesheet: |_| true,
+    template_dir: "default",
+    body_suffix: "rp-theme-default",
+    page_title_wrap: default_page_title,
+    preferred_locations: &["primary", "main-menu", "header-navigation"],
+    taxonomy_map_key: "",
+    taxonomy_map_json: "",
+    tag_base: "",
+    widget_class: "widget",
+    sidebar_wrap_class: "content-container sidebar-wrap",
+    body_class: "rp-body",
+    settings_key_prefix: "",
+    tax_lang: &[],
+    tax_pairs: &[],
+    tax_labels: &[],
+    css_link_id: "",
+    js_extra_id: "",
+    mega_class: "mega-menu",
+    normal_menu_class: "normal-menu",
+    menu_renderer: MenuRenderer::Wp,
+    wrap_page_sidebar: default_page_sidebar,
+};
+
+/// The resolved theme for a site — adapter/TOML match first, DEFAULT_THEME
+/// otherwise. Callers that rendered "traveltour-or-bust" markup go
+/// through this so a new theme onboards as data.
+pub(crate) fn theme_for_site(conn: &rusqlite::Connection) -> &'static ThemeDef {
+    let stylesheet = conn
+        .query_row(sql!("render__select_stylesheet"), [], |r| r.get::<_, String>(0))
+        .unwrap_or_default();
+    theme_for_stylesheet(&stylesheet)
+        .or_else(|| themes::theme_for_stylesheet(&stylesheet))
+        .unwrap_or(&DEFAULT_THEME)
+}
+
+/// TOML theme specs (`themes/specs/*.toml` embedded by build.rs) —
+/// declarative subset of ThemeDef for themes without code-level quirks.
+pub(crate) mod themes;
 
 /// Every registered `KindDef` in declared order: core first, then
 /// adapters — drives generic menu/dashboard rendering.
@@ -535,6 +801,7 @@ pub(crate) fn kind_defs() -> Vec<&'static KindDef> {
 /// loss on rollback), already-migrated keys are skipped, and a key that
 /// was *partially* namespaced by an earlier run is untouched.
 pub(crate) fn migrate_all(db: &Path) {
+    themes::assert_no_rust_collision();
     for adapter in adapters() {
         if let Err(e) = adapter.migrate(db) {
             eprintln!("plugin migrate {}: {e:#}", adapter.slug());
@@ -568,7 +835,8 @@ pub(crate) fn submenu_for(db: &Path, def: &'static KindDef) -> Vec<(String, Stri
         (format!("/admin/new/{}", def.kind), def.add_label.to_string()),
     ];
     for t in def.taxonomies {
-        let (label, _) = crate::admin::tax_label(t);
+        let theme = crate::db::conn(db).map(|c| theme_for_site(&c)).unwrap_or(&DEFAULT_THEME);
+        let (label, _) = crate::admin::tax_label_for(theme, t);
         sub.push((format!("/admin/tax/{t}"), label));
     }
     sub

@@ -47,21 +47,9 @@ pub(crate) fn site_data(
     let lang_cfg = crate::lang::config(conn);
     let prefix = crate::lang::url_prefix(&lang_cfg, lang);
     let url = |kind: &str, slug: &str| page_url(conn, site_url, lang, kind, slug, tour_base);
-    // Featured images resolve one point-lookup at a time (lazy media_map) —
-    // the whole media table is never materialized here. Lookups cache in
-    // `seen` so repeated fids stay one query.
-    let seen = std::cell::RefCell::new(HashMap::<i64, Option<(String, String)>>::new());
-    let media_row = |mid: i64| -> Option<(String, String)> {
-        seen.borrow_mut()
-            .entry(mid)
-            .or_insert_with(|| media_lookup(conn, mid))
-            .clone()
-    };
-    let img = |mid: Option<i64>| -> Value {
-        mid.and_then(&media_row)
-            .map(|(p, _)| json!(format!("{site_url}/wp-content/uploads/{p}")))
-            .unwrap_or(Value::Null)
-    };
+    // Featured images batch: fids collected from post_rows below, one
+    // `IN` query via media_map_for (audit P3) — per-item point lookups
+    // were the residual N+1.
 
     // posts (kind='post') with category slugs
     let mut posts = Vec::new();
@@ -99,11 +87,18 @@ pub(crate) fn site_data(
                 }
             }
         }
+        let fid_set: std::collections::HashSet<i64> =
+            post_rows.iter().filter_map(|r| r.4).collect();
+        let mmap = crate::render::media_map_for(conn, &fid_set).unwrap_or_default();
         for (id, slug, title, excerpt, fid, date) in post_rows {
             let cats = cats.remove(&id).unwrap_or_default();
+            let image = fid
+                .and_then(|m| mmap.get(&m))
+                .map(|(p, _)| json!(format!("{site_url}/wp-content/uploads/{p}")))
+                .unwrap_or(Value::Null);
             posts.push(json!({
                 "id": id, "slug": slug, "title": title, "excerpt": excerpt,
-                "date": date, "url": url("post", &slug), "image": img(fid),
+                "date": date, "url": url("post", &slug), "image": image,
                 "categories": cats,
             }));
         }
@@ -223,9 +218,11 @@ pub(crate) fn site_data(
            structural (minijinja can't recurse cleanly). */
         if let Some(v) = chosen.and_then(|mid| menus.get(&mid.to_string()).cloned()) {
             if let Some(items) = v.as_array() {
-                menus.insert("menu_main_html".into(), json!(menu_li(items, site_url)));
-                menus.insert("menu_mobile_html".into(), json!(menu_li_mobile(items, site_url)));
-                menus.insert("menu_main_tevily_html".into(), json!(menu_li_tevily(items, site_url)));
+                menus.insert("menu_main_html".into(), json!(match crate::plugins::theme_for_site(conn).menu_renderer {
+                    crate::plugins::MenuRenderer::Wp => menu_li(conn, items, site_url),
+                    crate::plugins::MenuRenderer::Caret => menu_li_caret(items, site_url),
+                }));
+                menus.insert("menu_mobile_html".into(), json!(menu_li_mobile(conn, items, site_url)));
                 /* splitted-menu header: WP traveltour renders the logo as
                    the middle <li> — first ceil(N/2) top-level items
                    sit BEFORE it. Templates read menu_main_left_html /
@@ -233,18 +230,18 @@ pub(crate) fn site_data(
                 let half = items.len().div_ceil(2);
                 menus.insert(
                     "menu_main_left_html".into(),
-                    json!(menu_li(&items[..half], site_url)),
+                    json!(menu_li(conn, &items[..half], site_url)),
                 );
                 menus.insert(
                     "menu_main_right_html".into(),
-                    json!(menu_li(&items[half..], site_url)),
+                    json!(menu_li(conn, &items[half..], site_url)),
                 );
             }
             menus.insert("menu_main".into(), v);
         }
         if let Some(v) = pick(&footer_locs).and_then(|mid| menus.get(&mid.to_string()).cloned()) {
             if let Some(items) = v.as_array() {
-                menus.insert("menu_footer_html".into(), json!(menu_li(items, site_url)));
+                menus.insert("menu_footer_html".into(), json!(menu_li(conn, items, site_url)));
             }
             menus.insert("menu_footer".into(), v);
         }
@@ -314,24 +311,24 @@ pub(crate) fn site_data(
 /// testimonials: site-review posts; reviewer name from _submitted meta.
 /// Core feed — no registered adapter owns the `site-review` kind.
 fn site_reviews(conn: &Connection, site_url: &str) -> Result<Vec<Value>> {
-    let img = |mid: Option<i64>| -> Value {
-        mid.and_then(|m| media_lookup(conn, m))
-            .map(|(p, _)| json!(format!("{site_url}/wp-content/uploads/{p}")))
-            .unwrap_or(Value::Null)
-    };
+
     let mut reviews = Vec::new();
     let mut stmt = conn.prepare(
         sql!("site_data__select_reviews"),
     )?;
-    let rows = stmt.query_map([], |r| {
-        Ok((
-            r.get::<_, i64>(0)?,
-            r.get::<_, String>(1)?,
-            r.get::<_, String>(2)?,
-            r.get::<_, String>(3)?,
-            r.get::<_, Option<i64>>(4)?,
-        ))
-    })?;
+    let rows: Vec<(i64, String, String, String, Option<i64>)> = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, Option<i64>>(4)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    let fid_set: std::collections::HashSet<i64> = rows.iter().filter_map(|r| r.4).collect();
+    let mmap = crate::render::media_map_for(conn, &fid_set).unwrap_or_default();
     // One query per review was the cold-render N+1 — batch the whole
     // _submitted set up front (once per page, not once per row).
     let mut submitted_map: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
@@ -344,8 +341,7 @@ fn site_reviews(conn: &Connection, site_url: &str) -> Result<Vec<Value>> {
             submitted_map.entry(pid).or_insert(mv);
         }
     }
-    for row in rows {
-        let (id, title, body_json, excerpt, fid) = row?;
+    for (id, title, body_json, excerpt, fid) in rows {
         let mut name = title.clone();
         let mut rating: Option<i64> = None;
         let submitted: Option<String> = submitted_map.get(&id).cloned();
@@ -366,9 +362,13 @@ fn site_reviews(conn: &Connection, site_url: &str) -> Result<Vec<Value>> {
         if let Ok(bj) = serde_json::from_str::<Value>(&body_json) {
             collect_textbox(&bj, &mut content);
         }
+        let image = fid
+            .and_then(|m| mmap.get(&m))
+            .map(|(p, _)| json!(format!("{site_url}/wp-content/uploads/{p}")))
+            .unwrap_or(Value::Null);
         reviews.push(json!({
             "id": id, "name": name, "content": content, "excerpt": excerpt,
-            "rating": rating, "image": img(fid),
+            "rating": rating, "image": image,
         }));
     }
     Ok(reviews)
@@ -499,7 +499,27 @@ fn resolve_tree(
     lang: &str,
     aliases: &str,
 ) -> Vec<Value> {
-    resolve_tree_depth(conn, items, site_url, tour_base, lang, aliases, false)
+    // Batch-prefetch the lookups this tree needs (audit P3): post wp_ids
+    // and term ids go into two `IN` queries instead of per-item rounds.
+    let (mut wp_ids, mut term_ids) = (Vec::new(), Vec::new());
+    fn scan(items: &[Value], wp: &mut Vec<i64>, term: &mut Vec<i64>) {
+        for it in items {
+            let t = it.get("item_type").and_then(|v| v.as_str()).unwrap_or("");
+            if let Some(oid) = it.get("object_id").and_then(|v| v.as_i64()) {
+                match t {
+                    "post_type" | "page" | "post" => wp.push(oid),
+                    "taxonomy" => term.push(oid),
+                    _ => {}
+                }
+            }
+            if let Some(kids) = it.get("children").and_then(|v| v.as_array()) {
+                scan(kids, wp, term);
+            }
+        }
+    }
+    scan(&items, &mut wp_ids, &mut term_ids);
+    let ctx = crate::render::menu_url::MenuCtx::new(conn, &wp_ids, &term_ids);
+    resolve_tree_depth(&ctx, conn, items, site_url, tour_base, lang, aliases, false)
 }
 
 /// `gdlr_core_nav_menu_custom` field lookup — serialized assoc whose
@@ -511,6 +531,7 @@ fn mega_field(mega: &str, key: &str) -> Option<String> {
 }
 
 fn resolve_tree_depth(
+    ctx: &crate::render::menu_url::MenuCtx,
     conn: &Connection,
     items: Vec<Value>,
     site_url: &str,
@@ -538,8 +559,8 @@ fn resolve_tree_depth(
                 it.as_object_mut().unwrap().insert("title".into(), json!(name));
             }
         }
-        match crate::render::menu_url::resolve_menu_url(
-            conn, item_type.as_str(), object_id, &raw, site_url, tour_base, lang, aliases,
+        match crate::render::menu_url::resolve_menu_url_ctx(
+            ctx, conn, item_type.as_str(), object_id, &raw, site_url, tour_base, lang, aliases,
         ) {
             Some(u) => {
                 let m = it.as_object_mut().unwrap();
@@ -581,16 +602,17 @@ fn resolve_tree_depth(
             .and_then(|c| c.as_array().cloned())
             .unwrap_or_default();
         /* traveltour mega-menu (gdlr_core_nav_menu_custom):
-           root with enable-mega-menu=enable  → `traveltour-mega-menu` +
+           root with enable-mega-menu=enable  → `traveltour-mega-menu` +  /* gate-allow: WP semantics doc */
              `<div class="sf-mega sf-mega-full">` wrapping its sub-menu.
            Children inside the mega grid: li[data-size] = the item's own
              mega-menu-section-size (default 60); a child with children
-             but no section size gets `traveltour-normal-menu` instead —
+             but no section size gets `traveltour-normal-menu` instead —  /* gate-allow: WP semantics doc */
              it drops back to a normal flyout.
            `_menu_item_classes` extras append verbatim (menu-tour-max…). */
         let mega = it.get("mega").and_then(|v| v.as_str()).unwrap_or("").to_string();
         let mega_root = mega_field(&mega, "enable-mega-menu").as_deref() == Some("enable");
         let kids = resolve_tree_depth(
+            ctx,
             conn,
             kids,
             site_url,
@@ -612,8 +634,9 @@ fn resolve_tree_depth(
             if has_kids { "-has-children" } else { "" },
         );
         let m = it.as_object_mut().unwrap();
+        let theme = crate::plugins::theme_for_site(conn);
         if mega_root {
-            classes.push_str(" traveltour-mega-menu");
+            classes.push_str(&format!(" {}", theme.mega_class));
             m.insert("mega_full".into(), json!(true));
         }
         if in_mega && !mega_root {
@@ -623,7 +646,7 @@ fn resolve_tree_depth(
                 }
                 None => {
                     if has_kids {
-                        classes.push_str(" traveltour-normal-menu");
+                        classes.push_str(&format!(" {}", theme.normal_menu_class));
                     } else {
                         m.insert("data_size".into(), json!("60"));
                     }
@@ -631,10 +654,10 @@ fn resolve_tree_depth(
             }
         } else if !mega_root {
             /* WP traveltour: EVERY non-mega top-level item renders as a
-               normal flyout — `traveltour-normal-menu` applies to childless
+               normal flyout — `traveltour-normal-menu` applies to childless /* gate-allow: WP semantics doc */
                items too (the class marks "not a mega grid"; submenu CSS/JS
                hang off it). */
-            classes.push_str(" traveltour-normal-menu");
+            classes.push_str(&format!(" {}", theme.normal_menu_class));
         }
         m.insert("children".into(), Value::Array(kids));
         m.insert("classes".into(), json!(classes));
@@ -647,17 +670,17 @@ fn resolve_tree_depth(
 /// <a href>{title}</a>{<ul class="sub-menu">…</ul>}</li>`. `nohref` items
 /// emit a bare `<a>`; `title_attr` maps to the anchor's title; the label
 /// may itself be HTML (image menu items) and is emitted verbatim.
-fn menu_li(items: &[Value], site_url: &str) -> String {
-    menu_li_mode(items, true, site_url)
+fn menu_li(conn: &Connection, items: &[Value], site_url: &str) -> String {
+    menu_li_mode(conn, items, true, site_url)
 }
 
 /// Mobile variant: WP's mmenu tree never carries mega wrappers,
 /// `data-size`, or the mega/normal classes — strip them per item.
-fn menu_li_mobile(items: &[Value], site_url: &str) -> String {
-    menu_li_mode(items, false, site_url)
+fn menu_li_mobile(conn: &Connection, items: &[Value], site_url: &str) -> String {
+    menu_li_mode(conn, items, false, site_url)
 }
 
-fn menu_li_mode(items: &[Value], mega: bool, site_url: &str) -> String {
+fn menu_li_mode(conn: &Connection, items: &[Value], mega: bool, site_url: &str) -> String {
     /* `{{ site_url }}` tokens in menu labels (image items rewritten at
        import) resolve against the serving host — same token expansion
        `render_fragment` applies to widget html. */
@@ -669,33 +692,41 @@ fn menu_li_mode(items: &[Value], mega: bool, site_url: &str) -> String {
             .unwrap_or("menu-item")
             .to_string();
         if !mega {
+            let theme = crate::plugins::theme_for_site(conn);
             classes = classes
-                .replace(" traveltour-mega-menu", "")
-                .replace(" traveltour-normal-menu", "");
+                .replace(&format!(" {}", theme.mega_class), "")
+                .replace(&format!(" {}", theme.normal_menu_class), "");
         }
-        let url = it.get("url").and_then(|v| v.as_str()).unwrap_or("");
-        let title = &it
-            .get("title")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .replace("{{ site_url }}", site_url);
-        let tattr = it.get("title_attr").and_then(|v| v.as_str()).unwrap_or("");
+        // Stored values → escaped at emission (audit M2): url/tattr are
+        // attribute-escaped, title goes through the img-only sanitizer —
+        // image-menu labels legitimately carry `<img>` markup; everything
+        // else is text.
+        let url = crate::url_util::safe_href_or_hash(it.get("url").and_then(|v| v.as_str()).unwrap_or(""));
+        let title = crate::url_util::sanitize_menu_label(
+            &it.get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .replace("{{ site_url }}", site_url),
+        );
+        let tattr = crate::admin::esc_attr(it.get("title_attr").and_then(|v| v.as_str()).unwrap_or(""));
+        let classes = crate::admin::esc_attr(&classes);
         let nohref = it.get("nohref").and_then(|v| v.as_bool()).unwrap_or(false);
         let kids = it.get("children").and_then(|v| v.as_array()).cloned().unwrap_or_default();
         let dsize = it.get("data_size").and_then(|v| v.as_str()).filter(|_| mega);
-        let ds = dsize.map(|s| format!(" data-size=\"{s}\"")).unwrap_or_default();
+        let ds = dsize.map(|s| format!(" data-size=\"{}\"", crate::admin::esc_attr(s))).unwrap_or_default();
         out.push_str(&format!("<li class=\"{classes}\"{ds}>"));
         /* WP traveltour marks parent anchors `sf-with-ul-pre` (the
            superfish arrow emitted server-side) on mega-menu roots and
            in-mega containers — without it the dropdown nav renders no
            submenu. Fields set in resolve_tree_depth: `mega_full`,
-           `data_size`, or the `traveltour-normal-menu` class. */
+           `data_size`, or the `traveltour-normal-menu` class. gate-allow: WP semantics doc */
+        let theme = crate::plugins::theme_for_site(conn);
         let in_mega_ctx = it
             .get("mega_full")
             .and_then(|v| v.as_bool())
             .unwrap_or(false)
             || it.get("data_size").is_some()
-            || classes.contains("traveltour-normal-menu");
+            || classes.contains(theme.normal_menu_class);
         let sf_class = if !kids.is_empty() && in_mega_ctx {
             " class=\"sf-with-ul-pre\""
         } else {
@@ -705,16 +736,17 @@ fn menu_li_mode(items: &[Value], mega: bool, site_url: &str) -> String {
             out.push_str(&format!("<a{sf_class}>{title}</a>"));
         } else {
             let t = if tattr.is_empty() { String::new() } else { format!(" title=\"{tattr}\"") };
+            let url = crate::admin::esc_attr(&url);
             out.push_str(&format!("<a href=\"{url}\"{t}{sf_class}>{title}</a>"));
         }
         if !kids.is_empty() {
             if mega && it.get("mega_full").and_then(|v| v.as_bool()).unwrap_or(false) {
                 out.push_str("<div class=\"sf-mega sf-mega-full\"><ul class=\"sub-menu\">");
-                out.push_str(&menu_li_mode(&kids, mega, site_url));
+                out.push_str(&menu_li_mode(conn, &kids, mega, site_url));
                 out.push_str("</ul></div>");
             } else {
                 out.push_str("<ul class=\"sub-menu\">");
-                out.push_str(&menu_li_mode(&kids, mega, site_url));
+                out.push_str(&menu_li_mode(conn, &kids, mega, site_url));
                 out.push_str("</ul>");
             }
         }
@@ -723,11 +755,11 @@ fn menu_li_mode(items: &[Value], mega: bool, site_url: &str) -> String {
     out
 }
 
-/// Tevily-shaped <li> markup (`templates/theme/tevily/base_*.html`):
-/// submenu ul is `.submenu-inner`, parent links carry a `<span
-/// class="caret">`, titles are wrapped in `.menu-title`. Same item
-/// pipeline as `menu_li` — classes/urls come from `menu_items` rows.
-fn menu_li_tevily(items: &[Value], site_url: &str) -> String {
+/// Caret/elementor-shaped <li> markup (tevily-style themes): submenu ul
+/// is `.submenu-inner`, parent links carry a `<span class="caret">`,
+/// titles wrap in `.menu-title`. Selected by `ThemeDef::menu_renderer`
+/// for `menu_main_html`. Same item pipeline as `menu_li`.
+fn menu_li_caret(items: &[Value], site_url: &str) -> String {
     let mut out = String::new();
     for it in items {
         let classes = it.get("classes").and_then(|v| v.as_str()).unwrap_or("menu-item");
@@ -748,7 +780,7 @@ fn menu_li_tevily(items: &[Value], site_url: &str) -> String {
         }
         if !kids.is_empty() {
             out.push_str("<ul class=\"submenu-inner \">");
-            out.push_str(&menu_li_tevily(&kids, site_url));
+            out.push_str(&menu_li_caret(&kids, site_url));
             out.push_str("</ul>");
         }
         out.push_str("</li>");
@@ -764,7 +796,7 @@ fn chrome_ctx(conn: &Connection, site_url: &str, lang: &str) -> Value {
         conn.query_row(sql!("intake__select_setting"), [k], |r| r.get::<_, String>(0))
             .unwrap_or_default()
     };
-    let theme: Value = get("plugin:theme-traveltour:general")
+    let theme: Value = get("plugin:theme-traveltour:general") // gate-allow: adapter-namespaced seed key written by import
         .parse::<serde_json::Value>()
         .unwrap_or(Value::Null);
     // Per-site generated css paths; "" when the site's uploads lack the
@@ -919,9 +951,11 @@ fn chrome_ctx(conn: &Connection, site_url: &str, lang: &str) -> Value {
         "description": desc,
         "email": tget("top-bar-social-email"),
         "same_as": same_as,
-        "logo": logo_img("logo", "traveltour-orig-logo"),
-        "logo_fixed": logo_img("fixed-navigation-bar-logo", "traveltour-fixed-nav-logo"),
-        "logo_mobile": logo_img("mobile-logo", "traveltour-orig-logo"),
+        // gate-allow: WP media-path hints keyed to the reference theme's
+        // imported filenames — seed data, not theme chrome.
+        "logo": logo_img("logo", "traveltour-orig-logo"), // gate-allow: imported asset filename
+        "logo_fixed": logo_img("fixed-navigation-bar-logo", "traveltour-fixed-nav-logo"), // gate-allow: same
+        "logo_mobile": logo_img("mobile-logo", "traveltour-orig-logo"), // gate-allow: same
         "topbar_left_html": bar("topbar_left_html"),
         "topbar_right_html": bar("topbar_right_html"),
         "copyright_left_html": crate::url_util::rewrite_own_origin(
@@ -937,7 +971,7 @@ fn chrome_ctx(conn: &Connection, site_url: &str, lang: &str) -> Value {
         "tourmaster_css": tourmaster_css,
         "tourmaster_css_global": tourmaster_css_global,
         "tourmaster_css_room": tourmaster_css_room,
-        "body_suffix": "wp-theme-traveltour wp-child-theme-traveltour-child gdlr-core-body tourmaster-body metaslider-plugin traveltour-body traveltour-body-front traveltour-full  traveltour-with-sticky-navigation gdlr-core-link-to-lightbox",
+        "body_suffix": crate::plugins::theme_for_site(conn).body_suffix,
         "favicons": favicons_html(conn, site_url),
         "sticky_html": sticky_html(&sticky, &snippets_footer(&get, site_url), lang),
         /* The snippet rail ships its own sticky-slider-main-lang block —

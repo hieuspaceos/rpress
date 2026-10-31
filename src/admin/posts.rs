@@ -73,7 +73,13 @@ pub(crate) async fn section(
 /// e.g. https://test.example.com/voyage/slug/ — never admin-host relative.
 pub(crate) fn public_path(sc: &SiteCtx, lang: &str, kind: &str, slug: &str) -> String {
     let base = site_url(sc).trim_end_matches('/').to_string();
-    let prefix = if lang == "es" { "/es" } else { "" };
+    // LangConfig is settings-derived; a failed conn falls back to the
+    // primary-only config (empty prefix) rather than panicking on a
+    // preview-link render.
+    let cfg = crate::db::conn(&sc.db)
+        .map(|c| crate::lang::config(&c))
+        .unwrap_or_default();
+    let prefix = crate::lang::url_prefix(&cfg, lang);
     if let Some(b) = plugins::base_for(&sc.kind_bases, kind) {
         format!("{base}{prefix}/{b}/{slug}/")
     } else {
@@ -89,7 +95,7 @@ pub(crate) fn dash(s: &str) -> String {
     }
 }
 
-pub(crate) fn pll_cell(r: &crud::AdminListRow, kind: &str) -> String {
+pub(crate) fn pll_cell(r: &crud::AdminListRow, kind: &str, langs: &crate::lang::LangConfig) -> String {
     let flag = |code: &str, id: Option<i64>| match id {
         Some(n) => format!(
             r#"<span class="pll-column-flag"><a href="/admin/edit/{n}">{code}</a></span>"#
@@ -99,9 +105,17 @@ pub(crate) fn pll_cell(r: &crud::AdminListRow, kind: &str) -> String {
             r.id
         ),
     };
-    let fr = if r.lang == "fr" { Some(r.id) } else { r.fr_id };
-    let es = if r.lang == "es" { Some(r.id) } else { r.es_id };
-    format!("{} {}", flag("FR", fr), flag("ES", es))
+    let mut out = String::new();
+    for code in &langs.langs {
+        let id = if r.lang == *code {
+            Some(r.id)
+        } else {
+            r.trans_map.get(code).copied()
+        };
+        out.push_str(&flag(&code.to_uppercase(), id));
+        out.push(' ');
+    }
+    out.trim_end().to_string()
 }
 
 pub(crate) fn qs(status: &str, lang: &str, tax: &str, page: i64) -> String {
@@ -154,6 +168,23 @@ pub(crate) fn render_list(
             ""
         }
     };
+    // N-language subnav: one filter per configured language (phase 4 —
+    // the hardwired fr/es pair retired with post_translations).
+    let lang_cfg = crate::db::conn(&sc.db)
+        .map(|c| crate::lang::config(&c))
+        .unwrap_or_default();
+    let mut lang_links = String::new();
+    for (i, lg) in lang_cfg.langs.iter().enumerate() {
+        let sep = if i + 1 < lang_cfg.langs.len() { " |" } else { "" };
+        lang_links.push_str(&format!(
+            r#"<li><a href="{}"{}>{} <span class="count">({})</span></a>{sep}</li>"#,
+            qs("", lg, tax, 1),
+            on("", lg),
+            crate::lang::lang_label(lg),
+            counts.lang_counts.get(lg).copied().unwrap_or(0),
+        ));
+        lang_links.push('\n');
+    }
     let sub = format!(
         r#"<ul class="subsubsub">
 <li class="all"><a href="{}"{}>All <span class="count">({})</span></a> |</li>
@@ -162,9 +193,7 @@ pub(crate) fn render_list(
 <li class="future"><a href="{}"{}>Scheduled <span class="count">({})</span></a> |</li>
 <li class="draft"><a href="{}"{}>Drafts <span class="count">({})</span></a> |</li>
 <li class="trash"><a href="{}"{}>Trash <span class="count">({})</span></a> |</li>
-<li><a href="{}"{}>Français <span class="count">({})</span></a> |</li>
-<li><a href="{}"{}>Español <span class="count">({})</span></a></li>
-</ul>"#,
+{lang_links}</ul>"#,
         qs("", "", tax, 1),
         on("", ""),
         counts.all,
@@ -183,12 +212,7 @@ pub(crate) fn render_list(
         qs("trash", "", tax, 1),
         on("trash", ""),
         counts.trash,
-        qs("", "fr", tax, 1),
-        on("", "fr"),
-        counts.fr,
-        qs("", "es", tax, 1),
-        on("", "es"),
-        counts.es,
+        lang_links = lang_links,
     );
     let pages = ((total + per_page - 1) / per_page).max(1);
     let pager = format!(
@@ -234,7 +258,7 @@ pub(crate) fn render_list(
         );
         let extra = format!(
             "{}{}",
-            spec_for_section(section).map(|k| (k.row_cols)(r, kind)).unwrap_or_default(),
+            spec_for_section(section).map(|k| (k.row_cols)(r, kind, &lang_cfg)).unwrap_or_default(),
             // SEO cell is filled lazily by /admin/seo/cell/{id} —
             // running seo_analysis per row here made list pages slow.
             format!(
@@ -356,6 +380,11 @@ pub(crate) fn render_list(
         } else {
             String::new()
         };
+        let lang_opts: String = std::iter::once(r#"<option value="">—</option>"#.to_string())
+            .chain(lang_cfg.langs.iter().map(|lg| {
+                format!(r#"<option value="{}">{}</option>"#, esc(lg), esc(&crate::lang::lang_label(lg)))
+            }))
+            .collect();
         format!(
             r##"<tr id="qe-row" class="inline-edit-row quick-edit-row" style="display:none"><td colspan="6" class="colspanchange">
 <input form="qe-posts-form" type="hidden" name="csrf" value="{csrf}">
@@ -368,7 +397,7 @@ pub(crate) fn render_list(
 <label class="inline-edit-group"><span class="title">Slug</span><input form="qe-posts-form" type="text" name="slug" id="qe-slug" style="width:360px"></label>
 <label class="inline-edit-group"><span class="title">Status</span>
 <select form="qe-posts-form" name="status" id="qe-status"><option value="publish">Published</option><option value="future">Scheduled</option><option value="draft">Draft</option><option value="pending">Pending Review</option><option value="trash">Trash</option></select></label>
-<label class="inline-edit-group"><span class="title">Language</span><select form="qe-posts-form" name="lang" id="qe-lang"><option value="">—</option><option value="fr">Français</option><option value="es">Español</option></select></label>
+<label class="inline-edit-group"><span class="title">Language</span><select form="qe-posts-form" name="lang" id="qe-lang">{lang_opts}</select></label>
 </div>
 {tax_block}
 </div>
@@ -379,6 +408,7 @@ pub(crate) fn render_list(
 </fieldset>
 </td></tr>"##,
             csrf = s.csrf,
+            lang_opts = lang_opts,
             tax_block = tax_block
         )
     };
@@ -761,7 +791,10 @@ pub(crate) async fn quick_edit(State(app): State<App>, headers: HeaderMap, Form(
         "publish" | "future" | "draft" | "pending" | "trash" => f.status.as_str(),
         _ => "draft",
     };
-    let lang = if matches!(f.lang.as_str(), "fr" | "es") { f.lang.as_str() } else { "" };
+    // N-language whitelist: the submitted lang must be one of the site's
+    // configured languages — anything else falls back to unset.
+    let lang_cfg = crate::db::conn(&sc.db).map(|c| crate::lang::config(&c)).unwrap_or_default();
+    let lang = if lang_cfg.langs.iter().any(|l| l == &f.lang) { f.lang.as_str() } else { "" };
     // Snapshot old path + term set BEFORE commit (see PreSave).
     let pre = snapshot_before_save(&sc, f.id);
     match crud::quick_update(&sc.db, f.id, &f.title, &f.slug, status, lang, &cats, &tags) {
@@ -835,14 +868,21 @@ pub(crate) fn kind_from_section(s: &str) -> Option<&'static str> {
     plugins::kind_for_section(s).map(|k| k.kind).or_else(|| plugins::kind_def(s).map(|k| k.kind))
 }
 
-pub(crate) async fn new_post(State(app): State<App>, headers: HeaderMap, Path(kind): Path<String>) -> Response {
+pub(crate) async fn new_post(State(app): State<App>, headers: HeaderMap, Path(kind): Path<String>, Query(q): Query<HashMap<String, String>>) -> Response {
     let Ok((s, sc)) = need_auth(&app, &headers) else {
         return Redirect::to("/admin/login").into_response();
     };
     let Some(k) = kind_from_section(&kind) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let f = crud::PostForm { kind: k.into(), lang: "fr".into(), status: "draft".into(), body_json: "[]".into(), ..Default::default() };
+    // Default lang = site primary; the PLL "+" links carry ?lang=<code>
+    // (validated against the configured set).
+    let lang_cfg = crate::db::conn(&sc.db).map(|c| crate::lang::config(&c)).unwrap_or_default();
+    let lang = q.get("lang")
+        .filter(|l| lang_cfg.langs.contains(l))
+        .cloned()
+        .unwrap_or_else(|| lang_cfg.primary.clone());
+    let f = crud::PostForm { kind: k.into(), lang, status: "draft".into(), body_json: "[]".into(), ..Default::default() };
     html_admin(&s, "New", &edit_html(sc, &s, &f), true, "post-php").into_response()
 }
 
@@ -1265,14 +1305,52 @@ return false">Add</button>
     };
     let pub_label = if f.status == "future" { "Scheduled for:" } else { "Published on:" };
 
-
-    let fr_flag = if f.lang == "fr" { "✓" } else { "" };
-    let es_flag = if f.lang == "es" { "✓" } else { "" };
-    let es_link = if f.es_post_id.trim().is_empty() {
-        format!(r#"<a href="/admin/new/{add_kind}?from={id}&amp;lang=es">+ Add new</a>"#)
-    } else {
-        format!(r#"<a href="/admin/edit/{}">Edit</a>"#, esc(&f.es_post_id))
-    };
+    // N-language metabox: one radio per configured language, one
+    // translations row per language (self row = the post itself). The
+    // picker field names are `trans_<lang>` — save reconciles the group.
+    let lang_cfg = crate::db::conn(&sc.db).map(|c| crate::lang::config(&c)).unwrap_or_default();
+    let lang_radios: String = lang_cfg
+        .langs
+        .iter()
+        .map(|lg| {
+            format!(
+                r#"<label><input type="radio" name="lang" value="{}"{}> {} {}</label>"#,
+                esc(lg),
+                if f.lang == *lg { " checked" } else { "" },
+                crate::lang::flag_emoji(lg),
+                esc(&crate::lang::lang_label(lg)),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut trans_rows = String::new();
+    let mut trans_fields = String::new();
+    for lg in &lang_cfg.langs {
+        let other = f.translations.get(lg).map(|s| s.as_str()).unwrap_or("");
+        let (action, flag_mark) = if f.lang == *lg {
+            (
+                f.id.map(|i| format!(r#"<a href="/admin/edit/{i}">Edit</a>"#)).unwrap_or_default(),
+                "✓",
+            )
+        } else if other.is_empty() {
+            (
+                format!(r#"<a href="/admin/new/{add_kind}?from={id}&amp;lang={lg}">+ Add new</a>"#),
+                "",
+            )
+        } else {
+            (format!(r#"<a href="/admin/edit/{other}">Edit</a>"#), "")
+        };
+        trans_rows.push_str(&format!(
+            "<tr><td>{}</td><td>{action}</td><td>{flag_mark}</td></tr>",
+            crate::lang::flag_emoji(lg)
+        ));
+        if f.lang != *lg {
+            trans_fields.push_str(&format!(
+                r#"<input type="hidden" name="trans_{lg}" value="{}">"#,
+                esc(other)
+            ));
+        }
+    }
 
     let (tour, plugin_assets) = match plugins::editor_for(&f.kind) {
         Some(e) => ((e.metabox)(sc, s, f), (e.assets)()),
@@ -1335,17 +1413,10 @@ return false">Add</button>
 </div>
 </div></div>
 <div id="ml_box" class="postbox"><h2>Language</h2><div class="inside">
-<p class="pll-langs">
-<label><input type="radio" name="lang" value="fr" {fr_checked}> 🇫🇷 Français</label>
-<label><input type="radio" name="lang" value="es" {es_checked}> 🇪🇸 Español</label>
-</p>
+<p class="pll-langs">{lang_radios}</p>
 <p><b>Translations</b></p>
-<table class="widefat"><tr>
-<td>🇫🇷</td><td><a href="/admin/edit/{id}">Edit</a></td><td>{fr_flag}</td>
-</tr><tr>
-<td>🇪🇸</td><td>{es_link}</td><td>{es_flag}</td>
-</tr></table>
-<input type="hidden" name="es_post_id" value="{es_id}">
+<table class="widefat">{trans_rows}</table>
+{trans_fields}
 </div></div>
 {rankmath}
 {revisions_box}
@@ -1471,9 +1542,6 @@ renderTagChips();
         pending = if f.status == "pending" { "selected" } else { "" },
         future = if f.status == "future" { "selected" } else { "" },
         publish = if f.status == "publish" { "selected" } else { "" },
-        fr_checked = if f.lang == "fr" { "checked" } else { "" },
-        es_checked = if f.lang == "es" { "checked" } else { "" },
-        es_id = esc(&f.es_post_id),
         status_label = status_label,
         feat_html = feat_html,
         pub_date = pub_date,
@@ -1483,9 +1551,9 @@ renderTagChips();
         preview_label = preview_label,
         is_draft = if f.status == "publish" { "0" } else { "1" },
         revisions_box = revisions_box,
-        fr_flag = fr_flag,
-        es_flag = es_flag,
-        es_link = es_link,
+        lang_radios = lang_radios,
+        trans_rows = trans_rows,
+        trans_fields = trans_fields,
     )
 }
 

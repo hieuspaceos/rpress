@@ -568,7 +568,7 @@ pub(crate) async fn form_detail(State(app): State<App>, headers: HeaderMap, Path
     };
     let counts = subdb::form_counts(&sc.db).unwrap_or_default();
     let n = counts.get(slug.as_str()).copied().unwrap_or(0);
-    let lang = match form_row.lang.as_str() { "es" => "Español", _ => "Français" }.to_string();
+    let lang = crate::lang::lang_label(&form_row.lang);
     let mut meta = String::new();
     let mr = |k: &str, v: String| format!("<tr><th scope=\"row\">{k}</th><td>{v}</td></tr>");
     meta.push_str(&mr("Title", esc(&if_empty(&form_row.title, humanize(&slug)))));

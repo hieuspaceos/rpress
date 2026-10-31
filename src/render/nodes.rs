@@ -429,13 +429,14 @@ pub(crate) fn render_fragment(
     v: &Value,
     media: &HashMap<i64, (String, String)>,
     site_url: &str,
+    lang: &str,
     tour_base: &str,
 ) -> Result<String> {
     let mut env = load_env(templates)?;
     register_helpers(&mut env, media, site_url);
     let site = JVal::from_serialize(json!({}));
     let post = JVal::from_serialize(json!({}));
-    render_nodes(&mut env, v, media, site_url, &site, "fr", &post, None, false, tour_base)
+    render_nodes(&mut env, v, media, site_url, &site, lang, &post, None, false, tour_base)
 }
 
 /// render_fragment with a live DB so dynamic elements (blog, tour,

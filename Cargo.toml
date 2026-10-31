@@ -11,7 +11,7 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 clap = { version = "4", features = ["derive"] }
 minijinja = "2"
 axum = { version = "0.8", features = ["multipart", "form"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "fs", "io-util"] }
 argon2 = "0.5"
 rand = "0.8"
 parking_lot = "0.12"

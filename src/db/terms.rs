@@ -283,9 +283,12 @@ pub fn list_taxonomies(db: &Path) -> Result<Vec<String>> {
             v.push(k.clone());
         }
     }
+    // Admin picker order: core taxonomies first, then the tourmaster
+    // set in WP display order. db can't import plugins, so
+    // KindDef.taxonomies can't drive this without a seam.
     const ORDER: &[&str] = &[
-        "category", "post_tag", "duree", "region", "style", "profil",
-        "duracion", "region-es", "estilo", "perfil", "Activites", "Pays",
+        "category", "post_tag", "duree", "region", "style", "profil", // gate-allow: tour taxonomy order (see comment above)
+        "duracion", "region-es", "estilo", "perfil", "Activites", "Pays", // gate-allow: same
     ];
     v.sort_by_key(|t| ORDER.iter().position(|x| *x == t).unwrap_or(ORDER.len()));
     Ok(v)

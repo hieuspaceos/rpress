@@ -123,7 +123,7 @@ pub fn render_slug_conn(
         let alang = alang_s.as_str();
         let first = path.split('/').next().unwrap_or("");
         let leaf = path.rsplit('/').next().unwrap_or("");
-        let tag_base = crate::plugins::theme_traveltour::tag_base(&conn);
+        let tag_base = crate::plugins::theme_tag_base(&conn, crate::plugins::theme_for_site(&conn));
         let term = match first {
             f if f == tag_base => crate::render_archive::term_by_path(&conn, "post_tag", leaf),
             "category" => crate::render_archive::term_by_path(&conn, "category", leaf),
@@ -261,10 +261,11 @@ fn term_canonical_path(
     lang: &str,
 ) -> String {
     let t = term.taxonomy.to_lowercase();
+    let theme = crate::plugins::theme_for_site(conn);
     let base = if t == "category" {
-        crate::plugins::theme_traveltour::cat_path(conn, &term.slug)
+        crate::plugins::theme_cat_path(conn, theme, &term.slug)
     } else if t == "post_tag" {
-        format!("{}/{}", crate::plugins::theme_traveltour::tag_base(conn), term.slug)
+        format!("{}/{}", crate::plugins::theme_tag_base(conn, theme), term.slug)
     } else {
         format!("{t}/{}", term.slug)
     };
@@ -307,10 +308,11 @@ pub(crate) fn apply_navx(
                        post_tag lives under the theme tag base, other
                        taxonomies stay {tax}/{slug}). */
                     let t = tax.to_lowercase();
+                    let theme = crate::plugins::theme_for_site(conn);
                     let base = if t == "category" {
-                        crate::plugins::theme_traveltour::cat_path(conn, s)
+                        crate::plugins::theme_cat_path(conn, theme, s)
                     } else if t == "post_tag" {
-                        format!("{}/{}", crate::plugins::theme_traveltour::tag_base(conn), s)
+                        format!("{}/{}", crate::plugins::theme_tag_base(conn, theme), s)
                     } else {
                         format!("{t}/{s}")
                     };
@@ -592,9 +594,11 @@ fn render_row(
             if sidebar_pos == "right" {
                 let sid = sidebar_id("sidebar-right");
                 let sidebar_html = crate::widgets::render_sidebar(&conn, &sid, site_url, &lang, slug, "")?;
-                let area = format!(
-                    "<div class=\"gdlr-core-page-builder-body clearfix\"><div class=\"traveltour-content-container traveltour-container\"><div class=\" traveltour-sidebar-wrap clearfix traveltour-line-height-0 traveltour-sidebar-style-right\" ><div class=\" traveltour-sidebar-center traveltour-column-45 traveltour-line-height\" ><div class=\"traveltour-content-area traveltour-item-pdlr\" >{body}</div></div>{sidebar_html}</div>"
-                );
+                // Theme-owned page scaffold: ThemeDef carries the exact
+                // wrapper markup (traveltour's gdlr chain, default's
+                // neutral divs) — no theme literals here.
+                let theme = crate::plugins::theme_for_site(&conn);
+                let area = (theme.wrap_page_sidebar)(theme, &body, &sidebar_html, "right");
                 body = area;
             }
         }
@@ -679,9 +683,7 @@ pub(crate) fn front_id(conn: &Connection) -> Option<i64> {
 
 /// Localized front page for `lang`, deterministic and publish-only:
 ///   1. the primary `page_on_front`'s translation-group member in `lang`;
-///   2. the legacy post_translations pair member in `lang` (admin writes
-///      land here on sites imported before members sync);
-///   3. Polylang's `__trashed` localized front — `ORDER BY id LIMIT 1`
+///   2. Polylang's `__trashed` localized front — `ORDER BY id LIMIT 1`
 ///      pins the pick instead of an arbitrary row.
 fn front_id_for_lang(conn: &Connection, lang: &str) -> Option<i64> {
     let cfg = crate::lang::config(conn);
@@ -709,19 +711,8 @@ fn front_id_for_lang(conn: &Connection, lang: &str) -> Option<i64> {
         if grouped.is_some() {
             return grouped;
         }
-        // Legacy fr/es pair table — admin translation links land here too.
-        let paired: Option<i64> = conn
-            .query_row(
-                sql!("render__select_front_pair"),
-                rusqlite::params![front, lang],
-                |r| r.get(0),
-            )
-            .optional()
-            .ok()
-            .flatten();
-        if paired.is_some() {
-            return paired;
-        }
+        // post_translations retired (phase 4) — the group arm above is the
+        // only pairing left.
     }
     // Generic fallback: Polylang often keeps the localized static front as
     // a publish page whose slug is a trashed artifact.
@@ -968,7 +959,11 @@ pub(crate) fn theme_template_dir(conn: &Connection, templates: &Path) -> Option<
             r.get::<_, String>(0)
         })
         .unwrap_or_default();
-    let def = crate::plugins::theme_for_stylesheet(&stylesheet)?;
+    // Same resolution as `theme_for_site` minus the DB re-read: adapter
+    // themes first, TOML theme specs second, neutral default last.
+    let def = crate::plugins::theme_for_stylesheet(&stylesheet)
+        .or_else(|| crate::plugins::themes::theme_for_stylesheet(&stylesheet))
+        .unwrap_or(&crate::plugins::DEFAULT_THEME);
     // The matched theme's dir only wins when it actually ships base
     // templates — an empty dir (tevily stub until phase 06) falls back
     // to the default theme's bases (traveltour), matching the interim
@@ -989,9 +984,14 @@ pub(crate) fn theme_template_dir(conn: &Connection, templates: &Path) -> Option<
     if has_bases(&themed) {
         return Some(themed);
     }
-    let fallback = templates.join("theme").join("traveltour");
-    if has_bases(&fallback) {
-        return Some(fallback);
+    // Neutral default first (the shipped fallback theme), then the
+    // traveltour dir as legacy safety for pre-phase-5 sites whose data
+    // predates the neutral theme shipping.
+    for dir in [crate::plugins::DEFAULT_THEME.template_dir, "traveltour"] { // gate-allow: legacy fallback for pre-phase-5 sites
+        let d = templates.join("theme").join(dir);
+        if has_bases(&d) {
+            return Some(d);
+        }
     }
     None
 }
@@ -1305,11 +1305,8 @@ mod exposure_tests {
         .unwrap();
         assert_eq!(front_id_for_lang(&c, "es"), Some(11));
         assert_eq!(front_id_for_lang(&c, "fr"), Some(10));
-        // Group gone → legacy pair table → 11.
-        c.execute_batch(sql!("render__test_seed_pair")).unwrap();
-        assert_eq!(front_id_for_lang(&c, "es"), Some(11));
-        // Neither → lowest-id published __trashed page, deterministic.
-        c.execute(sql!("render__test_delete_translations"), []).unwrap();
+        // Group gone → the __trashed fallback picks the lowest publish id.
+        c.execute_batch(sql!("render__test_delete_group_members")).unwrap();
         assert_eq!(front_id_for_lang(&c, "es"), Some(12));
     }
 

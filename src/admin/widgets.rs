@@ -706,7 +706,7 @@ pub(crate) async fn widgets_add(
     let Ok(id) = crate::widgets::next_instance_id(&conn, &typ) else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
-    let settings = default_settings(&typ, &id);
+    let settings = default_settings(&conn, &typ, &id);
     let ord = crud::widget_next_ord(&conn, &sidebar);
     let ok = crud::widget_insert(&conn, &id, &sidebar, &typ, &title, &settings, ord);
     if ok.is_err() {
@@ -719,13 +719,15 @@ pub(crate) async fn widgets_add(
 
 /// Initial `settings_json` for a new instance. `html`-storing types get a
 /// minimal wrapper matching the seeded shape (`<div id="{id}" class=
-/// "widget widget_{type} traveltour-widget">`); `search` gets a working
-/// WP search form so a fresh instance renders something real. Settings
-/// types (categories) start empty — the edit form requires taxonomy.
-fn default_settings(typ: &str, id: &str) -> String {
+/// "widget widget_{type} {theme.widget_class}">`); `search` gets a
+/// working WP search form so a fresh instance renders something real.
+/// Settings types (categories) start empty — the edit form requires
+/// taxonomy.
+fn default_settings(conn: &rusqlite::Connection, typ: &str, id: &str) -> String {
+    let wc = crate::plugins::theme_for_site(conn).widget_class;
     let html = match typ {
         "search" => format!(
-            "<div id=\"{id}\" class=\"widget widget_search traveltour-widget\">\
+            "<div id=\"{id}\" class=\"widget widget_search {wc}\">\
 <form role=\"search\" method=\"get\" class=\"search-form\" action=\"{{{{ site_url }}}}/\">\
 <label><span class=\"screen-reader-text\">Rechercher&#160;:</span>\
 <input type=\"search\" class=\"search-field\" placeholder=\"Rechercher&#8230;\" value=\"\" name=\"s\" />\
@@ -733,7 +735,7 @@ fn default_settings(typ: &str, id: &str) -> String {
         ),
         "text" | "custom_html" | "html_embed" | "tour_category" | "media_image" | "tour_list" => {
             format!(
-                "<div id=\"{id}\" class=\"widget widget_{typ} traveltour-widget\"></div>",
+                "<div id=\"{id}\" class=\"widget widget_{typ} {wc}\"></div>",
             )
         }
         _ => return "{}".to_string(),
@@ -862,7 +864,7 @@ pub(crate) async fn widgets_save(
     // `html` is admin-trusted *template code*: dry-run the exact render
     // path before persisting so broken jinja never reaches generate.
     if let Some(html) = settings.get("html").and_then(|h| h.as_str()) {
-        if crate::widgets::render_fragment(html, "", "fr").is_err() {
+        if crate::widgets::render_fragment(html, "", &crate::db::conn(&sc.db).map(|c| crate::lang::config(&c).primary).unwrap_or_default()).is_err() {
             return Redirect::to(&format!(
                 "/admin/widgets?msg=badsyntax#w-{}",
                 esc(&id)
@@ -879,18 +881,19 @@ pub(crate) async fn widgets_save(
             .filter(|u| !u.is_empty())
         {
             let t = map.get("title").cloned().unwrap_or_default();
+            let wc = crate::plugins::theme_for_site(&conn).widget_class;
             let title_html = if t.is_empty() {
                 String::new()
             } else {
                 format!(
-                    "<h2 class=\"traveltour-widget-title\"><span class=\"traveltour-widget-head-text\">{}</span></h2><span class=\"clear\"></span>",
+                    "<h2 class=\"{wc}-title\"><span class=\"{wc}-head-text\">{}</span></h2><span class=\"clear\"></span>",
                     esc(&t)
                 )
             };
             settings.insert(
                 "html".into(),
                 json!(format!(
-                    "<div id=\"{id}\" class=\"widget widget_media_image traveltour-widget\">{title_html}<img src=\"{url}\" class=\"image attachment-medium size-medium\" style=\"max-width: 100%; height: auto;\" decoding=\"async\" loading=\"lazy\"></div>"
+                    "<div id=\"{id}\" class=\"widget widget_media_image {wc}\">{title_html}<img src=\"{url}\" class=\"image attachment-medium size-medium\" style=\"max-width: 100%; height: auto;\" decoding=\"async\" loading=\"lazy\"></div>"
                 )),
             );
         }

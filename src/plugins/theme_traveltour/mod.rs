@@ -91,8 +91,36 @@ impl PluginAdapter for ThemeTraveltour {
             matches_stylesheet: matches_traveltour,
             template_dir: "traveltour",
             body_suffix: "wp-theme-traveltour wp-child-theme-traveltour-child gdlr-core-body tourmaster-body metaslider-plugin traveltour-body traveltour-body-front traveltour-full  traveltour-with-sticky-navigation gdlr-core-link-to-lightbox",
-            page_title_wrap: "",
+            page_title_wrap: traveltour_page_title,
             preferred_locations: &["header-navigation", "main-menu", "main_navigation", "primary"],
+            taxonomy_map_key: "plugin:theme-traveltour:taxonomy_map",
+            taxonomy_map_json: TAXONOMY_MAP_JSON,
+            tag_base: "etiquette",
+            widget_class: "traveltour-widget",
+            sidebar_wrap_class: "traveltour-content-container traveltour-container",
+            css_link_id: "traveltour-style-core-css",
+            js_extra_id: "traveltour-script-core-js-extra",
+            mega_class: "traveltour-mega-menu",
+            normal_menu_class: "traveltour-normal-menu",
+            menu_renderer: super::MenuRenderer::Wp,
+            body_class: "traveltour-body traveltour-body-front",
+            settings_key_prefix: "traveltour_",
+            tax_lang: &[
+                ("region-es", "es"), ("perfil", "es"), ("duracion", "es"), ("estilo", "es"),
+            ],
+            tax_pairs: &[
+                ("duree", "duracion"), ("region", "region-es"),
+                ("style", "estilo"), ("profil", "perfil"),
+            ],
+            tax_labels: &[
+                ("duree", "Durée", "Durée"), ("duracion", "Durée", "Durée"),
+                ("region", "Région", "Région"), ("region-es", "Région", "Région"),
+                ("style", "Style", "Style"), ("estilo", "Style", "Style"),
+                ("profil", "Profil", "Profil"), ("perfil", "Profil", "Profil"),
+                ("activites", "Activités", "Activité"),
+                ("pays", "Pays", "Pays"),
+            ],
+            wrap_page_sidebar: traveltour_page_sidebar,
         };
         Some(&DEF)
     }
@@ -114,101 +142,30 @@ impl PluginAdapter for ThemeTraveltour {
     }
 }
 
+/// Byte-parity page-with-sidebar scaffold — the exact traveltour
+/// container chain WP emits (content-container → sidebar-wrap →
+/// sidebar-center → content-area); used at render.rs's page branch.
+fn traveltour_page_sidebar(_t: &super::ThemeDef, body: &str, sidebar_html: &str, pos: &str) -> String {
+    format!(
+        "<div class=\"gdlr-core-page-builder-body clearfix\"><div class=\"traveltour-content-container traveltour-container\"><div class=\" traveltour-sidebar-wrap clearfix traveltour-line-height-0 traveltour-sidebar-style-{pos}\" ><div class=\" traveltour-sidebar-center traveltour-column-45 traveltour-line-height\" ><div class=\"traveltour-content-area traveltour-item-pdlr\" >{body}</div></div>{sidebar_html}</div>"
+    )
+}
+
+/// Byte-parity page-title banner — the exact wrap chain WP/traveltour
+/// emits; `caption` is the archive term label (chrome page-title passes
+/// `None`).
+fn traveltour_page_title(_t: &super::ThemeDef, bg: &str, caption: Option<&str>, title: &str) -> String {
+    let cap = caption
+        .map(|c| format!("<h3 class=\"traveltour-page-caption\"  >{c}</h3>"))
+        .unwrap_or_default();
+    format!("<div class=\"traveltour-page-title-wrap  traveltour-style-large traveltour-center-align\"{bg} ><div class=\"traveltour-header-transparent-substitute\" ></div><div class=\"traveltour-page-title-overlay\"  ></div><div class=\"traveltour-page-title-container traveltour-container\" ><div class=\"traveltour-page-title-content traveltour-item-pdlr\"  >{cap}<h1 class=\"traveltour-page-title\"  >{title}</h1></div></div></div>")
+}
+
 // ---------- runtime readers -------------------------------------------------
 
-/// The theme's taxonomy map as a JSON object. `None` before `migrate()`
-/// has run (unit tests, half-imported DBs) — callers fall back to the
-/// compile-time shape the map was generated from, so behavior never
-/// changes mid-phase.
-pub(crate) fn taxonomy_map(conn: &Connection) -> Option<serde_json::Value> {
-    crate::db::plugin_setting_raw_conn(conn, "theme-traveltour", "taxonomy_map")
-        .and_then(|s| serde_json::from_str(&s).ok())
-}
-
-/// Fallback map — identical content to `taxonomy_map.json`. Used when the
-/// settings row is missing so `cat_path` never has to be optional.
-fn map_or_default(conn: &Connection) -> serde_json::Value {
-    taxonomy_map(conn).unwrap_or_else(|| serde_json::from_str(TAXONOMY_MAP_JSON).unwrap())
-}
-
-/// Parent slug of a category (`None` = root or unknown).
-fn cat_parent_in(map: &serde_json::Value, slug: &str) -> Option<String> {
-    map["cat_edges"].get(slug)?.as_str().map(str::to_string)
-}
-
-/// Full hierarchical archive path for a category slug
-/// (`grand/parent/child`) — the moved `render_post::cat_path`.
-pub(crate) fn cat_path(conn: &Connection, slug: &str) -> String {
-    let map = map_or_default(conn);
-    let mut chain = vec![slug.to_string()];
-    let mut cur = slug.to_string();
-    let mut guard = 0;
-    while let Some(p) = cat_parent_in(&map, &cur) {
-        if p == cur {
-            break;
-        }
-        chain.insert(0, p.clone());
-        cur = p;
-        guard += 1;
-        if guard > 6 {
-            break;
-        }
-    }
-    chain.join("/")
-}
-
-/// Every category whose parent is `slug` (categories widget tree).
-pub(crate) fn cat_children(conn: &Connection, slug: &str) -> Vec<String> {
-    let map = map_or_default(conn);
-    let mut v: Vec<String> = Vec::new();
-    if let Some(obj) = map["cat_edges"].as_object() {
-        for (c, p) in obj {
-            if p.as_str() == Some(slug) {
-                v.push(c.clone());
-            }
-        }
-    }
-    v
-}
-
-/// Whether `cat_path` resolves through the ES category tree.
-pub(crate) fn cat_path_is_es(conn: &Connection, slug: &str) -> bool {
-    let map = map_or_default(conn);
-    let roots: Vec<String> = map["es_roots"]
-        .as_array()
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
-        .unwrap_or_default();
-    let mut cur = slug.to_string();
-    let mut guard = 0;
-    loop {
-        if roots.contains(&cur) {
-            return true;
-        }
-        match cat_parent_in(&map, &cur) {
-            Some(p) if p != cur => {
-                cur = p;
-            }
-            _ => break,
-        }
-        guard += 1;
-        if guard > 6 {
-            break;
-        }
-    }
-    slug.ends_with("-es")
-}
-
-/// Public archive base for a taxonomy (`post_tag → "etiquette"`), theme
-/// data-driven. Returns `None` for unmapped taxonomies.
-pub(crate) fn taxonomy_base_in(conn: &Connection, tax: &str) -> Option<String> {
-    let map = map_or_default(conn);
-    map["taxonomy_bases"].get(tax)?.as_str().map(str::to_string)
-}
-
-/// The post_tag archive base — `tag_base()` convenience wrapper.
-pub(crate) fn tag_base(conn: &Connection) -> String {
-    taxonomy_base_in(conn, "post_tag").unwrap_or_else(|| "etiquette".to_string())
-}
+// cat_path/tag_base/cat_children/cat_lang moved to plugins/mod.rs as the
+// generic `theme_*` API over `ThemeDef::taxonomy_map_key` — this module's
+// only remaining runtime data is the seed JSON (TAXONOMY_MAP_JSON).
 
 
 /// Theme-generated css (`wp-content/uploads/traveltour-style-custom.css`)

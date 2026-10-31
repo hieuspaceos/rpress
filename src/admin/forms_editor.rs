@@ -379,13 +379,26 @@ pub(crate) async fn form_save(
 
 /// GET `/admin/contact/new` — create a new contact form.
 pub(crate) async fn form_new(State(app): State<App>, headers: HeaderMap, Query(q): Query<HashMap<String, String>>) -> Response {
-    let Ok((s, _sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth(&app, &headers) else {
         return Redirect::to("/admin/login").into_response();
     };
     let notice = q
         .get("error")
         .map(|e| format!("<div class=\"notice notice-error\"><p>{}</p></div>", esc(e)))
         .unwrap_or_default();
+    // Language options come from the site's lang config — N-language
+    // sites get one option per configured lang, never fr/es literals.
+    let lang_opts = match crate::db::conn(&sc.db) {
+        Ok(c) => {
+            let cfg = crate::lang::config(&c);
+            cfg.langs
+                .iter()
+                .map(|l| format!("<option value=\"{}\">{}</option>", esc(l), esc(&crate::lang::lang_label(l))))
+                .collect::<Vec<_>>()
+                .join("")
+        }
+        Err(_) => String::new(),
+    };
     let body = format!(
         r#"{}<div class="wrap"><h1>Add New Contact Form</h1>
 {notice}
@@ -395,7 +408,7 @@ pub(crate) async fn form_new(State(app): State<App>, headers: HeaderMap, Query(q
 <tr><th><label>Title</label></th><td><input name="title" class="regular-text" required></td></tr>
 <tr><th><label>Slug</label></th><td><input name="slug" class="regular-text code" required>
   <p class="description">URL-friendly identifier — used in <code>/form/&lt;slug&gt;</code> endpoint.</p></td></tr>
-<tr><th><label>Language</label></th><td><select name="lang"><option value="fr">Français</option><option value="es">Español</option></select></td></tr>
+<tr><th><label>Language</label></th><td><select name="lang">{lang_opts}</select></td></tr>
 <tr><th><label>Kind</label></th><td><select name="kind"><option value="form">Contact form</option><option value="review">Site review</option></select></td></tr>
 </tbody></table>
 <p class="submit"><input type="submit" class="button button-primary" value="Create"></p>
@@ -421,7 +434,11 @@ pub(crate) async fn form_create(
     }
     let slug = f.get("slug").cloned().unwrap_or_default();
     let title = f.get("title").cloned().unwrap_or_default();
-    let lang = f.get("lang").cloned().unwrap_or_else(|| "fr".into());
+    let lang = f.get("lang").cloned().unwrap_or_else(|| {
+        crate::db::conn(&sc.db)
+            .map(|c| crate::lang::config(&c).primary)
+            .unwrap_or_default()
+    });
     let kind = f.get("kind").cloned().unwrap_or_else(|| "form".into());
     // Slug becomes a URL path segment + UNIQUE column: reject anything
     // outside [a-z0-9-] and duplicates, with a visible error instead of a

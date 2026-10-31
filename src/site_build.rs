@@ -533,7 +533,7 @@ fn check(c: &Ctx) -> Result<PhaseOut> {
         .unwrap_or(0);
     let primary: String = db
         .query_row(sql!("render__select_value_from_settings"), params!["primary_lang"], |r| r.get(0))
-        .unwrap_or_else(|_| "fr".into());
+        .unwrap_or_else(|_| crate::lang::config(&db).primary);
     let langs: String = db
         .query_row(sql!("render__select_value_from_settings"), params!["languages"], |r| r.get(0))
         .unwrap_or_else(|_| primary.clone());

@@ -7,12 +7,18 @@ use std::fs;
 use std::path::Path;
 
 fn main() {
-    let dir = Path::new("plugins/specs");
-    println!("cargo:rerun-if-changed=plugins/specs");
+    emit_specs("plugins/specs", "SPEC_SRCS", "specs.rs");
+    emit_specs("themes/specs", "THEME_SPEC_SRCS", "theme_specs.rs");
+}
+
+/// One `<dir>/*.toml` → `(slug, src)` const table in OUT_DIR.
+fn emit_specs(dir_name: &str, sym: &str, out_name: &str) {
+    let dir = Path::new(dir_name);
+    println!("cargo:rerun-if-changed={dir_name}");
     let mut specs: Vec<(String, String)> = Vec::new();
     if dir.is_dir() {
         let mut names: Vec<_> = fs::read_dir(dir)
-            .expect("read plugins/specs")
+            .unwrap_or_else(|e| panic!("read {dir_name}: {e}"))
             .filter_map(|e| e.ok().map(|e| e.path()))
             .filter(|p| p.extension().is_some_and(|e| e == "toml"))
             .collect();
@@ -24,14 +30,11 @@ fn main() {
             specs.push((slug, src));
         }
     }
-    let mut out = String::from("pub(crate) static SPEC_SRCS: &[(&str, &str)] = &[\n");
+    let mut out = format!("pub(crate) static {sym}: &[(&str, &str)] = &[\n");
     for (slug, src) in &specs {
-        out.push_str(&format!(
-            "    ({:?}, {:?}),\n",
-            slug, src
-        ));
+        out.push_str(&format!("    ({:?}, {:?}),\n", slug, src));
     }
     out.push_str("];\n");
-    fs::write(Path::new(&env::var("OUT_DIR").unwrap()).join("specs.rs"), out)
-        .expect("write specs.rs");
+    fs::write(Path::new(&env::var("OUT_DIR").unwrap()).join(out_name), out)
+        .unwrap_or_else(|e| panic!("write {out_name}: {e}"));
 }

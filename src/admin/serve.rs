@@ -40,19 +40,24 @@ pub(crate) async fn public_root(State(app): State<App>, headers: HeaderMap, Conn
             return (StatusCode::TOO_MANY_REQUESTS, [(header::RETRY_AFTER, "60")]).into_response();
         }
     }
-    let Ok(conn) = crate::db::conn(&sc.db) else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-    match crate::render::front_id(&conn) {
-        Some(id) => match crate::render::render_slug_by_id_public(&conn, &sc.templates, id, &site_url(sc), tour_base(sc)) {
-            // Publish-gated render: a draft page_on_front never reaches 200.
-            Ok((h, status)) if status == "publish" => {
-                write_cache(sc, "index.html", &h);
-                html_response(h)
-            }
-            _ => not_found(sc).await,
-        },
-        None => not_found(sc).await,
+    // rusqlite + template render are synchronous — the same ~140ms miss
+    // that public_page already offloads (H14); a cold `/` must not block
+    // a tokio worker either (audit P1).
+    let (db, tpl, base, tb) = (sc.db.clone(), sc.templates.clone(), site_url(sc), tour_base(sc).to_string());
+    let rendered = tokio::task::spawn_blocking(move || {
+        let conn = crate::db::conn(&db).ok()?;
+        let id = crate::render::front_id(&conn)?;
+        crate::render::render_slug_by_id_public(&conn, &tpl, id, &base, &tb).ok()
+    })
+    .await
+    .unwrap_or(None);
+    match rendered {
+        // Publish-gated render: a draft page_on_front never reaches 200.
+        Some((h, status)) if status == "publish" => {
+            write_cache(sc, "index.html", &h);
+            html_response(h)
+        }
+        _ => not_found(sc).await,
     }
 }
 
@@ -214,18 +219,31 @@ pub(crate) async fn public_page(State(app): State<App>, headers: HeaderMap, Conn
     // below but ride the same canonical-rel gate — they 301 to the
     // canonical permalink instead of serving+caching under the alias (M22).
     if md_path.is_some() {
-        if let Some((md_id, md)) = md_for_slug(sc, clean) {
+        // DB lookups + cache write are sync — same offload as the render
+        // below (audit M-miss): don't run conn-opens on a tokio worker.
+        let (sc_c, clean_c) = (sc.clone(), clean.to_string());
+        let md_result = tokio::task::spawn_blocking(move || {
+            md_for_slug(&sc_c, &clean_c).and_then(|(md_id, md)| {
+                let conn = crate::db::conn(&sc_c.db).ok()?;
+                let canonical = crate::render::post_canonical_path(&conn, md_id, tour_base(&sc_c));
+                Some((md, canonical))
+            })
+        })
+        .await
+        .ok()
+        .flatten();
+        if let Some((md, canonical)) = md_result {
             // Canonical-rel gate (M22): a .md request on a non-canonical
             // alias 301s to the canonical .md instead of writing a stale
             // alias copy.
-            let canonical = crate::render::post_canonical_path(&conn, md_id, tour_base(sc));
             let req = format!("/{}/", clean.trim_matches('/'));
             if let Some(c) = canonical {
                 if c != req {
                     return moved_permanently(&format!("{}.md", c.trim_end_matches('/')));
                 }
             }
-            write_cache(sc, &format!("{clean}/index.md"), &md);
+            let (sc_c, rel, md_c) = (sc.clone(), format!("{clean}/index.md"), md.clone());
+            let _ = tokio::task::spawn_blocking(move || write_cache(&sc_c, &rel, &md_c)).await;
             return ([(header::CONTENT_TYPE, "text/markdown; charset=utf-8".to_string()),
                      (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string())], md).into_response();
         }
@@ -280,13 +298,26 @@ pub(crate) async fn public_page(State(app): State<App>, headers: HeaderMap, Conn
             if !canonical.is_empty() && canonical != req {
                 return moved_permanently(&canonical);
             }
-            write_cache(sc, &format!("{clean}/index.html"), &h);
+            let (sc_c, rel, h_c) = (sc.clone(), format!("{clean}/index.html"), h.clone());
+            let _ = tokio::task::spawn_blocking(move || write_cache(&sc_c, &rel, &h_c)).await;
             html_response(h)
         }
         Err(_) => {
             // The lang variant doesn't exist but a translation-group sibling
             // does → 301 to the canonical permalink, else 404 (Polylang).
-            if let Some(target) = crate::render::translation_canonical(&conn, &lang_cfg, &lang_s, lookup, kind, tour_base(sc)) {
+            // Same blocking-work offload as the render above.
+            let (db, lang_s_c, lookup_c, kind_c, tb_c) = (
+                sc.db.clone(), lang_s.clone(), lookup.to_string(), kind.to_string(), tour_base(sc).to_string(),
+            );
+            let target = tokio::task::spawn_blocking(move || {
+                let conn = crate::db::conn(&db).ok()?;
+                let cfg = crate::lang::config(&conn);
+                crate::render::translation_canonical(&conn, &cfg, &lang_s_c, &lookup_c, &kind_c, &tb_c)
+            })
+            .await
+            .ok()
+            .flatten();
+            if let Some(target) = target {
                 return moved_permanently(&target);
             }
             not_found(sc).await
@@ -499,12 +530,130 @@ async fn read_out_async(sc: &SiteCtx, rel: String) -> Option<Vec<u8>> {
         .flatten()
 }
 
-/// Async `safe_read_under` — same rationale as `read_out_async`.
-async fn safe_read_async(root: PathBuf, rel: String) -> Option<Vec<u8>> {
-    tokio::task::spawn_blocking(move || safe_read_under(&root, &rel))
-        .await
+
+/// Resolve `rel` under `root` to a safe canonical file path — the same
+/// confinement as `safe_read_under` but returns the path for streaming
+/// instead of reading bytes (audit M-range: whole-file fs::read buffered
+/// every upload into memory; streaming + Range fixes both).
+fn safe_resolve_under(root: &std::path::Path, rel: &str) -> Option<PathBuf> {
+    if rel.contains("..") || rel.starts_with('/') || rel.contains('\\') {
+        return None;
+    }
+    let root = canonical_root(root)?;
+    let candidate = root.join(rel);
+    let metadata = std::fs::symlink_metadata(&candidate).ok()?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return None;
+    }
+    let candidate = candidate.canonicalize().ok()?;
+    if !candidate.starts_with(&root) {
+        return None;
+    }
+    Some(candidate)
+}
+
+/// Stream `path` with `Accept-Ranges` + single-range `206` support,
+/// metadata ETag, `no-cache` revalidation semantics matching
+/// `file_response`. Reads 64KB chunks — the file never lands fully in
+/// memory (audit M-range).
+async fn stream_file(headers: &HeaderMap, path: PathBuf, mime: &str) -> Response {
+    let meta = match tokio::fs::metadata(&path).await {
+        Ok(m) => m,
+        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+    };
+    let len = meta.len();
+    // Weak ETag from len+mtime — no content hash needed for a revalidate;
+    // mtime resolution covers the write-back-on-edit window.
+    let mtime = meta
+        .modified()
         .ok()
-        .flatten()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let etag = format!("W/\"{len:x}-{mtime:x}\"");
+    let base_headers = [
+        (header::CONTENT_TYPE, mime.to_string()),
+        (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
+        (header::CACHE_CONTROL, "no-cache".to_string()),
+        (header::ETAG, etag.clone()),
+        (header::ACCEPT_RANGES, "bytes".to_string()),
+    ];
+    if headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.split(',').any(|t| t.trim() == etag))
+        .unwrap_or(false)
+    {
+        return (base_headers, StatusCode::NOT_MODIFIED).into_response();
+    }
+    // Single-range only (`bytes=a-b` / `a-` / `-b`); multipart ranges fall
+    // back to 200 — full body is a legal answer.
+    let range = headers
+        .get(header::RANGE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("bytes="))
+        .and_then(|spec| {
+            let (a, b) = spec.split_once('-')?;
+            if spec.contains(',') {
+                return None;
+            }
+            let (start, end) = if a.is_empty() {
+                let n: u64 = b.parse().ok()?;
+                if n == 0 {
+                    return None;
+                }
+                (len.saturating_sub(n), len.saturating_sub(1))
+            } else {
+                let s: u64 = a.parse().ok()?;
+                let e = if b.is_empty() { len.saturating_sub(1) } else { b.parse().ok()? };
+                (s, e.min(len.saturating_sub(1)))
+            };
+            if start > end || start >= len {
+                return None;
+            }
+            Some((start, end))
+        });
+    let (status, start, end) = match range {
+        Some((s, e)) => (StatusCode::PARTIAL_CONTENT, s, e),
+        None => (StatusCode::OK, 0, len.saturating_sub(1)),
+    };
+    let stream_len = if len == 0 { 0 } else { end - start + 1 };
+    let mut f = match tokio::fs::File::open(&path).await {
+        Ok(f) => f,
+        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+    };
+    if start > 0 {
+        use tokio::io::AsyncSeekExt;
+        if f.seek(std::io::SeekFrom::Start(start)).await.is_err() {
+            return StatusCode::RANGE_NOT_SATISFIABLE.into_response();
+        }
+    }
+    let stream = futures_util::stream::unfold((f, stream_len), |(mut f, mut left)| async move {
+        if left == 0 {
+            return None;
+        }
+        let take = left.min(64 * 1024) as usize;
+        let mut buf = vec![0u8; take];
+        use tokio::io::AsyncReadExt;
+        match f.read(&mut buf).await {
+            Ok(0) | Err(_) => None,
+            Ok(n) => {
+                buf.truncate(n);
+                left -= n as u64;
+                Some((Ok::<_, std::io::Error>(buf), (f, left)))
+            }
+        }
+    });
+    let mut res = Response::builder().status(status);
+    for (k, v) in base_headers {
+        res = res.header(k, v);
+    }
+    res = res.header(header::CONTENT_LENGTH, stream_len.to_string());
+    if status == StatusCode::PARTIAL_CONTENT {
+        res = res.header(header::CONTENT_RANGE, format!("bytes {start}-{end}/{len}"));
+    }
+    res.body(Body::from_stream(stream))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
 fn public_mime(rel: &str) -> &'static str {
@@ -651,8 +800,8 @@ pub(crate) async fn wp_asset(State(app): State<App>, headers: HeaderMap, Path(pa
     let sc = site_for(&app, &headers);
     // Admin chrome under templates/admin/wp is gated by the same asset
     // allowlist — vendored manifests/hashes are not for anonymous reads.
-    let mut b = if asset_ext_ok(&path) {
-        safe_read_async(sc.templates.join("admin/wp"), path.clone()).await
+    let mut f: Option<PathBuf> = if asset_ext_ok(&path) {
+        safe_resolve_under(&sc.templates.join("admin/wp"), &path)
     } else {
         None
     };
@@ -661,14 +810,11 @@ pub(crate) async fn wp_asset(State(app): State<App>, headers: HeaderMap, Path(pa
     // Order: goodlayers-core first (framework/js, include/js, images), then
     // any sibling plugin dir (tourmaster/tourmaster.css et al.). Gated by
     // the same allowlist — vendored source stays unreadable.
-    if b.is_none() {
+    if f.is_none() {
         if let Some(rest) = path.strip_prefix("gdlr/") {
             if asset_ext_ok(rest) {
                 let plugins = sc.www.join("wp-content/plugins");
                 let bundled = sc.templates.join("wp-plugins").join("goodlayers-core");
-                // Sequential async fallbacks — each is a spawn_blocking'd
-                // stat+read; sync `.or_else(||)` can't await, so this is a
-                // plain loop over candidate roots.
                 let stem = std::path::Path::new(rest)
                     .file_stem()
                     .and_then(|s| s.to_str())
@@ -682,8 +828,8 @@ pub(crate) async fn wp_asset(State(app): State<App>, headers: HeaderMap, Path(pa
                     bundled,
                 ];
                 for root in roots {
-                    if let Some(x) = safe_read_async(root, rest.to_string()).await {
-                        b = Some(x);
+                    if let Some(x) = safe_resolve_under(&root, rest) {
+                        f = Some(x);
                         break;
                     }
                 }
@@ -695,7 +841,7 @@ pub(crate) async fn wp_asset(State(app): State<App>, headers: HeaderMap, Path(pa
        `www/wp-content/plugins/<slug>/` (tourmaster framework css/js).
        Only asset extensions are servable — `.php`, `.ini`, `.xml` et al.
        404 so vendored plugin code never becomes downloadable. */
-    if b.is_none() {
+    if f.is_none() {
         if let Some((slug, rest)) = path.split_once('/') {
             if asset_ext_ok(rest) && plugins::adapter_for_slug(slug).is_some() {
                 for root in [
@@ -705,16 +851,18 @@ pub(crate) async fn wp_asset(State(app): State<App>, headers: HeaderMap, Path(pa
                     // bridge mounts; tourmaster framework css/js/img).
                     sc.templates.join("wp-plugins").join(slug),
                 ] {
-                    if let Some(x) = safe_read_async(root, rest.to_string()).await {
-                        b = Some(x);
+                    if let Some(x) = safe_resolve_under(&root, rest) {
+                        f = Some(x);
                         break;
                     }
                 }
             }
         }
     }
-    let Some(b) = b else { return StatusCode::NOT_FOUND.into_response() };
-    let ct = match PathBuf::from(&path).extension().and_then(|s| s.to_str()).unwrap_or("") {
+    let Some(file) = f else { return StatusCode::NOT_FOUND.into_response() };
+    let ext = PathBuf::from(&path).extension().and_then(|s| s.to_str()).unwrap_or("").to_string();
+    let ext = ext.as_str();
+    let ct = match ext {
         "css" => "text/css; charset=utf-8",
         "js" => "text/javascript; charset=utf-8",
         "woff2" => "font/woff2",
@@ -728,7 +876,19 @@ pub(crate) async fn wp_asset(State(app): State<App>, headers: HeaderMap, Path(pa
         "webp" => "image/webp",
         _ => "application/octet-stream",
     };
-    ([(header::CONTENT_TYPE, ct)], b).into_response()
+    // Streamed + Range + ETag via stream_file (audit M-range/M-assets).
+    // SVGs additionally get a null-script CSP — same-origin SVG executes
+    // script when navigated to directly; `attachment` was rejected
+    // because <img>/CSS loads keep working under CSP but break under a
+    // download disposition (audit L2).
+    let mut r = stream_file(&headers, file, ct).await;
+    if ext == "svg" {
+        r.headers_mut().insert(
+            header::CONTENT_SECURITY_POLICY,
+            axum::http::HeaderValue::from_static("script-src 'none'; style-src 'unsafe-inline'"),
+        );
+    }
+    r
 }
 
 /// `/wp-content/uploads/*` — imported media lives under `www/` when copied
@@ -739,21 +899,16 @@ pub(crate) async fn wp_asset(State(app): State<App>, headers: HeaderMap, Path(pa
 pub(crate) async fn uploads(State(app): State<App>, headers: HeaderMap, Path(path): Path<String>) -> Response {
     let sc = site_for(&app, &headers);
     let root = sc.www.join("wp-content/uploads");
-    if let Some(bytes) = safe_read_async(root, path.clone()).await {
+    if let Some(file) = safe_resolve_under(&root, &path) {
         let (mime, attachment) = crud::served_upload_mime(&path);
-        let mut res = Response::builder()
-            .header(header::CONTENT_TYPE, mime)
-            .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff");
+        let mut r = stream_file(&headers, file, mime).await;
         if attachment {
             let name = path.rsplit('/').next().unwrap_or("download.bin").replace('"', "_");
-            res = res.header(
-                header::CONTENT_DISPOSITION,
-                format!("attachment; filename=\"{name}\""),
-            );
+            if let Ok(v) = format!("attachment; filename=\"{name}\"").parse() {
+                r.headers_mut().insert(header::CONTENT_DISPOSITION, v);
+            }
         }
-        return res
-            .body(Body::from(bytes))
-            .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
+        return r;
     }
     // Same gate as public_page's asset-miss redirect: the origin must be
     // http(s), not a self-loop, and same-site or env-allowlisted — else 404.
@@ -780,15 +935,10 @@ pub(crate) async fn front_css(State(app): State<App>, headers: HeaderMap, Path(p
     {
         return StatusCode::NOT_FOUND.into_response();
     }
-    match safe_read_async(sc.www.join("wp-content/uploads"), path.clone()).await
-        .or(safe_read_async(sc.templates.join("front-css"), path.clone()).await)
+    match safe_resolve_under(&sc.www.join("wp-content/uploads"), &path)
+        .or_else(|| safe_resolve_under(&sc.templates.join("front-css"), &path))
     {
-        Some(b) => (
-            [(header::CONTENT_TYPE, "text/css; charset=utf-8".to_string()),
-             (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string())],
-            b,
-        )
-            .into_response(),
+        Some(f) => stream_file(&headers, f, "text/css; charset=utf-8").await,
         None => StatusCode::NOT_FOUND.into_response(),
     }
 }

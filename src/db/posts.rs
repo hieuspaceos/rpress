@@ -31,7 +31,11 @@ pub struct PostForm {
     #[serde(default)]
     pub content: String,
     #[serde(default)]
-    pub es_post_id: String,
+    /// Per-language linked post ids, form-encoded as `trans_fr=12&trans_es=34`
+    /// — parsed from `extra` keys in the db layer (serde flatten lands them
+    /// there, not on this field).
+    #[serde(skip)]
+    pub translations: std::collections::HashMap<String, String>,
 
     #[serde(default)]
     pub csrf: String,
@@ -152,12 +156,19 @@ pub fn load_post(db: &Path, id: i64) -> Result<Option<PostForm>> {
     {
         p.published_at = d;
     }
-    if let Ok(es) = c.query_row(
-        sql!("posts__select_es_post_id_from"),
-        [id],
-        |r| r.get::<_, Option<i64>>(0),
+    // N-language links: every member sharing this post's translation group
+    // (keyed by member lang) — the admin "Translations" metabox renders
+    // one row per configured language.
+    if let Ok(mut st) = c.prepare(
+        "SELECT m2.lang, m2.post_id FROM post_translation_members m
+         JOIN post_translation_members m2 ON m2.group_id=m.group_id
+         WHERE m.post_id=?1 AND m2.post_id!=?1",
     ) {
-        p.es_post_id = es.map(|n| n.to_string()).unwrap_or_default();
+        if let Ok(rows) = st.query_map([id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))) {
+            for row in rows.flatten() {
+                p.translations.insert(row.0, row.1.to_string());
+            }
+        }
     }
     if let Ok(ts) = terms_for(db, id) {
         p.terms = ts
@@ -182,10 +193,12 @@ pub struct AdminListRow {
     pub lang: String,
     pub status: String,
     pub categories: String,
-    pub fr_id: Option<i64>,
-    pub es_id: Option<i64>,
+    /// Per-lang linked post id (translation-group members) — the PLL cell
+    /// renders one flag per configured language. Filled post-query (the
+    /// row SELECT emits a compact `lang:id,lang:id` blob, parsed below).
+    pub trans_map: std::collections::HashMap<String, i64>,
     pub comments: i64,
-    pub duree: String,
+    pub duree: String, // gate-allow: tour list column field (see SQL comment below)
     pub region: String,
     pub style: String,
     pub profil: String,
@@ -200,8 +213,8 @@ pub struct ListCounts {
     pub future: i64,
     pub draft: i64,
     pub trash: i64,
-    pub fr: i64,
-    pub es: i64,
+    /// Non-trash counts per configured language (subnav filters).
+    pub lang_counts: std::collections::HashMap<String, i64>,
 }
 
 pub fn list_admin(
@@ -218,7 +231,7 @@ pub fn list_admin(
 ) -> Result<(Vec<AdminListRow>, i64, ListCounts)> {
 
     let c = crate::db::conn(db)?;
-    let counts_sql = c.query_row(
+    let mut counts_sql = c.query_row(
         sql!("posts__select_coalesce_sum"),
         [kind],
         |r| {
@@ -229,11 +242,21 @@ pub fn list_admin(
                 future: 0,
                 draft: r.get(2)?,
                 trash: r.get(3)?,
-                fr: r.get(4)?,
-                es: r.get(5)?,
+                lang_counts: std::collections::HashMap::new(),
             })
         },
     )?;
+    // Per-lang counts: N-language — one GROUP BY instead of a CASE per
+    // hardwired language (phase 4: fr/es literal retired).
+    if let Ok(mut st) = c.prepare(
+        "SELECT lang, COUNT(*) FROM posts WHERE kind=?1 AND status!='trash' GROUP BY lang",
+    ) {
+        if let Ok(rows) = st.query_map([kind], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))) {
+            for row in rows.flatten() {
+                counts_sql.lang_counts.insert(row.0, row.1);
+            }
+        }
+    }
     // Pending/future counts live outside the .sql file (that dir is owned by
     // the render fix-up) — scalar COUNTs inline like `site_name_conn` above.
     let pending: i64 = c
@@ -259,13 +282,14 @@ pub fn list_admin(
     let mut sql = String::from(
         "SELECT p.id, COALESCE(p.slug,''), COALESCE(p.title,''), COALESCE(p.lang,''), COALESCE(p.status,''),
             COALESCE((SELECT group_concat(name, ', ') FROM post_terms t WHERE t.post_id=p.id AND t.taxonomy='category'),''),
-            (SELECT fr_post_id FROM post_translations tr WHERE tr.fr_post_id=p.id OR tr.es_post_id=p.id LIMIT 1),
-            (SELECT es_post_id FROM post_translations tr WHERE tr.fr_post_id=p.id OR tr.es_post_id=p.id LIMIT 1),
+            COALESCE((SELECT group_concat(m2.lang||':'||m2.post_id) FROM post_translation_members m
+                      JOIN post_translation_members m2 ON m2.group_id=m.group_id
+                      WHERE m.post_id=p.id AND m2.post_id!=p.id),''),
             (SELECT COUNT(*) FROM comments c WHERE c.post_id=p.id),
-            COALESCE((SELECT name FROM post_terms t WHERE t.post_id=p.id AND t.taxonomy=CASE WHEN p.lang='es' THEN 'duracion' ELSE 'duree' END LIMIT 1),''),
-            COALESCE((SELECT name FROM post_terms t WHERE t.post_id=p.id AND t.taxonomy=CASE WHEN p.lang='es' THEN 'region-es' ELSE 'region' END LIMIT 1),''),
-            COALESCE((SELECT name FROM post_terms t WHERE t.post_id=p.id AND t.taxonomy=CASE WHEN p.lang='es' THEN 'estilo' ELSE 'style' END LIMIT 1),''),
-            COALESCE((SELECT name FROM post_terms t WHERE t.post_id=p.id AND t.taxonomy=CASE WHEN p.lang='es' THEN 'perfil' ELSE 'profil' END LIMIT 1),''),
+            COALESCE((SELECT name FROM post_terms t WHERE t.post_id=p.id AND t.taxonomy=CASE WHEN p.lang='es' THEN 'duracion' ELSE 'duree' END LIMIT 1),''), -- gate-allow: tour list cols; db can't import plugins (KindDef column spec follow-up)
+            COALESCE((SELECT name FROM post_terms t WHERE t.post_id=p.id AND t.taxonomy=CASE WHEN p.lang='es' THEN 'region-es' ELSE 'region' END LIMIT 1),''), -- gate-allow: same
+            COALESCE((SELECT name FROM post_terms t WHERE t.post_id=p.id AND t.taxonomy=CASE WHEN p.lang='es' THEN 'estilo' ELSE 'style' END LIMIT 1),''), -- gate-allow: same
+            COALESCE((SELECT name FROM post_terms t WHERE t.post_id=p.id AND t.taxonomy=CASE WHEN p.lang='es' THEN 'perfil' ELSE 'profil' END LIMIT 1),''), -- gate-allow: same
             COALESCE((SELECT view_count FROM tours WHERE post_id=p.id),0)
          FROM posts p",
     );
@@ -278,7 +302,10 @@ pub fn list_admin(
         }
         _ => wh.push_str(" AND p.status!='trash'"),
     }
-    if lang == "fr" || lang == "es" {
+    // N-language filter: any non-empty `lang` query binds — the admin
+    // subnav emits one link per configured language, so a site with
+    // fr/es/de filters on de without a code change.
+    if !lang.is_empty() {
         wh.push_str(" AND p.lang=?");
         args.push(rusqlite::types::Value::Text(lang.to_string()));
     }
@@ -323,6 +350,17 @@ pub fn list_admin(
     let mut st = c.prepare(&sql)?;
     let rows = st
         .query_map(rusqlite::params_from_iter(args.iter()), |r| {
+            // Column 6 packs `lang:id,lang:id` pairs (group_concat above) —
+            // parsed into trans_map so the row SELECT stays 2-dimensional.
+            let blob: String = r.get(6)?;
+            let mut trans_map = std::collections::HashMap::new();
+            for pair in blob.split(',') {
+                if let Some((lg, pid)) = pair.split_once(':') {
+                    if let Ok(n) = pid.parse::<i64>() {
+                        trans_map.insert(lg.to_string(), n);
+                    }
+                }
+            }
             Ok(AdminListRow {
                 id: r.get(0)?,
                 slug: r.get(1)?,
@@ -330,14 +368,13 @@ pub fn list_admin(
                 lang: r.get(3)?,
                 status: r.get(4)?,
                 categories: r.get(5)?,
-                fr_id: r.get(6)?,
-                es_id: r.get(7)?,
-                comments: r.get(8)?,
-                duree: r.get(9)?,
-                region: r.get(10)?,
-                style: r.get(11)?,
-                profil: r.get(12)?,
-                views: r.get(13)?,
+                trans_map,
+                comments: r.get(7)?,
+                duree: r.get(8)?, // gate-allow: same column
+                region: r.get(9)?,
+                style: r.get(10)?,
+                profil: r.get(11)?,
+                views: r.get(12)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -514,10 +551,6 @@ fn delete_posts_in(tx: &Connection, ids_sql: &str, p: impl rusqlite::Params) -> 
     run("revisions", "post_id")?;
     run("review_assignments", "post_id")?;
     run("post_translation_members", "post_id")?;
-    tx.execute(
-        &format!("DELETE FROM post_translations WHERE fr_post_id IN ({ph}) OR es_post_id IN ({ph})"),
-        rusqlite::params_from_iter(ids.iter().chain(ids.iter())),
-    )?;
     // Groups left with <2 members after the member sweep are dead pairs —
     // a lone member can't translate to anything, and its row would re-link
     // to a future post reusing the rowid.
@@ -1023,9 +1056,12 @@ fn save_post_on(db: &Path, c: &Connection, f: &PostForm) -> Result<i64> {
     if !matches!(f.status.as_str(), "publish" | "future" | "draft" | "pending" | "trash") {
         anyhow::bail!("bad status");
     }
-    // Editable publish date (phase 6.3): "YYYY-MM-DDTHH:MM" from the
-    // datetime-local input normalizes to the stored "YYYY-MM-DD HH:MM:SS".
-    // Empty keeps the existing value (or `now` on first save).
+    // Whitelist the posted lang against site config — a tampered radio
+    // must not write a code the lang routers can never resolve.
+    let lang = {
+        let cfg = crate::lang::config(c);
+        if cfg.langs.iter().any(|l| l == &f.lang) { f.lang.clone() } else { cfg.primary.clone() }
+    };
     let pub_at = norm_datetime(&f.published_at);
     // Empty date field → the stored value still decides scheduling (WP's
     // "publish immediately" is just a past date, and saves that never
@@ -1107,7 +1143,7 @@ fn save_post_on(db: &Path, c: &Connection, f: &PostForm) -> Result<i64> {
         c.execute(
             sql!("posts__update_posts_set_16"),
             params![
-                f.title, f.slug, f.lang, null_empty(&f.excerpt), null_empty(&seo_t),
+                f.title, f.slug, &lang, null_empty(&f.excerpt), null_empty(&seo_t),
                 null_empty(&seo_d), status, feat, body, pub_at.as_deref(), f.content, id
             ],
         )?;
@@ -1118,7 +1154,7 @@ fn save_post_on(db: &Path, c: &Connection, f: &PostForm) -> Result<i64> {
         c.execute(
             sql!("posts__insert_into_posts_18"),
             params![
-                f.slug, f.lang, f.title, body, null_empty(&f.excerpt), status,
+                f.slug, &lang, f.title, body, null_empty(&f.excerpt), status,
                 null_empty(&seo_t), null_empty(&seo_d), feat, f.kind, pub_at.as_deref(),
                 f.content
             ],
@@ -1128,16 +1164,23 @@ fn save_post_on(db: &Path, c: &Connection, f: &PostForm) -> Result<i64> {
     if let Some(e) = crate::plugins::editor_for(&f.kind) {
         (e.save)(c, id, f)?;
     }
-    let es: Option<i64> = f.es_post_id.trim().parse().ok();
-    c.execute(sql!("posts__delete_from_post_translations"), [id])?;
-    if f.lang == "fr" {
-        c.execute(
-            sql!("posts__insert_into_post_translations"),
-            params![id, es],
-        )?;
-        // Render/hreflang read post_translation_members (import-written);
-        // mirror admin links so front/translation lookups see them too.
-        sync_translation_members(c, id, es)?;
+    // N-language pairing: `trans_<lang>` keys on `f.extra` carry the
+    // linked post id per language ("" = unlinked); `translations` is
+    // populated from load_post for the metabox's initial values.
+    {
+        let mut links: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+        let mut offered: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for (k, v) in &f.extra {
+            if let Some(lg) = k.strip_prefix("trans_") {
+                offered.insert(lg.to_string());
+                if let Ok(n) = v.trim().parse::<i64>() {
+                    links.insert(lg.to_string(), n);
+                }
+            }
+        }
+        if !offered.is_empty() {
+            sync_translation_group(c, id, &lang, &offered, &links)?;
+        }
     }
     if f.kind == "post" {
         // cat[] + tags fields are authoritative for posts; other taxonomies
@@ -1154,35 +1197,69 @@ fn save_post_on(db: &Path, c: &Connection, f: &PostForm) -> Result<i64> {
     Ok(id)
 }
 
-/// Mirror the admin translation link into post_translation_members so the
-/// N-language render lookups (hreflang, front pages, missing-translation
-/// redirects) see admin-maintained links, not just import-written ones.
-///
-/// Membership semantics mirror the pair table: unlink removes only this
-/// post's own row — other group members keep their link (a >2-language
-/// group loses a member, not the group). Group id = the partner's
-/// existing group, else `p{id}`.
-fn sync_translation_members(c: &Connection, id: i64, other: Option<i64>) -> Result<()> {
-    c.execute("DELETE FROM post_translation_members WHERE post_id=?1", [id])?;
-    let Some(other) = other else { return Ok(()) };
-    let group: Option<String> = c
+/// Reconcile `post_translation_members` for post `id` (lang `my_lang`)
+/// against the metabox's per-language picks. `offered` = languages the
+/// form emitted; `links` = lang → post_id for non-empty picks. An
+/// offered-but-unlinked lang drops that lang's member in the resolved
+/// group. Group: the first linked post's existing group wins (a pick
+/// already grouped keeps it), else `p{id}`. A group left with <2 members
+/// is deleted (a lone member can't translate to anything).
+fn sync_translation_group(
+    c: &Connection,
+    id: i64,
+    my_lang: &str,
+    offered: &std::collections::HashSet<String>,
+    links: &std::collections::HashMap<String, i64>,
+) -> Result<()> {
+    // Group resolution runs BEFORE dropping id's own row: unlinking on a
+    // post already grouped must target its group, not a fresh `p{id}`.
+    let mut group: Option<String> = c
         .query_row(
             "SELECT group_id FROM post_translation_members WHERE post_id=?1",
-            [other],
-            |r| r.get(0),
+            [id],
+            |r| r.get::<_, String>(0),
         )
         .ok();
-    let group = group.unwrap_or_else(|| format!("p{id}"));
-    let other_lang: String = c
-        .query_row("SELECT lang FROM posts WHERE id=?1", [other], |r| r.get(0))
-        .unwrap_or_default();
-    if other_lang.is_empty() {
-        return Ok(());
+    c.execute("DELETE FROM post_translation_members WHERE post_id=?1", [id])?;
+    // A linked post's existing group wins — merging into it keeps the
+    // one-group-per-post invariant. Deterministic pick when linked posts
+    // live in different groups: sort by pid (HashMap order is per-run).
+    let mut pids: Vec<i64> = links.values().copied().collect();
+    pids.sort_unstable();
+    for pid in pids {
+        if let Ok(g) = c.query_row(
+            "SELECT group_id FROM post_translation_members WHERE post_id=?1",
+            [pid],
+            |r| r.get::<_, String>(0),
+        ) {
+            group = Some(g);
+            break;
+        }
     }
-    // Claim the (group, lang) slot: a different post already sitting there
-    // loses its membership — scrub its post_translations pair too, or the
-    // two tables disagree (front_id_for_lang's paired fallback would
-    // resolve a link the group no longer has).
+    let group = group.unwrap_or_else(|| format!("p{id}"));
+    // Unlink: drop members for offered-but-unpicked languages in the group.
+    for lang in offered {
+        if !links.contains_key(lang) {
+            c.execute(
+                "DELETE FROM post_translation_members WHERE group_id=?1 AND lang=?2",
+                params![group, lang],
+            )?;
+        }
+    }
+    upsert_member(c, &group, my_lang, id, links)?;
+    sweep_singleton_groups(c)?;
+    Ok(())
+}
+
+/// Insert `id` as `my_lang`'s member in `group`, then every (lang → pid)
+/// link — evicting any different post holding that (group, lang) slot.
+fn upsert_member(
+    c: &Connection,
+    group: &str,
+    my_lang: &str,
+    id: i64,
+    links: &std::collections::HashMap<String, i64>,
+) -> Result<()> {
     let evict = |lang: &str, new_pid: i64| -> Result<()> {
         let evicted: Option<i64> = c
             .query_row(
@@ -1193,22 +1270,34 @@ fn sync_translation_members(c: &Connection, id: i64, other: Option<i64>) -> Resu
             .optional()?;
         if let Some(ep) = evicted.filter(|&p| p != new_pid) {
             c.execute("DELETE FROM post_translation_members WHERE post_id=?1", [ep])?;
-            c.execute(
-                "DELETE FROM post_translations WHERE fr_post_id=?1 OR es_post_id=?1",
-                [ep],
-            )?;
         }
         Ok(())
     };
-    evict("fr", id)?;
-    evict(&other_lang, other)?;
+    if !my_lang.is_empty() {
+        evict(my_lang, id)?;
+        c.execute(
+            "INSERT OR REPLACE INTO post_translation_members(group_id, lang, post_id) VALUES(?1,?2,?3)",
+            params![group, my_lang, id],
+        )?;
+    }
+    for (lang, pid) in links {
+        evict(lang, *pid)?;
+        c.execute(
+            "INSERT OR REPLACE INTO post_translation_members(group_id, lang, post_id) VALUES(?1,?2,?3)",
+            params![group, lang, pid],
+        )?;
+    }
+    Ok(())
+}
+
+/// Every group left with <2 members is a dead pair — global sweep matches
+/// the bulk-delete path's cleanup (a lone member elsewhere must not
+/// linger after an unlink orphans it).
+fn sweep_singleton_groups(c: &Connection) -> Result<()> {
     c.execute(
-        "INSERT OR REPLACE INTO post_translation_members(group_id, lang, post_id) VALUES(?1,'fr',?2)",
-        params![group, id],
-    )?;
-    c.execute(
-        "INSERT OR REPLACE INTO post_translation_members(group_id, lang, post_id) VALUES(?1,?2,?3)",
-        params![group, other_lang, other],
+        "DELETE FROM post_translation_members WHERE group_id IN (\
+            SELECT group_id FROM post_translation_members GROUP BY group_id HAVING COUNT(*) < 2)",
+        [],
     )?;
     Ok(())
 }
@@ -1491,35 +1580,35 @@ mod tests {
         post(&c, 21, "es");
         post(&c, 22, "de");
 
-        // Import-style 3-language group g3 plus a link 10↔11 (group p10).
+        let links = |pairs: &[(&str, i64)]| -> std::collections::HashMap<String, i64> {
+            pairs.iter().map(|(l, p)| (l.to_string(), *p)).collect()
+        };
+        let offered = |ls: &[&str]| -> std::collections::HashSet<String> {
+            ls.iter().map(|s| s.to_string()).collect()
+        };
+
+        // Import-style 3-language group g3.
         c.execute_batch(
-            "INSERT INTO post_translation_members(group_id,lang,post_id) VALUES('g3','fr',20),('g3','es',21),('g3','de',22);
-             INSERT INTO post_translations(fr_post_id,es_post_id) VALUES(20,21);",
+            "INSERT INTO post_translation_members(group_id,lang,post_id) VALUES('g3','fr',20),('g3','es',21),('g3','de',22);",
         )
         .unwrap();
-        sync_translation_members(&c, 10, Some(11)).unwrap();
+        sync_translation_group(&c, 10, "fr", &offered(&["es"]), &links(&[("es", 11)])).unwrap();
         assert_eq!(members(&c, 10), vec![("p10".into(), "fr".into())]);
         assert_eq!(members(&c, 11), vec![("p10".into(), "es".into())]);
 
-        // Re-link 10↔21: 10 joins g3 and takes its 'fr' slot → 20 is
-        // evicted; 20's member row AND its post_translations pair are
-        // removed, while 22 keeps its group membership and 11 keeps hers.
-        sync_translation_members(&c, 10, Some(21)).unwrap();
+        // Re-link 10's es → 21: 10 joins g3 and takes its 'fr' slot → 20
+        // is evicted; 22 keeps its membership and 11 keeps hers.
+        sync_translation_group(&c, 10, "fr", &offered(&["es"]), &links(&[("es", 21)])).unwrap();
         assert_eq!(members(&c, 10), vec![("g3".into(), "fr".into())]);
         assert_eq!(members(&c, 21), vec![("g3".into(), "es".into())]);
         assert_eq!(members(&c, 22), vec![("g3".into(), "de".into())]);
         assert!(members(&c, 20).is_empty(), "evicted member lingers");
-        assert_eq!(members(&c, 11), vec![("p10".into(), "es".into())]);
-        let pairs: i64 = c
-            .query_row("SELECT COUNT(*) FROM post_translations WHERE fr_post_id=20 OR es_post_id=20", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(pairs, 0, "evicted post's pair row left behind");
 
-        // Unlink removes only 10's own row — the rest of g3 stays grouped.
-        sync_translation_members(&c, 10, None).unwrap();
-        assert!(members(&c, 10).is_empty());
-        assert_eq!(members(&c, 21), vec![("g3".into(), "es".into())]);
-        assert_eq!(members(&c, 22), vec![("g3".into(), "de".into())]);
+        // Offered-but-empty es = unlink: the es member in p10's group is
+        // dropped, then the lone-member group is swept entirely.
+        sync_translation_group(&c, 10, "fr", &offered(&["es"]), &links(&[])).unwrap();
+        assert!(members(&c, 11).is_empty(), "offered-empty lang kept member");
+        assert!(members(&c, 21).is_empty(), "g3 es member dropped by unlink of offered 'es'");
     }
 }
 

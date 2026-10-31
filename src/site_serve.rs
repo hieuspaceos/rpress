@@ -96,11 +96,14 @@ fn checklist(env: &SiteEnv, db: &PathBuf, bind: &str) -> Result<()> {
 }
 
 fn langs(db: &PathBuf) -> (String, String) {
-    let Ok(c) = conn(db) else { return ("fr".into(), "fr".into()) };
+    let Ok(c) = conn(db) else {
+        // No DB: lang::config's own default ("fr" single-lang) applies.
+        return ("fr".into(), "fr".into()); // gate-allow: pre-DB boot default
+    };
     let get = |k: &str| -> Option<String> {
         c.query_row(sql!("render__select_value_from_settings"), params![k], |r| r.get(0)).ok()
     };
-    let primary = get("primary_lang").unwrap_or_else(|| "fr".into());
+    let primary = get("primary_lang").unwrap_or_else(|| crate::lang::config(&c).primary);
     let langs = get("languages").unwrap_or_else(|| primary.clone());
     (primary, langs)
 }

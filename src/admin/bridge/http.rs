@@ -45,7 +45,14 @@ pub(crate) fn request(
         // Content-Length below (forwarding the client's value would be
         // correct too — the body is unmodified — but recomputing is the
         // one code path that can't drift).
-        if matches!(kl.as_str(), "host" | "connection" | "content-length" | "transfer-encoding" | "cookie" | "expect") {
+        // Credentials never cross either: a live `rpress_session` cookie,
+        // app-password `Authorization`, or a bearer `X-Forwarded-*` chain
+        // handed to vendored plugin code is exfiltratable via `$_SERVER`
+        // (audit M1). The bridge's auth is `X-Rpress-Bridge` only.
+        if matches!(kl.as_str(), "host" | "connection" | "content-length" | "transfer-encoding" | "cookie" | "expect" | "authorization" | "proxy-authorization")
+            || kl.starts_with("x-forwarded-")
+            || kl.starts_with("x-real-")
+        {
             continue;
         }
         req.push_str(&format!("{k}: {v}\r\n"));

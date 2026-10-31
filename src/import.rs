@@ -367,25 +367,19 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path, force: bool) -> Resu
         .or_else(|| languages.iter().next().cloned())
         .unwrap_or_else(|| "en".into());
 
-    // post_translations: description = {lang: object_id}. Keep the legacy
-    // fr/es pair table for old admin screens, and also populate the generic
-    // post_translation_members table for N-language render/hreflang.
-    let mut trans_rows: Vec<(Option<i64>, Option<i64>)> = Vec::new();
+    // post_translations: description = {lang: object_id} → generic
+    // post_translation_members only (the legacy fr/es pair table retired;
+    // members is the single N-language model — phase 4).
     let mut trans_groups: Vec<(String, Vec<(String, i64)>)> = Vec::new();
     let mut term_trans_pairs: Vec<(i64, i64)> = Vec::new();
     for (_tt, (term_id, tax, desc)) in &ttax {
         if tax == "post_translations" && desc.starts_with("a:") {
             match unserialize(desc.as_bytes()) {
                 Ok(Value::Object(m)) => {
-                    let fr = m.get("fr").and_then(|v| v.as_i64());
-                    let es = m.get("es").and_then(|v| v.as_i64());
                     let members: Vec<(String, i64)> = m
                         .iter()
                         .filter_map(|(lang, v)| v.as_i64().map(|id| (lang.clone(), id)))
                         .collect();
-                    if fr.is_some() || es.is_some() {
-                        trans_rows.push((fr, es));
-                    }
                     if !members.is_empty() {
                         trans_groups.push((term_id.to_string(), members));
                     } else {
@@ -457,9 +451,6 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path, force: bool) -> Resu
     )?;
     let mut stmt_mi = tx.prepare(
         sql!("import__insert_into_menu_items"),
-    )?;
-    let mut stmt_trans = tx.prepare(
-        sql!("import__insert_or_ignore_11"),
     )?;
     let mut stmt_trans_member = tx.prepare(sql!("import__insert_or_ignore_translation_member"))?;
     let mut stmt_term = tx.prepare(sql!("import__insert_or_replace_terms"))?;
@@ -758,18 +749,6 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path, force: bool) -> Resu
         }
     }
     let all_post_ids: std::collections::HashSet<i64> = posts.iter().map(|p| p.id).collect();
-    for (f, e) in &trans_rows {
-        if f.is_some_and(|id| !all_post_ids.contains(&id)) || e.is_some_and(|id| !all_post_ids.contains(&id)) {
-            rep.log(format!("GHOST translation member {:?}/{:?} (deleted post)", f, e));
-        }
-        let fi = f.filter(|id| all_post_ids.contains(id) && wp_to_cms.contains_key(id));
-        let ei = e.filter(|id| all_post_ids.contains(id) && wp_to_cms.contains_key(id));
-        if fi.is_some() || ei.is_some() {
-            stmt_trans.execute(params![fi, ei])?;
-        } else {
-            rep.log(format!("translation group {:?}/{:?} no imported members", f, e));
-        }
-    }
     for (group_id, members) in &trans_groups {
         let mut kept = 0;
         for (lang, id) in members {
@@ -1233,7 +1212,7 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path, force: bool) -> Resu
 
     drop((
         stmt_post, stmt_meta, stmt_media, stmt_pt, stmt_comment, stmt_ra, stmt_redir, stmt_menu,
-        stmt_mi, stmt_trans, stmt_trans_member, stmt_term, stmt_ttrans, stmt_set, stmt_h,
+        stmt_mi, stmt_trans_member, stmt_term, stmt_ttrans, stmt_set, stmt_h,
     ));
     tx.commit()?;
 

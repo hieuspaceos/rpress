@@ -441,7 +441,9 @@ fn element_template(conn: &Connection, defs_e: &Value, n: &Map<String, Value>) -
 fn element_preview_html(conn: &Connection, typ: &str, value: &Value) -> String {
     let node = json!({"template": "element", "type": typ, "value": value});
     let tour_base = PB_TOUR_BASE.with(|t| t.borrow().clone());
-    crate::render::render_fragment_db(conn, &std::path::PathBuf::from("templates"), &node, "", "fr", &tour_base)
+    // Preview lang = site primary — the canvas has no per-post lang.
+    let primary = crate::lang::config(conn).primary;
+    crate::render::render_fragment_db(conn, &std::path::PathBuf::from("templates"), &node, "", &primary, &tour_base)
         .unwrap_or_default()
 }
 // Site tour_base for element previews — set alongside PB_DEFS by callers
@@ -1519,7 +1521,7 @@ pub(crate) fn boot(conn: &Connection, sc: &SiteCtx, post_id: i64, body_json: &st
     out += "<div class=\"gdlr-core-page-builder-head-action-repeat\" id=\"gdlr-core-page-builder-head-action-redo\" ><i class=\"fa fa-repeat\" ></i></div>";
     out += "<div class=\"clear\"></div></div><div class=\"clear\"></div></div>";
     out += "</div>"; // head
-    out += "<div class=\"gdlr-core-page-builder-body gdlr-core-no-dragging gdlr-core-body gdlr-core-pb-livemode gdlr-core-live-edit traveltour-body traveltour-body-front\" id=\"gdlr-core-page-builder-body\" data-mode=\"live\" >";
+    out += "<div class=\"gdlr-core-page-builder-body gdlr-core-no-dragging gdlr-core-body gdlr-core-pb-livemode gdlr-core-live-edit traveltour-body traveltour-body-front\" id=\"gdlr-core-page-builder-body\" data-mode=\"live\" >"; // gate-allow: verbatim WP builder chrome (parity)
     out += "<div class=\"gdlr-core-page-builder-container gdlr-core-container gdlr-container-sortable clearfix\" id=\"gdlr-core-page-builder-container\" >";
     out += &items_html;
     out += "</div></div></div>";

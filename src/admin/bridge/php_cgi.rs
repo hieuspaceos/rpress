@@ -186,8 +186,10 @@ add_filter('got_url_rewrite', '__return_true');
 /// Seatbelt profile for `sandbox-exec` (macOS, built-in). Deny-everything
 /// default; PHP needs its own binary+libs (system dirs), the docroot tree
 /// (read), wp-content/database + site www (read-write for sqlite/uploads),
-/// and loopback so `php -S` can bind + answer. Everything else — home dir,
-/// .env/dump.sql/rpress.db, outbound net, process exec — is denied.
+/// and loopback so `php -S` can bind + answer. mu-plugins is read-only —
+/// every file inside it is host-written at spawn (audit M1b: a writable
+/// mu-plugins dir is persistent PHP-code exec across spawns). Everything
+/// else — home dir, .env/dump.sql/rpress.db, outbound net — is denied.
 /// SBPL params: {docroot}, {www}, {templates}, {db}.
 /// Proven on macOS 26: `process-exec` without `*` never matches php's
 /// spawn; `network*` alone allows outbound — deny+re-allow loopback.
@@ -219,7 +221,6 @@ const SANDBOX_PROFILE: &str = r#"(version 1)
 (allow file-write*
     (subpath "{db}")
     (subpath "{uploads}")
-    (subpath "{mu}")
     (subpath "/private/tmp")
     (subpath "/private/var/folders")
     (subpath "/dev"))
@@ -239,7 +240,7 @@ fn sandboxed(php: &Path, docroot: &Path, www: &Path, templates: &Path, db_dir: &
         return sandboxed_seatbelt(&se, php, docroot, www, templates, db_dir);
     }
     // Linux: bubblewrap gives the same shape — ro-bind everything the child
-    // needs, rw-bind only db/uploads/mu-plugins, no host fs beyond the list.
+    // needs, rw-bind only db/uploads, no host fs beyond the list.
     if let Some(bw) = which_bwrap() {
         return Some(sandboxed_bwrap(&bw, php, docroot, www, templates, db_dir));
     }
@@ -268,15 +269,15 @@ fn which_bwrap() -> Option<PathBuf> {
 }
 
 /// Linux equivalent of the Seatbelt profile: mount-namespace confinement.
-/// Everything the child needs is ro-bound; only wp.db, uploads and the
-/// site's mu-plugins are writable. `--share-net` keeps host loopback so the
+/// Everything the child needs is ro-bound; only wp.db and uploads are
+/// writable — mu-plugins is read-only (host-written at spawn, audit M1b).
+/// `--share-net` keeps host loopback so the
 /// rpress proxy can reach `php -S 127.0.0.1:<port>` — same boundary as the
 /// macOS profile (which also allows localhost). Outbound stays open on
 /// both; the real fence is the fs mount table + per-spawn token + pull
 /// whitelist.
 fn sandboxed_bwrap(bw: &Path, php: &Path, docroot: &Path, www: &Path, templates: &Path, db_dir: &Path) -> Command {
     let uploads = www.join("wp-content/uploads");
-    let mu = www.join("wp-content/mu-plugins");
     let mut c = Command::new(bw);
     c.args([
         // pid/ipc isolation; share host net (loopback needed for the proxy)
@@ -300,8 +301,9 @@ fn sandboxed_bwrap(bw: &Path, php: &Path, docroot: &Path, www: &Path, templates:
     ro(&mut c, docroot);
     ro(&mut c, templates);
     // www read-only EXCEPT the two writable subtrees, bound after.
+    // mu-plugins stays read-only (host owns every file in it — audit M1b).
     ro(&mut c, www);
-    for p in [db_dir, &uploads, &mu] {
+    for p in [db_dir, &uploads] {
         std::fs::create_dir_all(p).ok();
         c.arg("--bind").arg(p).arg(p);
     }
@@ -329,7 +331,6 @@ fn sandboxed_seatbelt(se: &Path, php: &Path, docroot: &Path, www: &Path, templat
         .replace("{templates}", &templates.display().to_string())
         .replace("{db}", &db_dir.display().to_string())
         .replace("{uploads}", &www.join("wp-content/uploads").display().to_string())
-        .replace("{mu}", &www.join("wp-content/mu-plugins").display().to_string())
         .replace("{parents}", &parents);
     let pf = docroot.join(".sandbox.sb");
     std::fs::write(&pf, profile).ok()?;

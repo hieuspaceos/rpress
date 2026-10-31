@@ -179,7 +179,18 @@ pub(crate) async fn login(
                 }
             }
             pend.insert(tok.clone(), (id, Instant::now(), 0usize));
-            return Redirect::to(&format!("/admin/2fa?p={tok}")).into_response();
+            // Pending token rides an HttpOnly cookie, not the URL — a
+            // `?p=` query leaks into proxy logs, server logs, and browser
+            // history (audit L3). 5-min cookie TTL mirrors PENDING_TTL.
+            return Response::builder()
+                .status(StatusCode::SEE_OTHER)
+                .header(header::LOCATION, "/admin/2fa")
+                .header(
+                    header::SET_COOKIE,
+                    format!("{PENDING_COOKIE}={tok}; HttpOnly; Secure; SameSite=Strict; Path=/admin/2fa; Max-Age=300"),
+                )
+                .body(Body::empty())
+                .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
         }
         let _ = (secret, last_step);
     }
@@ -250,15 +261,20 @@ fn mint_session(
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
-/// GET `/admin/2fa?p=<pending>` — second-factor form. Invalid/expired
-/// pending tokens get a bare redirect to /admin/login (no form), so the
-/// endpoint can't be enumerated to learn whether an account has 2FA.
+/// Half-auth token cookie for the TOTP step — mirrors SESSION_COOKIE
+/// but is scoped to `/admin/2fa` and dies with the flow (audit L3).
+const PENDING_COOKIE: &str = "rpress_2fa";
+
+/// GET `/admin/2fa` — second-factor form. The pending token arrives via
+/// the `rpress_2fa` cookie (set by `login`), never the URL. Invalid or
+/// expired tokens get a bare redirect to /admin/login — the endpoint
+/// can't be enumerated to learn whether an account has 2FA.
 pub(crate) async fn two_fa_page(
     State(app): State<App>,
-    axum::extract::Query(q): axum::extract::Query<HashMap<String, String>>,
+    headers: HeaderMap,
 ) -> Response {
-    let Some(p) = q.get("p") else { return Redirect::to("/admin/login").into_response() };
-    let alive = app.pending_2fa.lock().get(p).map(|v| v.1.elapsed() < PENDING_TTL).unwrap_or(false);
+    let Some(p) = cookie(&headers, PENDING_COOKIE) else { return Redirect::to("/admin/login").into_response() };
+    let alive = app.pending_2fa.lock().get(&p).map(|v| v.1.elapsed() < PENDING_TTL).unwrap_or(false);
     if !alive {
         return Redirect::to("/admin/login").into_response();
     }
@@ -266,7 +282,6 @@ pub(crate) async fn two_fa_page(
         r##"<div id="login">
 <h1 class="wp-login-logo"><a href="/admin" title="Two-factor authentication">Two-factor authentication</a></h1>
 <form name="loginform" method="post" action="/admin/2fa">
-<input type="hidden" name="p" value="{p}">
 <p>
 <label for="code">Authentication Code</label>
 <input type="text" name="code" id="code" class="input" size="20" inputmode="numeric" pattern="[0-9A-Za-z-]*" autocomplete="one-time-code" autofocus>
@@ -276,8 +291,7 @@ pub(crate) async fn two_fa_page(
 <input type="submit" class="button button-primary button-large" value="Verify">
 </p>
 </form>
-</div>"##,
-        p = esc(p)
+</div>"##
     );
     html_login("Two-Factor Authentication", &body).into_response()
 }
@@ -293,7 +307,7 @@ pub(crate) async fn two_fa_verify(
     headers: HeaderMap,
     Form(f): Form<HashMap<String, String>>,
 ) -> Response {
-    let p = f.get("p").cloned().unwrap_or_default();
+    let p = cookie(&headers, PENDING_COOKIE).unwrap_or_default();
     let code = f.get("code").cloned().unwrap_or_default();
     let sc = site_for(&app, &headers);
     let (user_id, fails) = {
@@ -330,7 +344,7 @@ pub(crate) async fn two_fa_verify(
     if !ok {
         app.pending_2fa.lock().entry(p.clone()).and_modify(|v| v.2 += 1);
         eprintln!("2fa fail user={user_id} ip={}", client_ip(&headers, Some(peer)));
-        return Redirect::to(&format!("/admin/2fa?p={p}&err=1")).into_response();
+        return Redirect::to("/admin/2fa?err=1").into_response();
     }
     // Verified — drop the pending token and mint as usual. `login_hits`
     // was already charged at the password step.
@@ -347,7 +361,13 @@ pub(crate) async fn two_fa_verify(
         return Redirect::to("/admin/login").into_response();
     };
     let ip = client_ip(&headers, Some(peer));
-    mint_session(&app, sc, &headers, user_id, &email, &role, false, &ip)
+    let mut r = mint_session(&app, sc, &headers, user_id, &email, &role, false, &ip);
+    // Drop the half-auth cookie now that the real session is minted.
+    r.headers_mut().append(
+        header::SET_COOKIE,
+        axum::http::HeaderValue::from_static("rpress_2fa=; HttpOnly; Secure; SameSite=Strict; Path=/admin/2fa; Max-Age=0"),
+    );
+    r
 }
 
 pub(crate) async fn logout(

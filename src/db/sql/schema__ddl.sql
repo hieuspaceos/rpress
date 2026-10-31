@@ -53,14 +53,6 @@ CREATE TABLE IF NOT EXISTS terms(
   parent_id INTEGER,
   UNIQUE(taxonomy, slug)
 );
-
-CREATE TABLE IF NOT EXISTS post_translations(
-  fr_post_id INT,
-  es_post_id INT
-);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_trans_pair ON post_translations(fr_post_id, es_post_id);
-CREATE INDEX IF NOT EXISTS idx_trans_es ON post_translations(es_post_id);
-
 CREATE TABLE IF NOT EXISTS post_translation_members(
   group_id TEXT NOT NULL,
   lang TEXT NOT NULL,

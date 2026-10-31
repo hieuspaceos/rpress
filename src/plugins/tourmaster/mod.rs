@@ -29,10 +29,10 @@ pub(crate) static EDITOR: EditorHooks = EditorHooks {
 
 const HEAD_TOUR: &str = r#"<tr><td class="manage-column column-cb check-column"></td><th scope="col" class="manage-column column-title column-primary">Title</th><th scope="col">Durée</th><th scope="col">Región</th><th scope="col">Style</th><th scope="col">Profil</th><th scope="col">Views</th><th scope="col" class="rm-seo-col">SEO Details</th></tr>"#;
 
-fn tour_row_cols(r: &crate::db::AdminListRow, _kind: &str) -> String {
+fn tour_row_cols(r: &crate::db::AdminListRow, _kind: &str, _langs: &crate::lang::LangConfig) -> String {
     format!(
         "<td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td>",
-        crate::admin::posts::dash(&r.duree),
+        crate::admin::posts::dash(&r.duree), // gate-allow: tour taxonomy field (plugin-owned taxonomy name)
         crate::admin::posts::dash(&r.region),
         crate::admin::posts::dash(&r.style),
         crate::admin::posts::dash(&r.profil),
@@ -50,8 +50,10 @@ static KINDS: &[KindDef] = &[KindDef {
     row_cols: tour_row_cols,
     url_base_key: Some("tour_base"), url_base: None,
     taxonomies: &[
-        "duree", "duracion", "region", "region-es", "style", "estilo",
-        "profil", "perfil", "activites", "Activites", "pays", "Pays",
+        // gate-allow: upstream WP tourmaster taxonomy names — plugin
+        // data contract, not site literals.
+        "duree", "duracion", "region", "region-es", "style", "estilo", // gate-allow: WP taxonomy names
+        "profil", "perfil", "activites", "Activites", "pays", "Pays", // gate-allow: same
         "tour-activity", "tour-age", "viet",
     ],
     menu_icon: "dashicons-palmtree",
@@ -200,7 +202,8 @@ fn submenu(db: &Path) -> Vec<(String, String)> {
         }
     }
     for t in seen {
-        let (label, _) = crate::admin::tax_label(&t);
+        let theme = crate::db::conn(db).map(|c| crate::plugins::theme_for_site(&c)).unwrap_or(&crate::plugins::DEFAULT_THEME);
+        let (label, _) = crate::admin::tax_label_for(theme, &t);
         let label = custom.get(&t).cloned().unwrap_or(label);
         sub.push((format!("/admin/tax/{t}"), label));
     }

@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="{{ html_lang }}" {{ html_prefix|safe }}>
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<link rel="profile" href="https://gmpg.org/xfn/11">
+	<title>{{ seo_title }}</title>
+	{% if og_desc %}<meta name="description" content="{{ og_desc }}"/>{% endif %}
+	<meta name="robots" content="{{ robots }}"/>
+	<link rel="canonical" href="{{ canonical }}" />
+	<meta property="og:locale" content="{{ og_locale }}" />
+	<meta property="og:type" content="{{ og_type }}" />
+	<meta property="og:title" content="{{ seo_title }}" />
+	{% if og_desc %}<meta property="og:description" content="{{ og_desc }}" />{% endif %}
+	<meta property="og:url" content="{{ canonical }}" />
+	<meta property="og:site_name" content="{{ site.chrome.name }}" />
+	{{ og_image_block|safe }}
+	<meta name="twitter:card" content="summary_large_image" />
+	<meta name="twitter:title" content="{{ seo_title }}" />
+	<meta name="twitter:image" content="{{ og_image_url }}" />
+	{{ hreflang_links|safe }}
+	<link rel='stylesheet' id='cms-front-css' href='/front.css' type='text/css' media='all' />
+	{{ head_extra|safe }}
+	{{ site.chrome.favicons|safe }}
+	{{ post_jsonld|safe }}
+</head>
+<body class="{{ body_class }}">
+<header id="site-header">
+	<a class="site-name" href="{{ site_url }}/">{{ site.chrome.name }}</a>
+	{{ site.chrome.menu_html|safe }}
+</header>
+<main id="site-content">
+	{{ body|safe }}
+</main>
+<footer id="site-footer">
+	{{ footer_widgets|safe }}
+	{{ site.chrome.copyright_left_html|safe }}
+	{{ site.chrome.copyright_right_html|safe }}
+</footer>
+{{ site.chrome.chaty_js|safe }}
+</body>
+</html>

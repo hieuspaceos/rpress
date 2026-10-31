@@ -406,9 +406,9 @@ fn upgrade(conn: &Connection) -> Result<()> {
 
 /// Phase-2 frozen settings_json payloads (verbatim). The upgrade UPDATEs
 /// guard on these so admin-modified fragments are never rewritten.
-const LEGACY_CAT9: &str = include_str!("plugins/theme_traveltour/seed/wpcategorieswidget_9_legacy.json");
+const LEGACY_CAT9: &str = include_str!("plugins/theme_traveltour/seed/wpcategorieswidget_9_legacy.json"); // gate-allow: theme-adapter seed asset
 
-const LEGACY_CH13: &str = include_str!("plugins/theme_traveltour/seed/custom_html_13_legacy.json");
+const LEGACY_CH13: &str = include_str!("plugins/theme_traveltour/seed/custom_html_13_legacy.json"); // gate-allow: same
 
 /// Rows of a sidebar in display order: (id, type, title, settings_json).
 /// `lang` filters the Polylang scope — a tagged row renders only on its
@@ -644,9 +644,9 @@ fn category_tree(
                 .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
                 .unwrap_or_default()
         } else {
-            // Hierarchy of record: the theme adapter's taxonomy map
+            // Hierarchy of record: the resolved theme's taxonomy map
             // (terms.parent_id is NULL on every row).
-            crate::plugins::theme_traveltour::cat_children(conn, slug)
+            crate::plugins::theme_cat_children(conn, crate::plugins::theme_for_site(conn), slug)
         }
     };
     let display = |slug: &str| -> Option<String> {
@@ -808,15 +808,16 @@ fn render_categories_widget(
         // The node slug slot carries the full link: for 'category' the
         // hierarchical cat_path, for other taxonomies /{tax}/{slug}/.
         let href = if taxonomy == "category" {
-            format!("{site_url}{prefix}/{}/", crate::plugins::theme_traveltour::cat_path(conn, &n.slug))
+            format!("{site_url}{prefix}/{}/", crate::plugins::theme_cat_path(conn, crate::plugins::theme_for_site(conn), &n.slug))
         } else {
             format!("{site_url}{prefix}/{}/{}/", taxonomy.to_lowercase(), n.slug)
         };
         emit_top(&mut items, n, &href, taxonomy, show_counts, current_slug, site_url, prefix, conn);
     }
 
+    let widget_class = crate::plugins::theme_for_site(conn).widget_class;
     Ok(format!(
-        "<div id=\"{wid}\" class=\"widget widget_wpcategorieswidget traveltour-widget\"><ul id=\"{wid}\"><li class=\"{tax}\"><h3 class=\"widget-title\">{title}</h3><ul>{items}</ul></li></ul></div>",
+        "<div id=\"{wid}\" class=\"widget widget_wpcategorieswidget {widget_class}\"><ul id=\"{wid}\"><li class=\"{tax}\"><h3 class=\"widget-title\">{title}</h3><ul>{items}</ul></li></ul></div>",
         tax = if taxonomy == "category" { "categories" } else { taxonomy },
         title = crate::render_archive::esc(title),
     ))
@@ -870,7 +871,7 @@ fn emit_tree(
     out.push_str(&format!("{ul_indent}<ul class=\"children\">\n"));
     for c in &parent.children {
         let href = if taxonomy == "category" {
-            format!("{site_url}{prefix}/{}/", crate::plugins::theme_traveltour::cat_path(conn, &c.slug))
+            format!("{site_url}{prefix}/{}/", crate::plugins::theme_cat_path(conn, crate::plugins::theme_for_site(conn), &c.slug))
         } else {
             format!("{site_url}{prefix}/{}/{}/", taxonomy.to_lowercase(), c.slug)
         };

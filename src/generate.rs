@@ -111,7 +111,7 @@ pub fn run(db: &Path, templates: &Path, out: &Path, site_url: &str, tour_base: &
             harvested += 1;
             // Stored markup carries `{{ site_url }}` placeholders —
             // resolve against this render's origin (deploy/render_slug).
-            Some(Ok((crate::render_post::rewrite_origin(&html, site_url, &conn), "harvested".to_string(), String::new())))
+            Some(Ok((crate::render_post::rewrite_origin_with(&html, site_url, &legacy_origin), "harvested".to_string(), String::new())))
         } else if harvest.contains(id) && !legacy_origin.is_empty() {
             // Fetch-at-generate (elementor). For a post that is ALSO a
             // spec-harvest kind, the origin URL uses the kind's
@@ -356,21 +356,18 @@ pub(crate) fn term_out_paths(
     };
     let mut out: Vec<(String, PathBuf)> = Vec::new();
     let tax_l = tax.to_lowercase();
+    let theme = crate::plugins::theme_for_site(&conn);
     if tax_l == "category" || tax_l == "post_tag" {
         let mut langs = term_langs(tax, slug);
         if langs.is_empty() {
-            langs.push(if crate::plugins::theme_traveltour::cat_path_is_es(conn, slug) {
-                "es".into()
-            } else {
-                "fr".into()
-            });
+            langs.push(crate::plugins::theme_cat_lang(&conn, theme, slug, &lang_cfg.primary).unwrap_or_else(|| lang_cfg.primary.clone()));
         }
-        let tag_base = crate::plugins::theme_traveltour::tag_base(conn);
+        let tag_base = crate::plugins::theme_tag_base(&conn, theme);
         for lang in langs {
             let prefix = crate::lang::rel_prefix(lang_cfg, &lang);
             let prefix = if prefix.is_empty() { String::new() } else { format!("{prefix}/") };
             let path = if tax_l == "category" {
-                format!("{prefix}{}", crate::plugins::theme_traveltour::cat_path(conn, slug))
+                format!("{prefix}{}", crate::plugins::theme_cat_path(&conn, theme, slug))
             } else {
                 format!("{prefix}{tag_base}/{slug}")
             };
@@ -379,10 +376,11 @@ pub(crate) fn term_out_paths(
     } else if crate::render_archive::is_taxonomy(conn, &tax_l) {
         let langs = term_langs(tax, slug);
         let lang = langs.first().cloned().unwrap_or_else(|| {
-            if matches!(tax_l.as_str(), "region-es" | "perfil" | "duracion" | "estilo") { "es".into() } else { lang_cfg.primary.clone() }
+            crate::plugins::theme_tax_lang(theme, &tax_l, &lang_cfg.primary).to_string()
         });
         let prefix = crate::lang::rel_prefix(lang_cfg, &lang);
-        let path = if prefix.is_empty() { format!("{tax_l}/{slug}") } else { format!("{prefix}/{tax_l}/{slug}") };
+        let base = crate::plugins::theme_taxonomy_base(conn, theme, &tax_l).unwrap_or_else(|| tax_l.clone());
+        let path = if prefix.is_empty() { format!("{base}/{slug}") } else { format!("{prefix}/{base}/{slug}") };
         out.push((lang, PathBuf::from(path)));
     }
     out
@@ -638,7 +636,10 @@ fn bare_ctx(
     m.insert("og_locale".into(), json!(og_locale));
     m.insert("html_prefix".into(), json!("prefix=\"og: https://ogp.me/ns#\" class=\"no-js\""));
     m.insert("kind".into(), json!("page"));
-    m.insert("body_class".into(), json!("error404 wp-theme-traveltour wp-child-theme-traveltour-child"));
+    // Theme classes come from the resolved theme's body_suffix so a new
+    // theme's 404 doesn't leak traveltour chrome.
+    let body_class = format!("error404 {}", crate::plugins::theme_for_site(conn).body_suffix);
+    m.insert("body_class".into(), json!(body_class));
     m.insert("is_front".into(), json!(false));
     m.insert("is_contact".into(), json!(false));
     m.insert("is_single".into(), json!(false));

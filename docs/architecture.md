@@ -93,13 +93,14 @@ imported WP domain; empty = no rewrite).
 
 | File | Contents |
 |---|---|
-| `mod.rs` | `PluginAdapter` trait, `KindDef`/`ScreenDef`/`RenderCtx` registry (`adapters()`, `kind_def`, `adapter_for_kind`, `screen_for`, `resolve_bases`, `migrate_all`) — the one sanctioned seam every layer (admin screens, render, import) consults |
-| `spec.rs` | declarative adapter specs from `plugins/specs/*.toml` → generated `KindDef`s |
+| `mod.rs` | `PluginAdapter` trait, `KindDef`/`ScreenDef`/`RenderCtx` registry (`adapters()`, `kind_def`, `adapter_for_kind`, `screen_for`, `resolve_bases`, `migrate_all`) — the one sanctioned seam every layer (admin screens, render, import) consults; also `ThemeDef` + the `theme_*` taxonomy-map API (`theme_for_site`, `theme_cat_path`, `theme_tag_base`, `theme_cat_children`, `theme_taxonomy_base`, `theme_cat_lang`, `theme_tax_lang`, `theme_tax_label`) + `DEFAULT_THEME` (neutral fallback) |
+| `spec.rs` | declarative adapter specs from `plugins/specs/*.toml` → generated `KindDef`s, `ScreenDef` settings screens (`[[screens]]` + `fields` — same `save_settings_fields` path as Rust screens), and generated `EditorHooks` (`[kinds.metabox]` — flat `post_meta` fields, quick-edit safe). Field kinds: `text`/`textarea`/`select`/`checkbox`/`serialized`/`note`. Rust-only: render hooks, import `post_imported`, `submenu()`/`seeds()`/`widget_*`, bridge backends |
+| `themes.rs` | declarative theme specs from `themes/specs/*.toml` (same build.rs codegen) — URL shapes/class prefixes/admin labels; Rust `PluginAdapter::theme()` is the escape hatch and wins on collision (panic at `migrate_all`) |
 | `tourmaster/` | Tour kind (Rust port): schema, elements, screens, render |
 | `goodlayers/` | PhpBridge adapter boot + write spec |
 | `misc.rs` | wpDiscuz / CF7 / MetaSlider / Site-Reviews settings screens |
 | `chaty.rs` | Chaty settings |
-| `theme_traveltour/` | theme adapter + seed assets |
+| `theme_traveltour/` | theme adapter + seed assets — `ThemeDef` fields drive the generic `theme_*` API; its old `cat_path`/`tag_base` readers retired here (phase 05) |
 
 ## `src/db/` module map (wp-includes equivalents)
 
@@ -126,16 +127,22 @@ may hold a statement literal). Mutation helpers still go through `db::` fns.
 `posts` (all kinds: post/page/tour via `kind`), `tours` (tour-only columns),
 `post_terms` (assignments), `terms` (term registry — needed so
 Categories/Tags screens can create terms with no post yet),
-`term_translations`, `post_translations` (FR↔ES pairing), `post_meta`,
-`media`, `menus`/`menu_items`, `comments`, `submissions`,
+`term_translations`, `post_translation_members` (N-language pairing:
+`group_id` + `lang` + `post_id`, one row per language in a translation
+group), `post_meta`, `media`, `menus`/`menu_items`, `comments`, `submissions`,
 `settings` (site_url/site_name/legacy_origin/asset_origin/widgets_dirty
   + misc options), `sidebars`/`widgets` (widget instances — WP-parity model),
-`sessions` (persistent login tokens; in-memory map is a hot cache only).
+`sessions` (persistent login tokens; in-memory map is a hot cache only),
+`schema_migrations` (named post-DDL steps — `migrate_conn` runs each once,
+recorded; non-additive changes like drops ride this runner).
 
-Language model: `posts.lang` ∈ {`fr`,`es`}; FR/ES pairing via
-`post_translations`. ES taxonomies use `-es`-suffixed slugs or separate
-taxonomies (`duracion`, `region-es`, `estilo`, `perfil`) — imported that way
-from WP/Polylang; preserved, not normalized.
+Language model: `posts.lang` ∈ `settings.languages` (N-language, e.g.
+`fr,es` or `fr,es,de`); pairing via `post_translation_members`. The legacy
+`post_translations` (FR↔ES pair) table was retired — migration `m05`
+backfills pairs into members and drops the table. Secondary-language
+taxonomies use suffixed slugs or separate taxonomies (`duracion`,
+`region-es`, `estilo`, `perfil`) — imported that way from WP/Polylang;
+preserved, not normalized.
 
 ## Decisions worth knowing
 
@@ -156,11 +163,32 @@ from WP/Polylang; preserved, not normalized.
 - **Quick Edit writes through `quick_update`/`bulk_apply`**, not `save_post`:
   they touch only title/slug/status/lang + cat/tag terms and preserve
   tour taxonomies (`duree`, `region`, …) untouched.
-- **No domain literals in `src/`.** Any string naming a host, brand, or URL
-  segment comes from `SiteCtx` (CLI), `settings.*` (DB), or `src/seed/`
-  (reference-theme payloads). Adding a site must never require a code change.
-  `src/widgets.rs` SEED_WIDGETS + `src/seed/*.json` are the reference theme's
-  default widget set — replace both for your own theme.
+- **No domain literals in `src/` — gated by `check-layers.sh` rules 4–5.**
+  Any string naming a host, brand, taxonomy, or URL segment comes from
+  `SiteCtx` (CLI), `settings.*` (DB), `ThemeDef`/`KindDef` data, or
+  `src/seed/` (reference-theme payloads). Adding a site must never
+  require a code change. `src/widgets.rs` SEED_WIDGETS + `src/seed/*.json`
+  are the reference theme's default widget set — replace both for your
+  own theme. Live-path language codes resolve through `lang::config` —
+  never `"fr"`/`"es"` in admin/render code (gate-allow: boot defaults
+  where no DB exists yet).
+- **Themes are data, not code.** A new theme onboards as
+  `themes/specs/foo.toml` (stylesheet patterns, `template_dir`,
+  `body_suffix`, `widget_class`/`sidebar_wrap_class`/`body_class`,
+  `settings_key_prefix`, `taxonomy_map_key`, `tag_base`, `tax_lang`,
+  `tax_pairs` (primary↔twin taxonomy names — `localized_taxonomy`
+  resolves the member for a lang), `tax_labels`) +
+  `templates/theme/foo/base_<lang>.html` — zero `src/`
+  edits. Render/admin call `theme_for_site(conn)` (Rust adapter → TOML
+  spec → `DEFAULT_THEME`), never `theme_traveltour::*` directly;
+  taxonomy-map reads (`cat_path`, `tag_base`, `cat_children`, es-root
+  lang) are the shared `theme_*` API keyed on
+  `ThemeDef::taxonomy_map_key` (with `taxonomy_map_json` as the
+  compile-time fallback). Sites whose stylesheet matches nothing render
+  through `templates/theme/default/` (neutral base, no brand chrome).
+  `tevily` is the TOML demo; `theme_traveltour` stays a Rust adapter
+  because it seeds sidebars/widgets/custom-css and owns the byte-parity
+  `wrap_page_sidebar`.
 - **Builder Live Mode loads scoped frontend CSS.** `templates/front-css/*.scoped.css`
   are the theme/plugin stylesheets fetched once from the live site, prefixed to
   `.gdlr-core-pb-livemode` by `scripts/scope-css.py` (re-run it after refreshing

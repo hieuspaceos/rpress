@@ -25,7 +25,7 @@ pub(crate) const SIDEBARS: &[Sidebar] = &[Sidebar {
     id: "sidebar-tour",
     name: "Tour booking sidebar",
     lang: "all",
-    before: r#"<div class="tourmaster-tour-booking-bar-widget  traveltour-sidebar-area" >"#,
+    before: r#"<div class="tourmaster-tour-booking-bar-widget  traveltour-sidebar-area" >"#, // gate-allow: verbatim WP widget wrapper
     after: r#"</div>"#,
 }];
 
@@ -129,7 +129,9 @@ fn tour_card(conn: &Connection, post_id: i64, site_url: &str, lang: &str, kind_b
     let mut promo_text = os("promo-text");
     if promo_text.is_empty() {
         // same fallback as the archive cards: the tour's style term names
-        let style_tax = if lang == "es" { "estilo" } else { "style" };
+        let theme = crate::plugins::theme_for_site(conn);
+        let primary = crate::lang::config(conn).primary;
+        let style_tax = crate::plugins::localized_taxonomy(theme, "style", lang, &primary);
         let names: Vec<String> = conn
             .prepare(crate::sql!("archive__select_post_term_names"))?
             .query_map(rusqlite::params![post_id, style_tax], |r| r.get::<_, String>(0))?
@@ -283,7 +285,7 @@ fn render_tour_list(
         String::new()
     } else {
         format!(
-            "<h2 class=\"traveltour-widget-title\"><span class=\"traveltour-widget-head-text\">{}</span></h2><span class=\"clear\"></span>",
+            "<h2 class=\"traveltour-widget-title\"><span class=\"traveltour-widget-head-text\">{}</span></h2><span class=\"clear\"></span>", // gate-allow: verbatim WP widget heading
             crate::render_archive::esc(title),
         )
     };
@@ -308,7 +310,7 @@ fn render_tour_list(
             format!("tourmaster-tour-widget-{n}")
         });
     Ok(format!(
-        "<div id=\"{wrapper}\" class=\"widget_text widget widget_custom_html traveltour-widget\"><div class=\"textwidget custom-html-widget\"><div id=\"{inner}\" class=\"widget widget_tourmaster-tour-widget traveltour-widget\">{heading}<div class=\"tourmaster-recent-tour-widget tourmaster-tour-item\">{cards}</div></div></div></div>",
+        "<div id=\"{wrapper}\" class=\"widget_text widget widget_custom_html traveltour-widget\"><div class=\"textwidget custom-html-widget\"><div id=\"{inner}\" class=\"widget widget_tourmaster-tour-widget traveltour-widget\">{heading}<div class=\"tourmaster-recent-tour-widget tourmaster-tour-item\">{cards}</div></div></div></div>", // gate-allow: verbatim WP widget wrapper
         wrapper = crate::render_archive::esc_attr_pub(wrapper),
         inner = crate::render_archive::esc_attr_pub(&inner),
     ))

@@ -458,11 +458,14 @@ pub(crate) fn site_data_feeds(
             // promo ribbon falls back to style term names
             let mut promo_text = opt_s("promo-text");
             if promo_text.is_empty() {
+                let theme = crate::plugins::theme_for_site(conn);
+                let primary = crate::lang::config(conn).primary;
+                let style_tax = crate::plugins::localized_taxonomy(theme, "style", lang, &primary);
                 promo_text = terms
                     .iter()
                     .filter(|t| {
                         t.get("taxonomy").and_then(|x| x.as_str())
-                            == Some(if lang == "es" { "estilo" } else { "style" })
+                            == Some(style_tax)
                     })
                     .filter_map(|t| t.get("name").and_then(|x| x.as_str()))
                     .collect::<Vec<_>>()
@@ -559,18 +562,7 @@ pub(crate) fn site_data_feeds(
                         |r| r.get(0),
                     )
                     .ok();
-                sp = member
-                    .or_else(|| {
-                        let pair: Option<(Option<i64>, Option<i64>)> = conn
-                            .query_row(
-                                sql!("render__select_fr_post_id_es_post_id"),
-                                [sid],
-                                |r| Ok((r.get(0)?, r.get(1)?)),
-                            )
-                            .ok();
-                        pair.and_then(|(f, e)| if f == Some(sid) { e } else { None })
-                    })
-                    .or(sp);
+                sp = member.or(sp); // post_translations retired — group only
             }
         }
         match sp.and_then(|sid| slug_of(conn, sid)) {

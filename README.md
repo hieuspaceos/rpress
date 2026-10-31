@@ -88,8 +88,9 @@ WordPress or integrate a specialized provider.
   language renders under `/<lang>/`, hreflang alternates for every
   translation member, per-language feeds/search/archives, template fallback
   `base_<lang>.html` → primary, sidebar/footer per-lang with primary
-  fallback. Public render is N-language; the admin edit screen still
-  exposes the legacy two-language pairing.
+  fallback. Public render and the admin edit screen are both N-language
+  (`settings.languages`); the legacy `post_translations` pair table was
+  dropped — migration `m05` backfilled it into members.
 - **SPA- Feel navigation** — `nav.js` prefetch-on-hover + same-origin DOM
   swap; theme JS re-init via the `rpress:swapped` hook.
 - **Agent-ready surface** — deterministic CLI commands, markdown mirrors, and
@@ -249,8 +250,42 @@ harvest = true                  # render = origin HTML fetched once at import
 - `harvest = false`/absent → the generic bare-body render path.
   Rust adapters keep priority: a spec colliding with a Rust kind/section
   fails startup on the same duplicate asserts.
-- Full editor/save semantics still need a Rust `PluginAdapter`
-  (`tourmaster` stays Rust); specs cover claim + list + render-by-origin.
+- `[[screens]]` adds a settings screen and `[kinds.metabox]` a flat
+  `post_meta` metabox inside the kind's editor (same
+  `save_settings_fields` path as Rust screens; field kinds:
+  `text`/`textarea`/`select`/`checkbox`/`serialized`/`note`). See
+  `plugins/specs/babe.toml` for both.
+- Full editor/save semantics beyond flat meta still need a Rust
+  `PluginAdapter` (`tourmaster` stays Rust); specs cover claim + list +
+  settings + metabox + render-by-origin.
+
+### Declarative themes — `themes/specs/*.toml`
+
+A new theme onboards without touching `src/`: a spec in
+`themes/specs/` (same `build.rs` codegen as plugin specs) plus
+`templates/theme/<dir>/base_<lang>.html`:
+
+```toml
+stylesheet_patterns = ["tevily", "tevily-*"]   # matched against the site's stylesheet
+template_dir = "tevily"
+body_class = "tevily-body"
+sidebar_wrap_class = "content-container sidebar-wrap"
+settings_key_prefix = "tevily_"
+menu_renderer = "caret"
+```
+
+Render/admin resolve the theme via `theme_for_site(conn)` — Rust
+adapter → TOML spec → `DEFAULT_THEME` — never `theme_traveltour::*`
+directly; taxonomy-map reads (`cat_path`, `tag_base`, `cat_children`,
+per-language taxonomy roots) go through the shared `theme_*` API keyed
+on `ThemeDef::taxonomy_map_key`. A Rust `PluginAdapter::theme()`
+remains the escape hatch and wins on collision (startup panics on a
+duplicate). Sites whose stylesheet matches nothing render through
+`templates/theme/default/` (neutral base, no brand chrome).
+`themes/specs/tevily.toml` is the TOML demo; `theme_traveltour` stays a
+Rust adapter because it seeds sidebars/widgets/custom-css and owns the
+byte-parity `wrap_page_sidebar`. `scripts/check-layers.sh` rules 4–5
+gate new site/theme literals in `src/`.
 
 ### Revolution Slider fragments — `harvested_fragments`
 
@@ -302,6 +337,7 @@ src/
 templates/      minijinja templates — admin/ + public theme shells (base_<lang>.html)
 scripts/        e2e-site.sh — dump→serve workflow; check-layers.sh — architecture gate
 plugins/specs/  declarative plugin adapters (baked into the binary by build.rs)
+themes/specs/  declarative themes (stylesheet match → ThemeDef; same codegen)
 install.sh     one-command Linux VPS installer
 sites/          per-site env configs (source, local URL, clone opt-in)
 www/            persistent public assets (front.css, nav.js, uploads, wp-includes)
@@ -313,16 +349,21 @@ docs/           architecture, code standards, API reference
 Post-split hardening is complete and the E2E migration workflow exists:
 a test-site clone (~4.9 GB wp-content, 294 MB dump) imports, renders
 ~1240 pages with zero failures, and serves locally with all theme/plugin/
-core assets local (no remote fallback needed for normal pages). Remaining
-gaps: admin translation editing is still the legacy FR/ES pairing UI
-(public render is already N-language), `term_translations` pairing is
-two-language, and `pagefind` must be installed for site search. The importer also
-populates the `terms` table from `wp_term_taxonomy` (required by
-category widgets and term archives — Polylang internals are skipped).
+core assets local (no remote fallback needed for normal pages). The
+site-agnostic core landed: admin and public render are N-language
+(`settings.languages`, members-based pairing), `post_translations` is
+dropped via `schema_migrations` `m05`, themes on board declaratively
+(`themes/specs/*.toml` + `templates/theme/<dir>/`), and
+`check-layers.sh` gates new site/theme literals in `src/`. Remaining
+gaps: `term_translations` pairing is still two-language, and `pagefind`
+must be installed for site search. The importer also populates the
+`terms` table from `wp_term_taxonomy` (required by category widgets and
+term archives — Polylang internals are skipped).
 
-Some theme-specific markup lives in `templates/` as the reference theme;
-swapping a theme means swapping templates + `www/` assets — see
-`docs/architecture.md` for the contract nav.js and `filter_content` rely on.
+Theme markup lives in `templates/theme/<dir>/` keyed by the spec's
+`template_dir`; unmatched sites fall back to `templates/theme/default/` —
+see `docs/architecture.md` for the contract nav.js and `filter_content`
+rely on.
 
 ## License
 

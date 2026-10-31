@@ -4,7 +4,7 @@
 //! them to `post_meta` in WP's own shapes (PHP-serialized robots array,
 //! `rank_math_primary_{TaxName}` keys, `rank_math_schema_{Type}`).
 
-use super::{esc, need_auth, site_url, tax_label, App, SiteCtx, Sess};
+use super::{esc, need_auth, site_url, tax_label_for, App, SiteCtx, Sess};
 use crate::db as crud;
 use axum::extract::{Path, State};
 use axum::http::{header, HeaderMap, StatusCode};
@@ -12,18 +12,14 @@ use axum::response::{IntoResponse, Response};
 use rusqlite::Connection;
 use std::collections::{BTreeMap, HashMap};
 
-/// Canonical `rank_math_primary_{X}` suffix per taxonomy slug — from the
-/// live-data audit: WP registered the tour taxonomies capitalized/accented
-/// (`Durée`, `Région`, `Activites`, `Pays`, `Profil`, `Style`); builtin
-/// taxonomies stay lowercase (`category`, `tour_category`).
-fn primary_key_default(tax: &str) -> String {
-    match tax {
-        "duree" => "Durée".into(),
-        "profil" => "Profil".into(),
-        "region" => "Région".into(),
-        "style" => "Style".into(),
-        other => other.into(),
-    }
+/// Canonical `rank_math_primary_{X}` suffix per taxonomy slug — the theme's
+/// `tax_labels` singular (WP registered the tour taxonomies capitalized/
+/// accented: `Durée`, `Région`…); builtin taxonomies stay lowercase
+/// (`category`, `tour_category`).
+fn primary_key_default(conn: &Connection, tax: &str) -> String {
+    crate::plugins::theme_tax_label(crate::plugins::theme_for_site(conn), tax)
+        .map(|(_, sg)| sg.to_string())
+        .unwrap_or_else(|| tax.to_string())
 }
 
 /// Called from `crud::save_post` inside the post-save transaction: rebuilds
@@ -164,9 +160,9 @@ fn tax_map(conn: &Connection, id: i64) -> Vec<(String, String)> {
         // candidate suffixes: canonical label first — when both
         // `rank_math_primary_Région` and `rank_math_primary_region` exist,
         // the label spelling is what WP wrote last.
-        let mut cands = vec![primary_key_default(&t), t.clone(), t.to_lowercase()];
+        let mut cands = vec![primary_key_default(conn, &t), t.clone(), t.to_lowercase()];
         cands.dedup();
-        let mut suffix = primary_key_default(&t);
+        let mut suffix = primary_key_default(conn, &t);
         for c in &cands {
             let key = format!("rank_math_primary_{c}");
             let exists: bool = conn
@@ -301,6 +297,7 @@ pub(crate) fn metabox_html(sc: &SiteCtx, s: &Sess, f: &crud::PostForm) -> String
     };
 
     // primary selects — one per taxonomy the post actually uses
+    let pconn = crate::db::conn(&sc.db).ok();
     let mut primary_html = String::new();
     for (tax, terms) in &terms {
         if tax == "post_tag" {
@@ -310,9 +307,10 @@ pub(crate) fn metabox_html(sc: &SiteCtx, s: &Sess, f: &crud::PostForm) -> String
             .iter()
             .find(|(t, _)| t == tax)
             .map(|(_, x)| x.clone())
-            .unwrap_or_else(|| primary_key_default(tax));
+            .or_else(|| pconn.as_ref().map(|c| primary_key_default(c, tax)))
+            .unwrap_or_else(|| tax.clone());
         let cur = m(&format!("rank_math_primary_{suffix}"));
-        let label = tax_label(tax).1;
+        let label = pconn.as_ref().map(|c| tax_label_for(crate::plugins::theme_for_site(c), tax).1).unwrap_or_else(|| tax.clone());
         let mut sel = format!(
             "<select class=\"rm-in rm-primary\" data-tax=\"{tax}\" style=\"width:100%\"><option value=\"\">—</option>"
         );

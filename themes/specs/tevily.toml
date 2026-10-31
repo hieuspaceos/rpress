@@ -1,0 +1,11 @@
+stylesheet_patterns = ["tevily", "tevily-*", "tevily_*"]
+template_dir = "tevily"
+body_suffix = "wp-theme-tevily wp-child-theme-tevily_child tevily-body-loading elementor-default"
+page_title_wrap = ""
+preferred_locations = ["header-navigation", "main-menu", "main_navigation", "primary"]
+taxonomy_map_key = ""
+widget_class = "widget"
+sidebar_wrap_class = "content-container sidebar-wrap"
+body_class = "tevily-body"
+settings_key_prefix = "tevily_"
+menu_renderer = "caret"

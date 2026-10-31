@@ -357,7 +357,8 @@ fn taxonomy_box(sc: &SiteCtx, tax: &str) -> String {
     let all = lis(&terms);
     terms.sort_by(|a, b| b.count.cmp(&a.count));
     let recent = lis(&terms[..terms.len().min(15)]);
-    tabs_box(&format!("tax-{}", key), &tax_label(tax).1, &recent, &all, &all)
+    let theme = crate::db::conn(&sc.db).map(|c| crate::plugins::theme_for_site(&c)).unwrap_or(&crate::plugins::DEFAULT_THEME);
+    tabs_box(&format!("tax-{}", key), &tax_label_for(theme, tax).1, &recent, &all, &all)
 }
 /// Accordion metabox `(section-key, label)` pairs in render order — shared by
 /// the Screen Options checkboxes and the apply handler. Keys match the
@@ -381,7 +382,8 @@ fn section_keys(sc: &SiteCtx) -> Vec<(String, String)> {
         if matches!(tax.as_str(), "category" | "post_tag" | "nav_menu") {
             continue;
         }
-        v.push((format!("tax-{}", tax.replace('-', "_")), tax_label(&tax).1));
+        let theme = crate::db::conn(&sc.db).map(|c| crate::plugins::theme_for_site(&c)).unwrap_or(&crate::plugins::DEFAULT_THEME);
+        v.push((format!("tax-{}", tax.replace('-', "_")), tax_label_for(theme, &tax).1));
     }
     v
 }
@@ -512,7 +514,7 @@ fn depth_of(it: &crud::MenuItem, all: &[crud::MenuItem]) -> usize {
 }
 
 /// WP type label for `.item-type` (Custom Link / Page / Post / Tour / Category).
-fn type_label(it: &crud::MenuItem) -> String {
+fn type_label(sc: &SiteCtx, it: &crud::MenuItem) -> String {
     match it.item_type.as_str() {
         "post_type" => match it.post_kind.as_str() {
             "page" => "Page".into(),
@@ -528,7 +530,8 @@ fn type_label(it: &crud::MenuItem) -> String {
             if it.term_taxonomy.is_empty() {
                 "Category".into()
             } else {
-                tax_label(&it.term_taxonomy).1
+                let theme = crate::db::conn(&sc.db).map(|c| crate::plugins::theme_for_site(&c)).unwrap_or(&crate::plugins::DEFAULT_THEME);
+                tax_label_for(theme, &it.term_taxonomy).1
             }
         }
         "custom" => "Custom Link".into(),
@@ -710,7 +713,7 @@ Open link in a new tab</label>",
         d = d,
         label = label,
         sub = sub,
-        ty = esc(&type_label(it)),
+        ty = esc(&type_label(sc, it)),
         url_field = url_field,
         adv_fields = adv_fields,
         moves = moves,
@@ -741,7 +744,12 @@ pub(crate) async fn menus_create(
     if name.is_empty() {
         return Redirect::to("/admin/menus?menu=0").into_response();
     }
-    match crud::create_menu(&sc.db, name, "fr") {
+    // New menus default to the site's primary language (N-lang — was
+    // hardwired "fr").
+    let primary = crate::db::conn(&sc.db)
+        .map(|c| crate::lang::config(&c).primary)
+        .unwrap_or_default();
+    match crud::create_menu(&sc.db, name, &primary) {
         Ok(id) => {
             crate::admin::admin::bust_cache(&sc);
             Redirect::to(&format!("/admin/menus?menu={id}&msg=created")).into_response()
@@ -836,7 +844,9 @@ pub(crate) async fn menus_add(
     // Custom link fields ride the same form; add one when a URL was typed.
     if let Some(url) = get("custom-url") {
         let url = url.trim().to_string();
-        if !url.is_empty() && url != "http://" {
+        // Scheme gate (audit M2): `javascript:`/`data:` never enter the
+        // DB — WP's esc_url equivalent, enforced at write AND render.
+        if !url.is_empty() && url != "http://" && crate::url_util::safe_href(&url) {
             let label = get("custom-label").map(|l| l.trim().to_string()).unwrap_or_default();
             items.push(crud::NewItem {
                 label: if label.is_empty() { url.clone() } else { label },
@@ -886,6 +896,10 @@ pub(crate) async fn menus_save(
                 .and_then(|v| v.parse::<i64>().ok())
                 .filter(|p| *p > 0),
             label: map.get(&format!("title-{id}")).cloned().unwrap_or_default(),
+            // Unsafe submitted URL: keep the *submitted* value, never
+            // silently blank it (the save would otherwise destroy an
+            // existing URL). Render-time `safe_href_or_hash` already
+            // neutralizes any unsafe scheme on output.
             url: map.get(&format!("url-{id}")).cloned().unwrap_or_default(),
             title_attr: map.get(&format!("title_attr-{id}")).cloned().unwrap_or_default(),
             target: map

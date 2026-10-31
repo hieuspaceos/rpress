@@ -125,7 +125,7 @@ pub(crate) fn page(conn: &Connection, templates: &Path, ctx: &PostCtx) -> Result
         .iter()
         .map(|(slug, name)| {
             json!({
-                "url": format!("{site}{}/{}/", crate::lang::url_prefix(&lang_cfg, &ctx.lang), crate::plugins::theme_traveltour::cat_path(conn, slug)),
+                "url": format!("{site}{}/{}/", crate::lang::url_prefix(&lang_cfg, &ctx.lang), crate::plugins::theme_cat_path(conn, crate::plugins::theme_for_site(conn), slug)),
                 "name": esc(name),
             })
         })
@@ -295,7 +295,7 @@ pub(crate) fn page(conn: &Connection, templates: &Path, ctx: &PostCtx) -> Result
     // attributes and text nodes — pre-escape at the boundary (templates run
     // AutoEscape::None; `|safe` on names marks them intentionally raw).
     let sidebar_post = crate::widgets::render_sidebar(conn, "sidebar-post", site, &ctx.lang, &ctx.slug, &ctx.tour_base)?;
-    let tag_base = crate::plugins::theme_traveltour::tag_base(conn);
+    let tag_base = crate::plugins::theme_tag_base(conn, crate::plugins::theme_for_site(conn));
     for (k, v) in serde_json::json!({
         "seo_title": esc_attr(&seo_title),
         "seo_desc": seo_desc,
@@ -346,7 +346,7 @@ pub(crate) fn page(conn: &Connection, templates: &Path, ctx: &PostCtx) -> Result
         .get_template("single_post.html")?
         .render(minijinja::Value::from_serialize(Value::Object(tctx)))
         .map_err(|e| anyhow::anyhow!("render single_post.html: {e}"))
-        .map(|html| inject_post_assets(&html, site, ctx.id))?;
+        .map(|html| inject_post_assets(&html, site, ctx.id, crate::plugins::theme_for_site(conn)))?;
     Ok(crate::render::apply_navx(&html, site, &navx, conn, &ctx.lang))
 }
 
@@ -354,7 +354,7 @@ pub(crate) fn page(conn: &Connection, templates: &Path, ctx: &PostCtx) -> Result
 /// from the reference single-post capture (templates/post_assets.txt):
 /// ez-toc + wpDiscuz head CSS, their footer scripts, comment-reply.js, and
 /// the hidden wpDiscuz tail markup (wpdUserContentInfo et al.).
-fn inject_post_assets(html: &str, site: &str, post_id: i64) -> String {
+fn inject_post_assets(html: &str, site: &str, post_id: i64, theme: &crate::plugins::ThemeDef) -> String {
     const ASSETS: &str = include_str!("../templates/post_assets.txt");
     let mut sections = std::collections::HashMap::new();
     let parts: Vec<&str> = ASSETS.split("===").collect();
@@ -379,7 +379,7 @@ fn inject_post_assets(html: &str, site: &str, post_id: i64) -> String {
     // tourmaster-custom (reference enqueue order).
     let head_ez = fill("HEAD_EZ");
     if !head_ez.is_empty() {
-        if let Some(i) = out.find("<link rel='stylesheet' id='traveltour-style-core-css'") {
+        if let Some(i) = out.find(&format!("<link rel='stylesheet' id='{}'", theme.css_link_id)) {
             out.insert_str(i, &head_ez);
         }
     }
@@ -392,7 +392,7 @@ fn inject_post_assets(html: &str, site: &str, post_id: i64) -> String {
     // footer scripts, in reference order.
     let foot_ez = fill("FOOT_EZ");
     if !foot_ez.is_empty() {
-        if let Some(i) = out.find(r#"<script id="traveltour-script-core-js-extra">"#) {
+        if let Some(i) = out.find(&format!(r#"<script id="{}">"#, theme.js_extra_id)) {
             out.insert_str(i, &foot_ez);
         }
     }
@@ -445,12 +445,13 @@ pub(crate) fn fr_date_parts(published: &str) -> (String, String, String, String,
 }
 
 /// Breadcrumb chain = full root→deepest path of the post's deepest category
-/// (WP picks the primary/longest path). Segment list comes from the theme's
-/// taxonomy map via `theme_traveltour::cat_path`.
+/// (WP picks the primary/longest path). Segment list comes from the resolved
+/// theme's taxonomy map via `theme_cat_path`.
 fn breadcrumb_chain(conn: &Connection, cats: &[(String, String)]) -> Vec<(String, String)> {
+    let theme = crate::plugins::theme_for_site(conn);
     let mut best: Vec<(String, String)> = Vec::new();
     for (slug, name) in cats {
-        let mut chain: Vec<(String, String)> = crate::plugins::theme_traveltour::cat_path(conn, slug)
+        let mut chain: Vec<(String, String)> = crate::plugins::theme_cat_path(conn, theme, slug)
             .split('/')
             .map(|s| {
                 let n = cats
@@ -794,8 +795,16 @@ pub(crate) fn filter_content(raw: &str, site: &str, post_id: i64, conn: &Connect
 /// domain lives in `settings.legacy_origin` (set at import time); an empty
 /// value means "no rewrite" so rpress ships domain-free.
 pub(crate) fn rewrite_origin(raw: &str, site: &str, conn: &Connection) -> String {
-    let s = raw.replace("{{ site_url }}", site);
+    // One `legacy_origin` read per render call — the value is a static
+    // import artifact, never changes mid-request.
     let origin = crate::intake::setting(conn, "legacy_origin", "");
+    rewrite_origin_with(raw, site, &origin)
+}
+
+/// Same rewrite with the origin already fetched — hot paths that render
+/// many posts hoist this out of the per-post call.
+pub(crate) fn rewrite_origin_with(raw: &str, site: &str, origin: &str) -> String {
+    let s = raw.replace("{{ site_url }}", site);
     if origin.is_empty() {
         s
     } else {

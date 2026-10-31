@@ -297,12 +297,16 @@ pub async fn serve(db: PathBuf, templates: PathBuf, out: PathBuf, www: PathBuf, 
         .route("/api/generate/status", get(admin::generate_status))
         .route("/api/v1/posts", get(admin::api_posts))
         .route("/api/posts", get(admin::api_posts)) // legacy alias, drop after cutover
-        .route("/intake/form/{slug}", post(admin::intake_form))
-        .route("/intake/comment", post(admin::intake_comment))
-        .route("/intake/review", post(admin::intake_review))
-        .route("/form/{slug}", post(admin::intake_form))
-        .route("/comment", post(admin::intake_comment))
-        .route("/review", post(admin::intake_review))
+        // Intake body cap lives on the ROUTES, not the handler header
+        // check — chunked/CL-less bodies bypass a Content-Length peek
+        // (audit L1). DefaultBodyLimit is a tower layer; 413s before the
+        // extractor reads the body.
+        .route("/intake/form/{slug}", post(admin::intake_form).layer(axum::extract::DefaultBodyLimit::max(36 * 1024)))
+        .route("/intake/comment", post(admin::intake_comment).layer(axum::extract::DefaultBodyLimit::max(36 * 1024)))
+        .route("/intake/review", post(admin::intake_review).layer(axum::extract::DefaultBodyLimit::max(36 * 1024)))
+        .route("/form/{slug}", post(admin::intake_form).layer(axum::extract::DefaultBodyLimit::max(36 * 1024)))
+        .route("/comment", post(admin::intake_comment).layer(axum::extract::DefaultBodyLimit::max(36 * 1024)))
+        .route("/review", post(admin::intake_review).layer(axum::extract::DefaultBodyLimit::max(36 * 1024)))
         .route("/admin/contact", get(contact::forms_page))
         .route("/admin/contact/form/{slug}", get(contact::form_detail))
         .route("/admin/contact/form/{slug}/edit", get(forms_editor::form_edit))
@@ -360,6 +364,7 @@ pub async fn serve(db: PathBuf, templates: PathBuf, out: PathBuf, www: PathBuf, 
     // dependency (60s is inside WP's minute-level schedule semantics).
     {
         let sites = state.sites.clone();
+        let app_tick = state.clone();
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(Duration::from_secs(60)).await;
@@ -369,6 +374,7 @@ pub async fn serve(db: PathBuf, templates: PathBuf, out: PathBuf, www: PathBuf, 
                         eprintln!("bridge: idle kill {k}");
                     }
                 }
+                sweep_sessions(&app_tick);
             }
         });
     }
@@ -487,12 +493,15 @@ fn cookie_all<'a>(headers: &'a HeaderMap, name: &str) -> Vec<String> {
 pub(crate) fn get_sess<'a>(app: &'a App, sc: &'a SiteCtx, headers: &HeaderMap) -> Option<Sess> {
     // WP `wp_schedule_publish` equivalent lives on the serve() minute tick
     // (see above): auth must not be required for scheduled posts to go live.
-    let mut map = app.sessions.lock();
+    //
+    // Lock discipline (audit P2): the sessions mutex guards MAP OPS ONLY.
+    // SQLite calls (session_get/set_csrf/touch — each a fresh conn open +
+    // 6 PRAGMAs + query, ~100-500µs) run outside the lock or every admin
+    // request serializes behind another request's disk I/O.
     for tok in cookie_all(headers, SESSION_COOKIE) {
         // Rehydrate from the `sessions` table on a map miss — cookie logins
-        // now survive a restart (sessions are persisted, decision B). On
-        // any hit, live or rehydrated, `last_seen` is stamped below.
-        if !map.contains_key(&tok) {
+        // now survive a restart (sessions are persisted, decision B).
+        if !app.sessions.lock().contains_key(&tok) {
             if let Ok(Some((_t, user_id, email, role, csrf))) = crud::users::session_get(&sc.db, &tok) {
                 // Persisted csrf survives restarts so a mid-edit form still
                 // submits (M20). '' = row written before the column existed:
@@ -508,39 +517,47 @@ pub(crate) fn get_sess<'a>(app: &'a App, sc: &'a SiteCtx, headers: &HeaderMap) -
                 } else {
                     csrf
                 };
-                map.insert(
-                    tok.clone(),
-                    Sess {
-                        site: sc.slug.clone(),
-                        site_name: sc.name.clone(),
-                        user_id,
-                        email,
-                        role,
-                        db: sc.db.clone(),
-                        csrf,
-                        exp: Instant::now() + Duration::from_secs(12 * 3600),
-                        touched: Instant::now(),
-                    },
-                );
+                // or_insert: a concurrent task may have rehydrated the same
+                // token while we were doing DB I/O — keep the existing
+                // entry (identical data), don't clobber.
+                app.sessions.lock().entry(tok.clone()).or_insert(Sess {
+                    site: sc.slug.clone(),
+                    site_name: sc.name.clone(),
+                    user_id,
+                    email,
+                    role,
+                    db: sc.db.clone(),
+                    csrf,
+                    exp: Instant::now() + Duration::from_secs(12 * 3600),
+                    touched: Instant::now(),
+                });
             }
         }
-        let valid = match map.get(&tok) {
-            Some(s) => s.exp > Instant::now() && s.site == sc.slug,
-            None => false,
+        let (valid, stale) = {
+            let map = app.sessions.lock();
+            match map.get(&tok) {
+                Some(s) => (
+                    s.exp > Instant::now() && s.site == sc.slug,
+                    s.touched.elapsed() > Duration::from_secs(300),
+                ),
+                None => (false, false),
+            }
         };
         if !valid {
-            map.remove(&tok);
+            app.sessions.lock().remove(&tok);
             continue;
         }
-        // Rolling expiry, matching session_touch's 12h bump — a live map
-        // entry must not outlive its inactivity window. The DB write only
-        // runs when the session was last touched >5min ago (per-request
-        // UPDATE was L).
-        let s = map.get_mut(&tok)?;
-        if s.touched.elapsed() > Duration::from_secs(300) {
+        // Rolling expiry, matching session_touch's 12h bump. The DB write
+        // runs unlocked; touched is stamped after so a crashed touch can't
+        // starve the row (worst case: one redundant UPDATE next request).
+        if stale {
             let _ = crud::users::session_touch(&sc.db, &tok);
-            s.touched = Instant::now();
+            if let Some(s) = app.sessions.lock().get_mut(&tok) {
+                s.touched = Instant::now();
+            }
         }
+        let map = app.sessions.lock();
+        let s = map.get(&tok)?;
         return Some(Sess {
             site: s.site.clone(),
             site_name: s.site_name.clone(),
@@ -554,6 +571,20 @@ pub(crate) fn get_sess<'a>(app: &'a App, sc: &'a SiteCtx, headers: &HeaderMap) -
         });
     }
     None
+}
+
+/// Minute-tick sweep (audit M-sessions): the in-memory map only evicted
+/// expired entries when their token was re-presented, so dead sessions
+/// grew forever. Called from the serve() tick alongside publish_due.
+/// The table purge is bounded DELETE on already-expired rows.
+pub(crate) fn sweep_sessions(app: &App) {
+    let now = Instant::now();
+    app.sessions.lock().retain(|_, s| s.exp > now);
+    for sc in app.sites.values() {
+        if let Ok(c) = crate::db::conn(&sc.db) {
+            let _ = c.execute(sql!("sessions__delete_expired"), []);
+        }
+    }
 }
 
 pub(crate) fn html_page(s: &Sess, title: &str, body: &str, htmx: bool) -> Html<String> {
@@ -1119,7 +1150,7 @@ async fn bridge_dispatch(
     let tpl = sc.templates.clone();
     /* The bridge's wp.db hosts every mounted plugin AND the site's theme —
        writes can land in keys owned by other adapters (e.g. skins write
-       `traveltour_color` — the theme's option, not `gdlr-core-%`). Pull with
+       `traveltour_color` — gate-allow: example key name in comment) — the theme's option, not `gdlr-core-%`). Pull with
        the union of ALL adapters' write_specs, not just the dispatched one:
        the whitelist is the safety boundary, not the dispatch adapter. */
     let specs: Vec<crate::admin::bridge::pull::WriteSpec> = plugins::adapters()
@@ -1207,23 +1238,25 @@ async fn gdlr_ajax() -> Response {
     Redirect::temporary("/admin/plugins/goodlayers/ajax").into_response()
 }
 
-/// Human label for a taxonomy (shared with tax.rs).
+/// Human label for a taxonomy (shared with tax.rs). Theme-claimed
+/// taxonomies override via `ThemeDef::tax_labels`; core + generic
+/// taxonomies come from the builtin table.
+pub(crate) fn tax_label_for(theme: &crate::plugins::ThemeDef, tax: &str) -> (String, String) {
+    if let Some((pl, sg)) = crate::plugins::theme_tax_label(theme, tax) {
+        return (pl.to_string(), sg.to_string());
+    }
+    tax_label(tax)
+}
+
+/// Core-taxonomy labels — `tax_label_for` wraps this with the theme's
+/// `tax_labels` table when a site/theme conn is available.
 pub(crate) fn tax_label(tax: &str) -> (String, String) {
     match tax {
         "category" => ("Categories".into(), "Category".into()),
         "post_tag" => ("Tags".into(), "Tag".into()),
-        "duree" => ("Durée".into(), "Durée".into()),
-        "duracion" => ("Duración".into(), "Duración".into()),
-        "region" | "region-es" => ("Región".into(), "Región".into()),
         "style" => ("Style".into(), "Style".into()),
-        "estilo" => ("Estilo".into(), "Estilo".into()),
-        "profil" => ("Profil".into(), "Profil".into()),
-        "perfil" => ("Perfil".into(), "Perfil".into()),
-        "activites" | "Activites" => ("Activités".into(), "Activité".into()),
-        "pays" | "Pays" => ("Pays".into(), "Pays".into()),
         "tour-activity" => ("Tour Activity".into(), "Tour Activity".into()),
         "tour-age" => ("Tour Age".into(), "Tour Age".into()),
-        "viet" => ("Viet".into(), "Viet".into()),
         _ => (tax.replace('-', " "), tax.replace('-', " ")),
     }
 }

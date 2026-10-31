@@ -16,8 +16,9 @@ pub(crate) struct TaxForm {
 
 
 
-fn tax_labels(tax: &str) -> (String, String) {
-    let (pl, sg) = tax_label(tax);
+fn tax_labels(db: &std::path::Path, tax: &str) -> (String, String) {
+    let theme = crate::db::conn(db).map(|c| crate::plugins::theme_for_site(&c)).unwrap_or(&crate::plugins::DEFAULT_THEME);
+    let (pl, sg) = tax_label_for(theme, tax);
     (pl.to_string(), sg)
 }
 
@@ -137,7 +138,7 @@ fn emit_kids(pid: i64, depth: usize, all: &[crud::TermRow], cur: i64, desc: &[i6
 pub(crate) fn tax_page_html(db: &std::path::Path, s: &Sess, tax: &str, edit: Option<&crud::TermRow>, search_q: &str, page: i64) -> String {
     // WP term screens all share one table; only the labels change.
     // category/post_tag are the WP defaults, everything else = tour taxonomy.
-    let (title, noun) = tax_labels(tax);
+    let (title, noun) = tax_labels(db, tax);
     let search_val = esc(search_q);
     let opts = crud::screen_opts(db, s.user_id, tax);
     let per_page = opts.per_page.clamp(1, 500);
@@ -281,6 +282,17 @@ pub(crate) fn tax_page_html(db: &std::path::Path, s: &Sess, tax: &str, edit: Opt
     };
     let h1_suffix = if edit.is_some() { " Edit Item" } else { "" };
     let pager = term_pager(&format!("/admin/tax/{tax}"), search_q, page, per_page, total);
+    // Quick-edit lang options from the site config — never fr/es literals.
+    let lang_opts = crate::db::conn(db)
+        .map(|c| {
+            crate::lang::config(&c)
+                .langs
+                .iter()
+                .map(|l| format!("<option value=\"{}\">{}</option>", esc(l), esc(&crate::lang::lang_label(l))))
+                .collect::<Vec<_>>()
+                .join("")
+        })
+        .unwrap_or_default();
     format!(
         r##"{chrome}<div class="wrap nosubsub">
 {screen_meta}
@@ -348,7 +360,7 @@ pub(crate) fn tax_page_html(db: &std::path::Path, s: &Sess, tax: &str, edit: Opt
 <fieldset><legend class="inline-edit-legend">Quick Edit</legend>
 <label class="inline-edit-group" style="display:block;margin:6px 0"><span class="title" style="display:inline-block;width:90px">Name</span><input form="qe-terms-form" type="text" name="name" id="qe-t-name" style="width:60%"></label>
 <label class="inline-edit-group" style="display:block;margin:6px 0"><span class="title" style="display:inline-block;width:90px">Slug</span><input form="qe-terms-form" type="text" name="slug" id="qe-t-slug" style="width:60%"></label>
-<label class="inline-edit-group" style="display:block;margin:6px 0"><span class="title" style="display:inline-block;width:90px">Language</span><select form="qe-terms-form" name="lang" id="qe-t-lang"><option value="">—</option><option value="fr">Français</option><option value="es">Español</option></select></label>
+<label class="inline-edit-group" style="display:block;margin:6px 0"><span class="title" style="display:inline-block;width:90px">Language</span><select form="qe-terms-form" name="lang" id="qe-t-lang"><option value="">—</option>{lang_opts}</select></label>
 <p class="submit inline-edit-save" style="margin-top:8px">
 <button form="qe-terms-form" type="submit" class="button button-primary">Update {noun}</button>
 <button type="button" class="button" id="qe-t-cancel">Cancel</button>
@@ -411,6 +423,7 @@ document.addEventListener('click',function(e){{
         desc_col = col("description"),
         slug_col = col("slug"),
         count_col = col("count"),
+        lang_opts = lang_opts,
     )
 }
 /// Menu section a taxonomy belongs under: routed by the owning kind's

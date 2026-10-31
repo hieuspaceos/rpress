@@ -1,6 +1,6 @@
 use rusqlite::Connection;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct LangConfig {
     pub primary: String,
     pub langs: Vec<String>,
@@ -128,7 +128,32 @@ pub fn template_name(
     } else {
         [theme_dir, Some(templates)].into_iter().flatten().collect()
     };
-    for name in [template_for(lang), template_for(&cfg.primary), "base_fr.html".into(), "base_es.html".into(), "base_en.html".into()] {
+    // Probe order within the chosen dirs: this lang's base, the primary's,
+    // then EVERY shipped base in ASCII order — a single-base theme
+    // (tevily/base_en) must win over a fr/es guess at another dir.
+    let mut names: Vec<String> = vec![template_for(lang), template_for(&cfg.primary)];
+    for d in &dirs {
+        let mut bases: Vec<String> = std::fs::read_dir(d)
+            .map(|rd| {
+                rd.flatten()
+                    .filter(|e| {
+                        e.file_name().to_string_lossy().starts_with("base_")
+                            && e.path().is_file()
+                    })
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        // read_dir order is arbitrary — sort so the fallback base is
+        // deterministic across runs and dir precedence holds.
+        bases.sort();
+        for n in bases {
+            if !names.contains(&n) {
+                names.push(n);
+            }
+        }
+    }
+    for name in names {
         if dirs.iter().any(|d| d.join(&name).exists()) {
             return name;
         }
@@ -187,6 +212,46 @@ pub fn html_lang(lang: &str) -> String {
     }
 }
 
+
+/// Native display name for admin lang pickers (`fr`→`Français`). Unknown
+/// codes render the code itself — honest rather than a wrong label.
+pub fn lang_label(lang: &str) -> String {
+    match lang {
+        "fr" => "Français".into(),
+        "es" => "Español".into(),
+        "en" => "English".into(),
+        "de" => "Deutsch".into(),
+        "it" => "Italiano".into(),
+        "pt" => "Português".into(),
+        "nl" => "Nederlands".into(),
+        "vi" => "Tiếng Việt".into(),
+        "ja" => "日本語".into(),
+        "zh" | "zh-cn" | "zh-hans" => "中文".into(),
+        "ko" => "한국어".into(),
+        "ar" => "العربية".into(),
+        "ru" => "Русский".into(),
+        "th" => "ไทย".into(),
+        other => other.to_string(),
+    }
+}
+
+/// Two-letter lang → regional-indicator flag emoji (`fr`→`🇫🇷`). Codes
+/// whose flag differs from the language code map through `flag_file`'s
+/// country table; non-2-letter codes return the code verbatim.
+pub fn flag_emoji(lang: &str) -> String {
+    let file = flag_file(lang);
+    let code = file.trim_end_matches(".svg").trim_end_matches(".lang");
+    // `ar.lang.svg` is a *language* file, not a country code — `ar` would
+    // resolve to 🇦🇷 (Argentina). Arabic gets Saudi Arabia, what most
+    // Polylang flag sets mean by "Arabic".
+    let code = if code == "ar" && lang == "ar" { "sa" } else { code };
+    if code.len() != 2 || !code.bytes().all(|b| b.is_ascii_lowercase()) {
+        return lang.to_string();
+    }
+    let b = code.as_bytes();
+    let c = |x: u8| char::from_u32(0x1F1E6 + (x - b'a') as u32).unwrap_or(' ');
+    format!("{}{}", c(b[0]), c(b[1]))
+}
 /// Capitalized month names for `date_i18n('F Y')`-style output (tour_search
 /// 'month' combobox). French is the fallback — the reference site emits it
 /// for the primary language and the combobox is a UI nicety, not a locale

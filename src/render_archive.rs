@@ -107,116 +107,118 @@ pub(crate) fn term_by_path(conn: &Connection, taxonomy: &str, slug: &str) -> Opt
 /// map. Unknown terms fall back to the local `terms.id`.
 pub(crate) fn wp_term_id(taxonomy: &str, slug: &str) -> Option<i64> {
     const IDS: &[(&str, &str, i64)] = &[
-        ("region", "voyage-au-cambodge", 170),
-        ("region", "voyage-au-vietnam", 172),
-        ("region", "voyage-combine-vietnam-cambodge-laos", 173),
-        ("region", "voyage-au-vietnam-du-nord", 213),
-        ("region", "voyage-au-vietnam-du-sud", 214),
-        ("region", "voyage-au-centre-du-vietnam", 217),
-        ("profil", "rejoindre-un-groupe", 187),
-        ("profil", "voyage-en-couple", 188),
-        ("profil", "voyage-en-famille", 189),
-        ("profil", "voyage-entre-amis", 190),
-        ("duree", "circuit-cambodge-une-semaine", 723),
-        ("duree", "circuit-vietnam-17-jours-22-jours", 1006),
-        ("duree", "circuit-vietnam-cambodge-16-jours", 1015),
-        ("duree", "circuit-vietnam-cambodge-20-jours", 1017),
-        ("duree", "circuit-vietnam-14-jours", 1021),
-        ("duree", "circuit-vietnam-cambodge-19-jours", 1024),
-        ("duree", "circuit-vietnam-10-jours-12-jours", 166),
-        ("duree", "circuit-vietnam-15-jours", 167),
-        ("duree", "circuit-vietnam-3-semaines", 168),
-        ("duree", "excursion-1-2-3-4-jours-au-vietnam", 209),
-        ("style", "bien-etre", 178),
-        ("style", "bike-tour", 179),
-        ("style", "charme-chic", 180),
-        ("style", "croisiere", 181),
-        ("style", "gastronomie", 182),
-        ("style", "incontournables", 183),
-        ("style", "rencontre-ethnique", 184),
-        ("style", "trek-randonnee", 185),
-        ("style", "voyage-moto", 186),
-        ("style", "tous-styles", 191),
-        ("style", "circuit-extension-plage", 210),
-        ("style", "vietnam-en-liberte", 212),
+        ("region", "voyage-au-cambodge", 170), // gate-allow: reference-site WP term id (see fn doc)
+        ("region", "voyage-au-vietnam", 172), // gate-allow: reference-site WP term id (see fn doc)
+        ("region", "voyage-combine-vietnam-cambodge-laos", 173), // gate-allow: reference-site WP term id (see fn doc)
+        ("region", "voyage-au-vietnam-du-nord", 213), // gate-allow: reference-site WP term id (see fn doc)
+        ("region", "voyage-au-vietnam-du-sud", 214), // gate-allow: reference-site WP term id (see fn doc)
+        ("region", "voyage-au-centre-du-vietnam", 217), // gate-allow: reference-site WP term id (see fn doc)
+        ("profil", "rejoindre-un-groupe", 187), // gate-allow: reference-site WP term id (see fn doc)
+        ("profil", "voyage-en-couple", 188), // gate-allow: reference-site WP term id (see fn doc)
+        ("profil", "voyage-en-famille", 189), // gate-allow: reference-site WP term id (see fn doc)
+        ("profil", "voyage-entre-amis", 190), // gate-allow: reference-site WP term id (see fn doc)
+        ("duree", "circuit-cambodge-une-semaine", 723), // gate-allow: reference-site WP term id (see fn doc)
+        ("duree", "circuit-vietnam-17-jours-22-jours", 1006), // gate-allow: reference-site WP term id (see fn doc)
+        ("duree", "circuit-vietnam-cambodge-16-jours", 1015), // gate-allow: reference-site WP term id (see fn doc)
+        ("duree", "circuit-vietnam-cambodge-20-jours", 1017), // gate-allow: reference-site WP term id (see fn doc)
+        ("duree", "circuit-vietnam-14-jours", 1021), // gate-allow: reference-site WP term id (see fn doc)
+        ("duree", "circuit-vietnam-cambodge-19-jours", 1024), // gate-allow: reference-site WP term id (see fn doc)
+        ("duree", "circuit-vietnam-10-jours-12-jours", 166), // gate-allow: reference-site WP term id (see fn doc)
+        ("duree", "circuit-vietnam-15-jours", 167), // gate-allow: reference-site WP term id (see fn doc)
+        ("duree", "circuit-vietnam-3-semaines", 168), // gate-allow: reference-site WP term id (see fn doc)
+        ("duree", "excursion-1-2-3-4-jours-au-vietnam", 209), // gate-allow: reference-site WP term id (see fn doc)
+        ("style", "bien-etre", 178), // gate-allow: reference-site WP term id (see fn doc)
+        ("style", "bike-tour", 179), // gate-allow: reference-site WP term id (see fn doc)
+        ("style", "charme-chic", 180), // gate-allow: reference-site WP term id (see fn doc)
+        ("style", "croisiere", 181), // gate-allow: reference-site WP term id (see fn doc)
+        ("style", "gastronomie", 182), // gate-allow: reference-site WP term id (see fn doc)
+        ("style", "incontournables", 183), // gate-allow: reference-site WP term id (see fn doc)
+        ("style", "rencontre-ethnique", 184), // gate-allow: reference-site WP term id (see fn doc)
+        ("style", "trek-randonnee", 185), // gate-allow: reference-site WP term id (see fn doc)
+        ("style", "voyage-moto", 186), // gate-allow: reference-site WP term id (see fn doc)
+        ("style", "tous-styles", 191), // gate-allow: reference-site WP term id (see fn doc)
+        ("style", "circuit-extension-plage", 210), // gate-allow: reference-site WP term id (see fn doc)
+        ("style", "vietnam-en-liberte", 212), // gate-allow: reference-site WP term id (see fn doc)
         // taxonomy='category': extracted from the wpcategorieswidget-9
         // capture (cat-item-N ↔ slug anchors) — the wp term ids WP printed
         // on the blog sidebar.
-        ("category", "guide-de-voyage-vietnam", 120),
-        ("category", "conseils-pratiques-vietnam", 121),
-        ("category", "idees-de-circuit", 126),
-        ("category", "circuit-au-vietnam", 127),
-        ("category", "croisiere", 713),
-        ("category", "randonnee-au-vietnam", 128),
-        ("category", "top-choses-a-faire-a-voir", 129),
-        ("category", "vietnam-en-famille", 687),
-        ("category", "voyage-de-luxe-vietnam", 130),
-        ("category", "voyage-en-couple-de-noce-vietnam", 131),
-        ("category", "ou-dormir", 124),
-        ("category", "quand-partir-au-vietnam", 122),
-        ("category", "tout-sur-le-visa-vietnam", 123),
-        ("category", "voyage-en-asie-du-sud-est", 125),
-        ("category", "le-vietnam", 112),
-        ("category", "actualites-du-tourisme", 113),
-        ("category", "cuisine-vietnamienne", 115),
-        ("category", "boisson-vietnamienne", 117),
-        ("category", "plats-vietnamiens", 116),
-        ("category", "adresses-recommandees", 118),
-        ("category", "recettes-faciles", 119),
-        ("category", "culture-histoire", 114),
-        ("category", "sites-a-explorer", 174),
-        ("category", "montagnes-du-nord", 715),
-        ("category", "bac-ha", 695),
-        ("category", "ha-giang", 640),
-        ("category", "mai-chau", 689),
-        ("category", "mu-cang-chai", 208),
-        ("category", "sapa", 623),
-        ("category", "station-balneaire-vietnam", 195),
-        ("category", "ile-de-con-dao", 707),
-        ("category", "nha-trang", 203),
-        ("category", "phan-thiet", 709),
-        ("category", "phu-quoc", 202),
-        ("category", "vung-tau", 769),
-        ("category", "vietnam-du-centre", 193),
-        ("category", "da-nang", 644),
-        ("category", "hauts-plateaux-vietnam", 215),
-        ("category", "hoian", 200),
-        ("category", "hue", 204),
-        ("category", "quang-binh", 642),
-        ("category", "vietnam-du-nord", 192),
-        ("category", "baie-dhalong", 206),
-        ("category", "dien-bien-phu", 711),
-        ("category", "hanoi", 199),
-        ("category", "ninh-binh", 196),
-        ("category", "parc-national-de-cat-ba", 207),
-        ("category", "vietnam-du-sud", 194),
-        ("category", "can-tho", 1036),
-        ("category", "chau-doc", 705),
-        ("category", "delta-du-mekong", 201),
-        ("category", "dong-nai", 736),
-        ("category", "saigon-ho-chi-minh", 205),
-        ("category", "voyages-au-cambodge", 198),
-        ("category", "angkor-siem-reap", 197),
-        ("category", "battambang", 721),
-        ("category", "kampot", 957),
-        ("category", "phnom-penh", 693),
+        ("category", "guide-de-voyage-vietnam", 120), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "conseils-pratiques-vietnam", 121), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "idees-de-circuit", 126), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "circuit-au-vietnam", 127), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "croisiere", 713), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "randonnee-au-vietnam", 128), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "top-choses-a-faire-a-voir", 129), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "vietnam-en-famille", 687), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "voyage-de-luxe-vietnam", 130), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "voyage-en-couple-de-noce-vietnam", 131), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "ou-dormir", 124), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "quand-partir-au-vietnam", 122), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "tout-sur-le-visa-vietnam", 123), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "voyage-en-asie-du-sud-est", 125), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "le-vietnam", 112), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "actualites-du-tourisme", 113), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "cuisine-vietnamienne", 115), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "boisson-vietnamienne", 117), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "plats-vietnamiens", 116), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "adresses-recommandees", 118), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "recettes-faciles", 119), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "culture-histoire", 114), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "sites-a-explorer", 174), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "montagnes-du-nord", 715), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "bac-ha", 695), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "ha-giang", 640), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "mai-chau", 689), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "mu-cang-chai", 208), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "sapa", 623), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "station-balneaire-vietnam", 195), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "ile-de-con-dao", 707), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "nha-trang", 203), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "phan-thiet", 709), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "phu-quoc", 202), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "vung-tau", 769), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "vietnam-du-centre", 193), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "da-nang", 644), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "hauts-plateaux-vietnam", 215), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "hoian", 200), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "hue", 204), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "quang-binh", 642), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "vietnam-du-nord", 192), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "baie-dhalong", 206), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "dien-bien-phu", 711), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "hanoi", 199), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "ninh-binh", 196), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "parc-national-de-cat-ba", 207), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "vietnam-du-sud", 194), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "can-tho", 1036), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "chau-doc", 705), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "delta-du-mekong", 201), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "dong-nai", 736), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "saigon-ho-chi-minh", 205), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "voyages-au-cambodge", 198), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "angkor-siem-reap", 197), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "battambang", 721), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "kampot", 957), // gate-allow: reference-site WP term id (see fn doc)
+        ("category", "phnom-penh", 693), // gate-allow: reference-site WP term id (see fn doc)
     ];
     IDS.iter()
         .find(|(t, s, _)| *t == taxonomy && *s == slug)
         .map(|(_, _, id)| *id)
 }
 
-/// WP taxonomy label shown as `traveltour-page-caption`.
-fn tax_label(taxonomy: &str, lang: &str) -> &'static str {
+/// WP taxonomy label shown as the page-caption — theme-declared pairs
+/// first (`ThemeDef::tax_labels`), then the localized generic labels.
+/// `theme` + `conn` come from the archive page's already-open context.
+fn tax_label_for(theme: &'static crate::plugins::ThemeDef, taxonomy: &str, lang: &str) -> String {
+    if let Some((plural, _)) = crate::plugins::theme_tax_label(theme, taxonomy) {
+        return plural.to_string();
+    }
     match taxonomy {
-        "profil" | "perfil" => "Profil",
-        "region" | "region-es" => "Région",
-        "duree" | "duracion" => "Durée",
-        "style" | "estilo" => "Style",
         "category" => crate::lang::t(lang, "category_label"),
         "post_tag" => crate::lang::t(lang, "tag_label"),
         _ => crate::lang::t(lang, "term_label"),
     }
+    .to_string()
 }
 
 
@@ -322,7 +324,15 @@ pub(crate) fn page(
     let member_base = tax_kind_def
         .and_then(|d| d.url_base)
         .unwrap_or(&ctx.kind_base);
-    let es = lang == "es" || (!is_post_tax && matches!(term.taxonomy.as_str(), "region-es" | "perfil" | "duracion" | "estilo"));
+    // Term language: the URL's `ctx.lang` for shared taxonomies, the
+    // theme's `tax_lang` mapping for adapter-owned ones (region-es→es
+    // style pairs declared as data, not literals).
+    let theme = crate::plugins::theme_for_site(conn);
+    let term_lang: &str = if is_post_tax {
+        lang
+    } else {
+        crate::plugins::theme_tax_lang(theme, &term.taxonomy, lang)
+    };
     let meta1 = |id: i64, key: &str| -> String {
         conn.query_row(
             sql!("archive__select_meta_value"),
@@ -336,8 +346,8 @@ pub(crate) fn page(
     let prefix = crate::lang::url_prefix(&lang_cfg, lang);
     let term_url_path = |tax: &str, slug: &str, prefix: &str| -> String {
         match tax {
-            "category" => format!("{prefix}/{}/", crate::plugins::theme_traveltour::cat_path(conn, slug)),
-            "post_tag" => format!("{prefix}/{}/{slug}/", crate::plugins::theme_traveltour::tag_base(conn)),
+            "category" => format!("{prefix}/{}/", crate::plugins::theme_cat_path(conn, crate::plugins::theme_for_site(conn), slug)),
+            "post_tag" => format!("{prefix}/{}/{slug}/", crate::plugins::theme_tag_base(conn, crate::plugins::theme_for_site(conn))),
             t => {
                 let base = tax_adapter
                     .and_then(|a| a.taxonomy_base(t))
@@ -362,8 +372,9 @@ pub(crate) fn page(
         .ok()
     {
         // Twin language: `-{lang}` taxonomy suffix when configured, else
-        // the legacy ES taxonomies, else the non-current lang (2-lang
-        // sites — the pair table only knows primary↔other anyway).
+        // the theme's `tax_lang` mapping for the twin taxonomy, else the
+        // non-current lang (2-lang sites — the pair table only knows
+        // primary↔other anyway).
         let suffixed = lang_cfg
             .langs
             .iter()
@@ -372,10 +383,9 @@ pub(crate) fn page(
             l
         } else if is_post_tax {
             lang_cfg.langs.iter().find(|l| *l != lang).map(|s| s.as_str()).unwrap_or(&lang_cfg.primary)
-        } else if ttax == "estilo" || ttax == "duracion" || ttax == "perfil" {
-            "es"
         } else {
-            &lang_cfg.primary
+            let mapped = crate::plugins::theme_tax_lang(theme, &ttax, &lang_cfg.primary);
+            if mapped != lang_cfg.primary { mapped } else { &lang_cfg.primary }
         };
         let twin_prefix = crate::lang::url_prefix(&lang_cfg, twin_lang);
         let twin_url = format!("{site_url}{}", term_url_path(&ttax, &tslug, &twin_prefix));
@@ -451,7 +461,7 @@ pub(crate) fn page(
             let cat_links: Vec<Value> = pcats
                 .iter()
                 .map(|(s, n)| json!({
-                    "url": format!("{site_url}{prefix}/{}/", crate::plugins::theme_traveltour::cat_path(conn, s)),
+                    "url": format!("{site_url}{prefix}/{}/", crate::plugins::theme_cat_path(conn, crate::plugins::theme_for_site(conn), s)),
                     "name": esc(n),
                 }))
                 .collect();
@@ -495,7 +505,7 @@ pub(crate) fn page(
             let mut promo_text = os("promo-text");
             if promo_text.is_empty() {
                 // ribbon text falls back to the tour's style term names
-                let style_tax = if es { "estilo" } else { "style" };
+                let style_tax = crate::plugins::localized_taxonomy(theme, "style", term_lang, &lang_cfg.primary);
                 let names: Vec<String> = {
                     let mut t = conn.prepare(sql!("archive__select_post_term_names"))?;
                     let names: Vec<String> = t
@@ -563,8 +573,11 @@ pub(crate) fn page(
     };
 
     let body_class = format!(
-        "archive tax-{} term-{} term-{} wp-theme-traveltour wp-child-theme-traveltour-child gdlr-core-body tourmaster-template-archive tourmaster-body metaslider-plugin traveltour-body traveltour-body-front traveltour-full  traveltour-with-sticky-navigation gdlr-core-link-to-lightbox",
-        term.taxonomy.to_lowercase(), term.slug, term.wp_id
+        "archive tax-{} term-{} term-{} {} tourmaster-template-archive",
+        term.taxonomy.to_lowercase(),
+        term.slug,
+        term.wp_id,
+        crate::plugins::theme_for_site(conn).body_suffix
     );
     let seo_desc = if description.is_empty() {
         String::new()
@@ -610,7 +623,7 @@ pub(crate) fn page(
         "og_type": "website",
         "og_updated": og_updated.map(|t| format!("{}+00:00", t.replace(' ', "T"))).unwrap_or_default(),
         "body_class": body_class,
-        "tax_label": tax_label(&term.taxonomy, lang),
+        "tax_label": tax_label_for(theme, &term.taxonomy, lang),
         "banner": &banner,
         "description": description,
         "tours": cards,
@@ -641,16 +654,18 @@ pub(crate) fn page(
         .with_context(|| format!("render {tpl}"))?;
 
     // Splice the page-title banner before .traveltour-page-wrapper.
-    const WRAPPER: &str = "<div class=\"traveltour-page-wrapper\" id=\"traveltour-page-wrapper\" >";
+    const WRAPPER: &str = "<div class=\"traveltour-page-wrapper\" id=\"traveltour-page-wrapper\" >"; // gate-allow: splice anchor must match the template's literal class
     let bg_attr = if banner.is_empty() {
         String::new()
     } else {
         format!(" style=\"background-image: url({banner}) ;\"")
     };
-    let title_wrap = format!(
-        "<div class=\"traveltour-page-title-wrap  traveltour-style-large traveltour-center-align\"{bg_attr} ><div class=\"traveltour-header-transparent-substitute\" ></div><div class=\"traveltour-page-title-overlay\"  ></div><div class=\"traveltour-page-title-container traveltour-container\" ><div class=\"traveltour-page-title-content traveltour-item-pdlr\"  ><h3 class=\"traveltour-page-caption\"  >{}</h3><h1 class=\"traveltour-page-title\"  >{}</h1></div></div></div>",
-        esc(&tax_label(&term.taxonomy, lang)),
-        esc(&term.name)
+    // `theme` resolved above (same site, same conn).
+    let title_wrap = (theme.page_title_wrap)(
+        theme,
+        &bg_attr,
+        Some(&esc(&tax_label_for(theme, &term.taxonomy, lang))),
+        &esc(&term.name),
     );
     if let Some(p) = html.find(WRAPPER) {
         html = format!("{}{}\t{}", &html[..p], title_wrap, &html[p..]);

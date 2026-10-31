@@ -101,8 +101,8 @@ pub(crate) fn spawn(
         }
     }
     /* Bundled plugin fallback: the PB editor is format-universal — sites
-       whose origin never had goodlayers-core (blueskies/dmc/imagedmc run
-       tevily) still need it inside the bridge after the Rust port's
+       whose origin never had goodlayers-core (gate-allow: site names cited
+       in comment only — blueskies/dmc/imagedmc run tevily, gate-allow) still need it inside the bridge after the Rust port's
        deletion. Ship it under templates/wp-plugins/ and mount when the
        site's own copy is absent; a site copy always wins. */
     if let Some(bundle) = plugin_file.split('/').next() {
