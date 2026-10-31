@@ -104,25 +104,64 @@ fn scan_markers(dir: &Path) -> BTreeSet<&'static str> {
     found
 }
 
-/// post_types each plugin dir registers — `register_post_type('slug'`
-/// over all plugin PHP. This is the owner map for UNCLAIMED types:
-/// exact attribution instead of a name-prefix guess.
-fn plugin_post_types(plugins_dir: &Path) -> BTreeMap<String, String> {
-    let re = regex::Regex::new(r#"register_post_type\s*\(\s*['"]([a-z0-9_-]+)['"]"#).unwrap();
+/// post_types each plugin/theme dir registers. Two passes per file:
+/// literal `register_post_type('slug'` plus dynamic forms —
+/// `self::$var` / `Class::CONST` / `$var` resolved against
+/// `'slug' = "..."` declarations in the SAME file (covers
+/// tevily-themer's `self::$post_type` pattern). Theme dirs attribute
+/// as `theme:<dir>` so theme-owned CPTs don't read as plugin work.
+fn registered_types(wp_content: &Path) -> BTreeMap<String, String> {
+    let re_lit = regex::Regex::new(r#"register_post_type\s*\(\s*['"]([a-z0-9_-]+)['"]"#).unwrap();
+    let re_dyn = regex::Regex::new(r#"register_post_type\s*\(\s*(?:self::|static::|([A-Za-z_][A-Za-z0-9_]*)::)?\$?([A-Za-z_][A-Za-z0-9_]*)"#).unwrap();
     let mut owners: BTreeMap<String, String> = BTreeMap::new();
-    let Ok(rd) = std::fs::read_dir(plugins_dir) else { return owners };
-    for e in rd.flatten() {
-        let dir = e.path();
-        if !dir.is_dir() {
-            continue;
-        }
-        let slug = e.file_name().to_string_lossy().into_owned();
-        walk_php(&dir, 4000, |_, s| {
-            for c in re.captures_iter(s) {
-                owners.entry(c[1].to_string()).or_insert_with(|| slug.clone());
+    /// One dir tree under `wp-content/{plugins,themes}` → owner label,
+    /// literal + dynamic registrations merged.
+    fn scan_dir(dir: &Path, owner: &str, re_lit: &regex::Regex, re_dyn: &regex::Regex,
+                owners: &mut BTreeMap<String, String>) {
+        walk_php(dir, 8000, |_, s| {
+            for c in re_lit.captures_iter(s) {
+                owners.entry(c[1].to_string()).or_insert_with(|| owner.to_string());
+            }
+            for c in re_dyn.captures_iter(s) {
+                // `self::$post_type` → look for `post_type = 'slug'`
+                // in the same file; `FOO::POST_TYPE`/`$var` similarly.
+                // Skips function-call args (capture 2 is empty then).
+                let name = c.get(2).map(|m| m.as_str()).unwrap_or("");
+                if name.is_empty() {
+                    continue;
+                }
+                let decl = regex::Regex::new(&format!(
+                    r#"(?:{n}|\${n})\s*=\s*['"]([a-z0-9_-]{{2,}})['"]"#,
+                    n = regex::escape(name)
+                ))
+                .unwrap();
+                for d in decl.captures_iter(s) {
+                    owners.entry(d[1].to_string()).or_insert_with(|| owner.to_string());
+                }
             }
             false
         });
+    }
+    // read_dir order is filesystem-dependent — sort so a shared CPT
+    // resolves to the same owner every run.
+    let sorted = |root: std::path::PathBuf| -> Vec<std::path::PathBuf> {
+        let mut v: Vec<_> = std::fs::read_dir(&root)
+            .map(|rd| rd.flatten().map(|e| e.path()).collect())
+            .unwrap_or_default();
+        v.sort();
+        v
+    };
+    for p in sorted(wp_content.join("plugins")) {
+        if p.is_dir() {
+            let owner = p.file_name().unwrap().to_string_lossy().into_owned();
+            scan_dir(&p, &owner, &re_lit, &re_dyn, &mut owners);
+        }
+    }
+    for p in sorted(wp_content.join("themes")) {
+        if p.is_dir() {
+            let owner = format!("theme:{}", p.file_name().unwrap().to_string_lossy());
+            scan_dir(&p, &owner, &re_lit, &re_dyn, &mut owners);
+        }
     }
     owners
 }
@@ -262,11 +301,6 @@ fn dir_names(dir: &Path) -> BTreeSet<String> {
         .unwrap_or_default()
 }
 
-/// The `register_post_type`→claim check needs the owner map even for
-/// claimed types (shows WHO registers what), so build it once.
-fn owner_map(plugins_dir: Option<&Path>) -> BTreeMap<String, String> {
-    plugins_dir.map(plugin_post_types).unwrap_or_default()
-}
 
 pub fn run(dump: &Path, www: Option<&Path>) -> Result<()> {
     if !dump.is_file() {
@@ -298,7 +332,7 @@ pub fn run(dump: &Path, www: Option<&Path>) -> Result<()> {
     let active = active_plugins(dump);
     let active_dirs: BTreeSet<String> = active.iter().map(|(d, _)| d.clone()).collect();
     let on_disk = plugins_dir.as_deref().map(dir_names).unwrap_or_default();
-    let owners = owner_map(plugins_dir.as_deref());
+    let owners = content.as_deref().map(registered_types).unwrap_or_default();
 
     println!("\n== active plugins ==");
     let mut php_candidates: Vec<String> = Vec::new();
