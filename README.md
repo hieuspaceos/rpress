@@ -303,6 +303,20 @@ Rust adapter because it seeds sidebars/widgets/custom-css and owns the
 byte-parity `wrap_page_sidebar`. `scripts/check-layers.sh` rules 4–5
 gate new site/theme literals in `src/`.
 
+### Site onboarding detect — `rpress detect`
+
+Before pulling a new site, `rpress detect --dump work/<site>/dump.sql
+--www work/<site>/www` maps its WP surface onto rpress's backend tiers:
+`stylesheet` → `ThemeDef` match, each `active_plugins` file → registered
+adapter (with `Backend`) or "NO adapter" (a `--www` marker scan flags
+tier-3 builders: elementor `Widget_Base`, goodlayers
+`page_builder_element`, wpbakery, divi), and every wp `post_type` →
+claimed by an adapter/spec or UNCLAIMED (with a guessed spec-file
+target). Output ends with the concrete `PLUGINS_PHP=` line and
+`claim_types` drafts. Claims are structural guesses — the `Backend`
+choice itself (Rust port vs Data vs PhpBridge) stays a human decision.
+
+
 ### Revolution Slider fragments — `harvested_fragments`
 
 Pages whose builder JSON carries a `revolution-slider` element can't

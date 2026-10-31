@@ -2,6 +2,7 @@ pub mod backup;
 pub mod auth;
 #[macro_use]
 pub mod db;
+pub mod detect;
 pub mod html_decode;
 pub mod forms_markup;
 pub mod harvest;

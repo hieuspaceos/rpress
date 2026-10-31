@@ -1,6 +1,6 @@
 // Single module list: the binary consumes the `rpress` library crate so
 // the two targets can't drift on module visibility (module hygiene L).
-use rpress::{admin, auth, backup, generate, import, render, site, site_bridge, site_build, site_deploy, site_init, site_serve, verify};
+use rpress::{admin, auth, backup, detect, generate, import, render, site, site_bridge, site_build, site_deploy, site_init, site_serve, verify};
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -19,6 +19,18 @@ enum Cmd {
     Import {
         #[command(subcommand)]
         step: ImportStep,
+    },
+    /// Detect plugins/themes/post_types → backend tiers for a WP dump.
+    /// Run BEFORE onboarding: reports which adapters already cover the
+    /// site, which plugins need spec/adapter work, and the PLUGINS_PHP
+    /// line to add.
+    Detect {
+        #[arg(long, default_value = "dump.sql")]
+        dump: PathBuf,
+        /// Site www dir (contains wp-content/plugins) — enables the
+        /// builder-marker scan that classifies tier-3 plugins.
+        #[arg(long)]
+        www: Option<PathBuf>,
     },
     /// Render a slug through templates
     Render {
@@ -166,6 +178,7 @@ fn main() -> Result<()> {
             ImportStep::Parse { dump, db, report, force } => import::run(&dump, &db, &report, force),
             ImportStep::Verify { db } => verify::run(&db),
         },
+        Cmd::Detect { dump, www } => detect::run(&dump, www.as_deref()),
         Cmd::Render { step } => match step {
             RenderStep::Slug { slug, db, templates, out, site_url, tour_base } => {
                 render::run(&db, &templates, &slug, &out, &site_url, &tour_base)
