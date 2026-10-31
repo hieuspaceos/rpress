@@ -225,7 +225,7 @@ pub(crate) fn register_helpers(
     });
 }
 
-fn fmt_alpha(a: f64) -> String {
+pub(crate) fn fmt_alpha(a: f64) -> String {
     if a.fract() == 0.0 {
         format!("{}", a as i64)
     } else {
@@ -233,7 +233,7 @@ fn fmt_alpha(a: f64) -> String {
     }
 }
 
-fn parse_hex(color: &str) -> Option<(u8, u8, u8)> {
+pub(crate) fn parse_hex(color: &str) -> Option<(u8, u8, u8)> {
     let h = color.strip_prefix('#')?;
     let parse = |s: &str| u8::from_str_radix(s, 16).ok();
     match h.len() {

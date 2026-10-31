@@ -16,8 +16,8 @@ ignore_types = [
     "flamingo_contact", "flamingo_inbound",
     # Popup Maker / popup-builder storage
     "popup", "popup_theme", "popupbuilder", "aoc_popup",
-    # Presto Player block records
-    "pp_video_block",
+    # (Presto Player `pp_video_block` moved to the presto-player adapter —
+    #  harvests video ids via post_seen before the row is skipped.)
     # Divi library layouts
     "et_pb_layout",
     # Ninja Forms submissions

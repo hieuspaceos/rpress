@@ -778,7 +778,7 @@ fn hreflang_links(alternates: &[(String, String)]) -> String {
 /// caption/button/embed/icon shortcodes, then ez-toc anchors + container.
 pub(crate) fn filter_content(raw: &str, site: &str, post_id: i64, conn: &Connection) -> String {
     let mut s = rewrite_origin(raw, site, conn);
-    s = expand_body_shortcodes(&s, site);
+    s = expand_body_shortcodes(&s, site, Some(conn), post_id);
     s = wpautop(&s);
     s = texturize(&s);
     s = link_rel_fixup(&s, site);
@@ -818,9 +818,10 @@ pub(crate) fn rewrite_origin_with(raw: &str, site: &str, origin: &str) -> String
     }
 }
 
-/// `[read more]` → RMWR (Read More WPTabs) toggle: everything after the
-/// tag is wrapped in a hidden `read_div` until the button is clicked.
-/// WP plugin semantics: the tag is a delimiter, not a pair — no `[/]`.
+/// Orphan `[read more]` (no `[/read]` closer): the paired `read` arm in
+/// `expand_body_shortcodes` already handled closable tags, so this only
+/// fires when the delimiter survived unmatched — wrap the tail in the
+/// plugin's hidden `read_div`, same toggle markup as the paired arm.
 fn rmwr_wrap(s: &str, post_id: i64) -> String {
     let Some(i) = s.find("[read more]") else {
         return s.to_string();
@@ -839,7 +840,7 @@ fn rmwr_wrap(s: &str, post_id: i64) -> String {
 /// Shortcode expansion for the post-body subset. Unknown shortcodes are
 /// stripped (unregistered in WP output); known ones emit the WP markup the
 /// reference shows verbatim.
-fn expand_body_shortcodes(s: &str, site: &str) -> String {
+fn expand_body_shortcodes(s: &str, site: &str, conn: Option<&Connection>, post_id: i64) -> String {
     let mut out = String::with_capacity(s.len() + 256);
     let b = s.as_bytes();
     let mut i = 0usize;
@@ -919,18 +920,64 @@ fn expand_body_shortcodes(s: &str, site: &str) -> String {
                         }
                     }
                     "gdlr_core_icon" | "gdlr_widget_box" => {
-                        // widget_box wraps nested shortcodes — expand them
-                        // recursively rather than passing the brackets
-                        // through as literal text.
+                        // widget_box emits the goodlayers box markup (shared
+                        // helper) with nested shortcodes expanded inside.
                         if tag == "gdlr_widget_box" {
+                            let a = sc_attrs(head);
                             if let Some(close) = s[i + end + 1..].find("[/gdlr_widget_box]") {
                                 let inner = &s[i + end + 1..i + end + 1 + close];
-                                out.push_str(&expand_body_shortcodes(inner, site));
+                                let inner = expand_body_shortcodes(inner, site, conn, post_id);
+                                out.push_str(&crate::render::shortcode::widget_box_html(&a, &inner));
                                 i += end + 1 + close + "[/gdlr_widget_box]".len();
                                 continue;
                             }
+                            out.push_str(&crate::render::shortcode::widget_box_html(&a, ""));
+                            i += end + 1;
+                            continue;
                         }
                         i += end + 1;
+                        continue;
+                    }
+                    "presto_player" => {
+                        let a = sc_attrs(head);
+                        let id = a.get("id").and_then(|v| {
+                            v.as_str().and_then(|s| s.trim_matches('"').parse::<i64>().ok())
+                                .or_else(|| v.as_i64())
+                        });
+                        let vid = id.and_then(|n| {
+                            conn.and_then(|c| c.query_row(
+                                sql!("intake__select_setting"),
+                                [crate::plugins::presto_player::video_key(n)],
+                                |r| r.get::<_, String>(0),
+                            ).ok())
+                        });
+                        if let Some(vid) = vid {
+                            out.push_str(&embed_html(&format!("https://youtu.be/{vid}")));
+                        }
+                        i += end + 1;
+                        continue;
+                    }
+                    "read" => {
+                        /* [read]…[/read] (incl. `[read more]`): the WP
+                           plugin hides the span behind a JS toggle —
+                           emit the same markup so generated pages keep
+                           the read-more interaction. */
+                        if let Some(close) = s[i + end + 1..].find("[/read]") {
+                            let inner = &s[i + end + 1..i + end + 1 + close];
+                            let inner = expand_body_shortcodes(inner, site, conn, post_id);
+                            let rid = format!("rmwr-p{post_id}-{i}");
+                            out.push_str(&format!(
+                                "<div class=\"rmwr-wrapper\" data-id=\"{rid}\" data-animation=\"none\" data-duration=\"300\" data-mode=\"normal\">\
+                                <button type=\"button\" class=\"read-link\" aria-expanded=\"false\" aria-controls=\"read{rid}\" \
+                                onclick=\"(function(b){{var d=document.getElementById(b.getAttribute('aria-controls')),o=b.getAttribute('aria-expanded')==='true';b.setAttribute('aria-expanded',!o);d.style.display=o?'none':'block';d.setAttribute('aria-hidden',o);b.querySelector('.rmwr-text').textContent=o?'Lire la suite ...':'Lire moins';}})(this)\">\
+                                <span class=\"rmwr-text\">Lire la suite ...</span></button>\
+                                <div class=\"read_div\" id=\"read{rid}\" aria-hidden=\"true\" style=\"display:none;\">{inner}</div></div>"
+                            ));
+                            i += end + 1 + close + "[/read]".len();
+                        } else {
+                            // Unclosed opener: strip the tag, show the text.
+                            i += end + 1;
+                        }
                         continue;
                     }
                     _ => {
@@ -1546,12 +1593,11 @@ mod tests {
     fn unknown_shortcodes_pass_through_verbatim() {
         // Tailwind-style literals (min-h-[20px]) must not be eaten.
         let src = "<p>x</p> min-h-[20px] [bogus attr=\"v\"] <p>y</p>";
-        let out = expand_body_shortcodes(src, "https://x.test");
+        let out = expand_body_shortcodes(src, "https://x.test", None, 0);
         assert!(out.contains("min-h-[20px]"), "{out}");
         assert!(out.contains("[bogus attr=\"v\"]"), "{out}");
         // known shortcode still expands (icons are decorative → dropped,
-        // so check a button's anchor output instead)
-        let out2 = expand_body_shortcodes("[gdlr_core_button button-text=\"Go\" button-link=\"https://x.test/y\"]", "https://x.test");
+        let out2 = expand_body_shortcodes("[gdlr_core_button button-text=\"Go\" button-link=\"https://x.test/y\"]", "https://x.test", None, 0);
         assert!(out2.contains(">Go<"), "{out2}");
     }
 

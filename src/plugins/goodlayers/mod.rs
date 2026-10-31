@@ -69,7 +69,7 @@ impl PluginAdapter for GoodLayers {
         ]
     }
     fn rendered_shortcodes(&self) -> &'static [&'static str] {
-        &["gdlr_core_button", "gdlr_core_icon"]
+        &["gdlr_core_button", "gdlr_core_icon", "gdlr_widget_box"]
     }
     /// `ajax` (and anything under it) reaches WP's admin-ajax — the 13
     /// `gdlr_core_*` actions are dispatched by the real plugin inside

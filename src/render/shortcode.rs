@@ -48,6 +48,81 @@ fn sc_attrs(s: &str) -> Map<String, Value> {
     }
     m
 }
+/// `color` + `opacity` shortcode attrs → `rgba(r,g,b,a)` for hex colors;
+/// the raw color string otherwise (WP `gdlr_core_esc_style` shadow path).
+fn gdlr_hex_rgba(color: &str, opacity: &str) -> String {
+    let a: f64 = opacity.parse().unwrap_or(1.0);
+    match crate::render::nodes::parse_hex(color) {
+        Some((r, g, b)) => format!("rgba({r},{g},{b},{})", crate::render::nodes::fmt_alpha(a)),
+        None => color.to_string(),
+    }
+}
+
+/// `[gdlr_widget_box]` → goodlayers-core `widget-shortcode.php` markup.
+/// Shared by both expanders (post body + template/element pipeline) so
+/// the PHP port lives in exactly one place.
+pub(crate) fn widget_box_html(a: &Map<String, Value>, inner: &str) -> String {
+    let gs = |k: &str| a.get(k).and_then(|v| v.as_str()).unwrap_or("");
+    // gdlr_core_widget_box_shortcode port: styles map 1:1 onto the PHP
+    // $widget_box_atts array.
+    let mut style = String::new();
+    for (k, css) in [
+        ("font-size", "font-size"),
+        ("color", "color"),
+        ("padding", "padding"),
+        ("border-radius", "border-radius"),
+    ] {
+        let v = gs(k);
+        if !v.is_empty() && v != "0" && v != "0px" {
+            style.push_str(&format!("{css}: {v};"));
+        }
+    }
+    if !gs("border-color").is_empty() {
+        let w = {
+            let v = gs("border-width");
+            if v.is_empty() { "3px" } else { v }
+        };
+        style.push_str(&format!("border: {w} solid {};", gs("border-color")));
+    }
+    let (sx, sy, ss, scol, sop) =
+        (gs("shadow-x"), gs("shadow-y"), gs("shadow-size"), gs("shadow-color"), gs("shadow-opacity"));
+    if !scol.is_empty() {
+        let rgba = gdlr_hex_rgba(scol, sop);
+        let x = if sx.is_empty() { "0" } else { sx };
+        let y = if sy.is_empty() { "0" } else { sy };
+        let z = if ss.is_empty() { "0" } else { ss };
+        style.push_str(&format!("box-shadow: {x} {y} {z} {rgba};"));
+    }
+    let extra = if gs("text-align").is_empty() {
+        String::new()
+    } else {
+        format!(" gdlr-core-{}-align", esc_attr(gs("text-align")))
+    };
+    let st = if style.is_empty() { String::new() } else { format!(" style=\"{}\"", esc_attr(&style)) };
+    let title = if gs("title").is_empty() {
+        String::new()
+    } else {
+        let tc = gs("title-color");
+        let tst = if tc.is_empty() { String::new() } else { format!(" style=\"color: {}\"", esc_attr(tc)) };
+        format!("<h3 class=\"gdlr-core-widget-box-shortcode-title\"{tst} >{}</h3>", esc(gs("title")))
+    };
+    let icon = if gs("left-icon").is_empty() {
+        String::new()
+    } else {
+        let ic = gs("left-icon-color");
+        let ist = if ic.is_empty() { String::new() } else { format!(" style=\"color: {}\"", esc_attr(ic)) };
+        format!("<i class=\"gdlr-core-widget-box-shortcode-icon {}\"{ist} ></i>", esc_attr(gs("left-icon")))
+    };
+    let link = if gs("link").is_empty() {
+        String::new()
+    } else {
+        let tgt = gs("link-target");
+        let t = if tgt.is_empty() { String::new() } else { format!(" target=\"{}\"", esc_attr(tgt)) };
+        format!("<a class=\"gdlr-core-widget-box-shortcode-link\" href=\"{}\"{t} ></a>", esc_attr(gs("link")))
+    };
+    format!("<div class=\"gdlr-core-widget-box-shortcode{extra}\"{st} >{title}{icon}<div class=\"gdlr-core-widget-box-shortcode-content\" >{inner}</div>{link}</div>")
+}
+
 
 /// Expand the shortcodes this site's text-boxes actually contain:
 /// `[gdlr_core_button]`, `[embed]url[/embed]` (YouTube/Vimeo → iframe),
@@ -70,11 +145,18 @@ pub(crate) fn expand_shortcodes(s: &str, site_url: &str, conn: Option<&Connectio
                 let tag = head.split_whitespace().next().unwrap_or("");
                 match tag {
                     "site_reviews" => {
-                        let html = include_str!("../../templates/theme/traveltour/site_reviews_static.html") // gate-allow: reference-theme static capture
-                            .replace("{{ site_url }}", site_url);
-                        out.extend_from_slice(html.as_bytes());
-                        i += end + 1;
-                        continue;
+                        /* Theme-owned static capture (`ThemeDef::
+                           shortcode_static`); a theme that declares none
+                           leaves the tag verbatim — same as WP on a site
+                           without the glsr shortcode hook. */
+                        let theme = conn
+                            .map(crate::plugins::theme_for_site)
+                            .unwrap_or(&crate::plugins::DEFAULT_THEME);
+                        if let Some(tpl) = (theme.shortcode_static)(theme, "site_reviews") {
+                            out.extend_from_slice(tpl.replace("{{ site_url }}", site_url).as_bytes());
+                            i += end + 1;
+                            continue;
+                        }
                     }
                     "site_reviews_form" => {
                         let a = sc_attrs(head);
@@ -213,6 +295,51 @@ pub(crate) fn expand_shortcodes(s: &str, site_url: &str, conn: Option<&Connectio
                                 continue;
                             }
                         }
+                    }
+                    "presto_player" => {
+                        let a = sc_attrs(head);
+                        let id = a.get("id").and_then(|v| {
+                            v.as_str().and_then(|s| s.trim_matches('"').parse::<i64>().ok())
+                                .or_else(|| v.as_i64())
+                        });
+                        let vid = id.and_then(|n| {
+                            conn.and_then(|c| c.query_row(
+                                sql!("intake__select_setting"),
+                                [crate::plugins::presto_player::video_key(n)],
+                                |r| r.get::<_, String>(0),
+                            ).ok())
+                        });
+                        if let Some(vid) = vid {
+                            out.extend_from_slice(embed_html(&format!("https://youtu.be/{vid}"), site_url).as_bytes());
+                        }
+                        /* No harvested video → consume the tag anyway: the
+                           pp_video_block record was never public content,
+                           and WP prints nothing for a deleted video either. */
+                        i += end + 1;
+                        continue;
+                    }
+                    "read" => {
+                        /* [read]…[/read] (incl. `[read more]` — WP parses
+                           the attrless `more` into the same tag): static
+                           parity renders the hidden content expanded —
+                           no JS toggle exists on generated pages. */
+                        if let Some(close) = s[i + end + 1..].find("[/read]") {
+                            let inner = &s[i + end + 1..i + end + 1 + close];
+                            out.extend_from_slice(expand_shortcodes(inner, site_url, conn, post_id).as_bytes());
+                            i += end + 1 + close + "[/read]".len();
+                        } else {
+                            // Unclosed opener: drop the tag, keep the text.
+                            i += end + 1;
+                        }
+                        continue;
+                    }
+                    "gdlr_widget_box" => {
+                        let a = sc_attrs(head);
+                        let inner_end = s[i + end + 1..].find("[/gdlr_widget_box]").map(|c| i + end + 1 + c);
+                        let inner = inner_end.map(|e| expand_shortcodes(&s[i + end + 1..e], site_url, conn, post_id)).unwrap_or_default();
+                        out.extend_from_slice(widget_box_html(&a, &inner).as_bytes());
+                        i = inner_end.map(|e| e + "[/gdlr_widget_box]".len()).unwrap_or(i + end + 1);
+                        continue;
                     }
                     _ => {}
                 }
