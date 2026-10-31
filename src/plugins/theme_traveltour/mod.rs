@@ -251,17 +251,18 @@ fn carry_one_css(c: &Connection, file: &Path, key: &str, name: &str) -> Result<(
     while let Some(p) = rest.find("url(") {
         out.push_str(&rest[..p + 4]);
         let tail = &rest[p + 4..];
-        let (url, rest_off) = match tail.chars().next() {
+        let (url, quote, rest_off) = match tail.chars().next() {
             Some(q @ ('"' | '\'')) => {
-                // `url("X")`: inner starts past the open quote; `close`
-                // is the matching close quote (keep both in output).
+                // `url("X")`: emit the quote pair — the old code dropped
+                // the open quote but kept the close, corrupting rules
+                // into `url(path")` (all @font-face fonts 404'd).
                 let inner = &tail[1..];
                 let close = inner.find(q).unwrap_or(inner.len());
-                (&inner[..close], 1 + close)
+                (&inner[..close], Some(q), 2 + close)
             }
             _ => {
                 let close = tail.find(')').unwrap_or(tail.len());
-                (&tail[..close], close)
+                (&tail[..close], None, close)
             }
         };
         let stripped = crate::url_util::strip_origin(url, &site_url, &aliases.join(","));
@@ -269,7 +270,13 @@ fn carry_one_css(c: &Connection, file: &Path, key: &str, name: &str) -> Result<(
         let local = stripped
             .strip_prefix(site_url.trim_end_matches('/'))
             .unwrap_or(&stripped);
-        out.push_str(local);
+        if let Some(q) = quote {
+            out.push(q);
+            out.push_str(local);
+            out.push(q);
+        } else {
+            out.push_str(local);
+        }
         rest = &tail[rest_off..];
     }
     out.push_str(rest);
