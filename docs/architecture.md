@@ -94,7 +94,7 @@ imported WP domain; empty = no rewrite).
 | File | Contents |
 |---|---|
 | `mod.rs` | `PluginAdapter` trait, `KindDef`/`ScreenDef`/`RenderCtx` registry (`adapters()`, `kind_def`, `adapter_for_kind`, `screen_for`, `resolve_bases`, `migrate_all`) — the one sanctioned seam every layer (admin screens, render, import) consults; also `ThemeDef` + the `theme_*` taxonomy-map API (`theme_for_site`, `theme_cat_path`, `theme_tag_base`, `theme_cat_children`, `theme_taxonomy_base`, `theme_cat_lang`, `theme_tax_lang`, `theme_tax_label`) + `DEFAULT_THEME` (neutral fallback) |
-| `spec.rs` | declarative adapter specs from `plugins/specs/*.toml` → generated `KindDef`s, `ScreenDef` settings screens (`[[screens]]` + `fields` — same `save_settings_fields` path as Rust screens), and generated `EditorHooks` (`[kinds.metabox]` — flat `post_meta` fields, quick-edit safe). Field kinds: `text`/`textarea`/`select`/`checkbox`/`serialized`/`note`. Rust-only: render hooks, import `post_imported`, `submenu()`/`seeds()`/`widget_*`, bridge backends |
+| `spec.rs` | declarative adapter specs from `plugins/specs/*.toml` → generated `KindDef`s, `ScreenDef` settings screens (`[[screens]]` + `fields` — same `save_settings_fields` path as Rust screens), and generated `EditorHooks` (`[kinds.metabox]` — flat `post_meta` fields, quick-edit safe). Field kinds: `text`/`textarea`/`select`/`checkbox`/`serialized`/`note`. Top-level keys: `claim_types` (must match a `kinds[].kind`), `ignore_types` (deliberate skips — `wp-internals.toml` owns the cross-plugin storage CPT list), `option_prefixes`, `legacy_option_keys`, `screens`, `kinds`. Rust-only: render hooks, import `post_imported`, `submenu()`/`seeds()`/`widget_*`, bridge backends |
 | `themes.rs` | declarative theme specs from `themes/specs/*.toml` (same build.rs codegen) — URL shapes/class prefixes/admin labels; Rust `PluginAdapter::theme()` is the escape hatch and wins on collision (panic at `migrate_all`) |
 | `tourmaster/` | Tour kind (Rust port): schema, elements, screens, render |
 | `goodlayers/` | PhpBridge adapter boot + write spec |
@@ -196,23 +196,33 @@ registered in `settings.languages`, `ThemeDef::tax_lang`, or the blob.
   `tevily` is the TOML demo; `theme_traveltour` stays a Rust adapter
   because it seeds sidebars/widgets/custom-css and owns the byte-parity
   `wrap_page_sidebar`.
-- **Site onboarding is scouted by `rpress detect` before adapters are
-  written.** `src/detect.rs` maps a pulled dump (+ `wp-content` when
-  present) onto the backend tiers: theme stylesheet → `ThemeDef`
-  (same Rust→TOML→default chain as `theme_for_site`), each
-  `active_plugins` entry → registered adapter + `Backend` or NO
-  adapter with a builder-marker scan (`Widget_Base`,
-  `page_builder_element`, `WPBakeryShortCode`, `et_pb_module` —
-  tier-3/PhpBridge signal), every `post_type` → claimed by an
-  adapter `claim_type` or UNCLAIMED with `register_post_type`
-  attribution (literal slugs plus `self::$var`/`Class::CONST`/`$var`
-  resolved in-file; theme dirs attribute as `theme:<dir>`; a shared
-  CPT resolves deterministically via sorted `read_dir`), shortcodes
-  used in `post_content` (CF7 field notation excluded), and
-  `wp_options` first-segment prefixes → whitelisted by an adapter's
-  `option_prefixes` or not (WP core/transients fold to
-  `wp-core/misc`). Output is advisory — the `Backend` choice stays a
-  human decision; detect never writes specs or env files.
+- **Site onboarding is scouted by `rpress detect`, which ends in a
+  routing board — every finding names the artifact that owns it.**
+  `src/detect.rs` maps a pulled dump (+ `wp-content` when present)
+  onto the backend tiers: theme stylesheet → `ThemeDef` (same
+  Rust→TOML→default chain as `theme_for_site`), each `active_plugins`
+  entry → registered adapter + `Backend` or NO adapter. Tier-3 marker
+  evidence requires a builder marker in ≥3 files, in the plugin's
+  main file, or combined with registered CPTs — bundled shims
+  (presto/code-snippets carrying `Widget_Base` in
+  `inc/Integrations/`) don't flag. `post_type`s classify through the
+  single authority `import::kind_for_post_type` — `claimed`,
+  `ignored by spec` (adapter `ignore_types` —
+  `plugins/specs/wp-internals.toml` owns the cross-plugin storage
+  list, `claim∩ignore` asserted disjoint at spec init), or UNCLAIMED
+  with `register_post_type` attribution (literal slugs plus
+  `self::$var`/`Class::CONST`/`$var` resolved in-file; theme dirs
+  attribute as `theme:<dir>`; sorted `read_dir` makes shared CPTs
+  deterministic). Shortcodes split adapter `rendered_shortcodes` /
+  WP-core handled vs `add_shortcode`-found-in-source vs a collapsed
+  unregistered-noise line; `wp_options` first-segment prefixes →
+  whitelisted by `option_prefixes` or not (`wp-core/misc` folds core).
+  Missing `wp-content` prints an explicit not-pulled note. The
+  routing tail: `THEME`→`themes/specs/<slug>.toml`,
+  `BRIDGE`→`PLUGINS_PHP`, `RENDER`→`render/shortcode.rs` arm,
+  `CLAIM`→`claim_types`/`ignore_types`, `IMPORT`→`option_prefixes`,
+  `PULL`→missing `wp-content`. Advisory — `Backend` choice stays
+  human; detect never writes specs or env files.
 - **Builder Live Mode loads scoped frontend CSS.** `templates/front-css/*.scoped.css`
   are the theme/plugin stylesheets fetched once from the live site, prefixed to
   `.gdlr-core-pb-livemode` by `scripts/scope-css.py` (re-run it after refreshing

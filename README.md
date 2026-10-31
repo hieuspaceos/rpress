@@ -312,22 +312,38 @@ Before pulling a new site, `rpress detect --dump work/<site>/dump.sql
   default fallback), plus every theme dir on disk
 - **active plugins** — each `dir/file.php` → registered adapter +
   `Backend`, or NO adapter. A `--www` marker scan flags tier-3
-  builders (`Widget_Base`, `page_builder_element`, `WPBakeryShortCode`,
-  `et_pb_module`); `· registers <cpt>` notes the post types each
+  builders only on strong evidence (marker in ≥3 files, in the main
+  plugin file, or combined with registered CPTs — bundled elementor
+  shims don't count); `· registers <cpt>` notes the post types each
   plugin owns — a real `register_post_type` scan over plugin AND
   theme dirs (`theme:<dir>` label), resolving literal slugs plus
   `self::$var`/`Class::CONST`/`$var` declarations in the same file.
-  Plugins present on disk but inactive list separately.
-- **post types** — claimed (and by whom) vs UNCLAIMED with row counts
-- **shortcodes** — tags actually used in `post_content` (CF7 form
-  notation excluded) — the rendering surface adapters must cover
+  Plugins present on disk but inactive list separately. When
+  `wp-content` isn't pulled, a `note:` line says attribution is
+  unavailable instead of implying zero registrations.
+- **post types** — claimed (adapter or core `kind_for_post_type`),
+  `ignored by spec` (adapter `ignore_types` — storage CPTs import
+  deliberately skips), or UNCLAIMED with row counts + owner
+  attribution
+- **shortcodes** — tags used in `post_content`, split three ways:
+  adapter `rendered_shortcodes` / WP-core handled (`embed`,
+  `caption`) → "rpress renders natively"; `add_shortcode` found in
+  pulled source → "needs render support"; everything else collapses
+  into one unregistered-noise line (CSS attribute selectors, prose
+  brackets)
 - **wp_options** — first-segment prefix groups → whitelisted under an
   adapter's `option_prefixes` or not; WP core/transients fold into
   `wp-core/misc`
 
-Output ends with the `PLUGINS_PHP=` line and `claim_types` draft
-hints. Attribution is structural (register_post_type/option prefixes);
-the `Backend` choice stays a human decision.
+The tail is a **routing board** — every finding lands on the rpress
+artifact that owns the fix: `THEME` → `themes/specs/<slug>.toml`,
+`BRIDGE` → `sites/<site>.env PLUGINS_PHP`, `RENDER` → a
+`render/shortcode.rs` arm + the adapter's `rendered_shortcodes`,
+`CLAIM` → `plugins/specs/<owner>.toml` `claim_types` (or
+`wp-internals.toml` `ignore_types` when it's storage), `IMPORT` → an
+adapter's `option_prefixes`, `PULL` → a missing `wp-content` pull.
+Attribution is structural (register_post_type/option prefixes/
+shortcode tags); the `Backend` choice stays a human decision.
 
 
 ### Revolution Slider fragments — `harvested_fragments`
