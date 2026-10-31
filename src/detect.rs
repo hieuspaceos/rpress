@@ -184,7 +184,11 @@ fn post_types(dump: &Path) -> BTreeMap<String, u64> {
 /// Shortcode tags used in post_content — `[tag ...]` / `[tag]`.
 /// `wpcf7_contact_form` posts are skipped: their post_content is CF7
 /// field notation (`[text* your-name]`), not WP shortcodes, and would
-/// flood the report with form-field tags.
+/// flood the report with form-field tags. Returns raw counts — the
+/// caller filters against `registered_shortcodes`: WP itself only
+/// expands registered tags, and the raw pattern also matches CSS
+/// attribute selectors (`[type]`) and prose brackets that are noise
+/// for the purpose of "which shortcode handlers must exist".
 fn shortcodes(dump: &Path) -> BTreeMap<String, u64> {
     let prefix = crate::sqldump::detect_prefix(dump).unwrap_or_else(|_| "wp_".into());
     let table = format!("{prefix}posts");
@@ -206,6 +210,62 @@ fn shortcodes(dump: &Path) -> BTreeMap<String, u64> {
         Ok(())
     });
     counts
+}
+
+/// Shortcode names rpress renders natively — mirrors the match arms in
+/// `render/shortcode.rs::expand_shortcodes`. Drift check: when a new arm
+/// lands there, add the tag here (the names are stable strings).
+const RENDERED_SHORTCODES: &[&str] = &[
+    "site_reviews", "site_reviews_form", "contact-form-7",
+    "gdlr_core_button", "gdlr_core_icon", "metaslider",
+    "embed", "caption",
+];
+
+/// WP core shortcode tags — renderable only if rpress implements them;
+/// listed separately so they don't read as plugin work.
+const CORE_SHORTCODES: &[&str] = &[
+    "wp_caption", "gallery", "video", "audio", "playlist", "shortcode",
+];
+
+/// Shortcode names registered via `add_shortcode('tag', ...)` in pulled
+/// plugin/theme source — literal + `self::$var`/`$var` declarations in
+/// the same file. Core tags live in `CORE_SHORTCODES` so they report as
+/// "core", not "needs render support".
+fn registered_shortcodes(wp_content: Option<&Path>) -> BTreeSet<String> {
+    let mut tags: BTreeSet<String> = BTreeSet::new();
+    let Some(content) = wp_content else { return tags };
+    let re_lit = regex::Regex::new(r#"add_shortcode\s*\(\s*['"]([a-zA-Z0-9_-]+)['"]"#).unwrap();
+    let re_dyn = regex::Regex::new(r#"add_shortcode\s*\(\s*(?:self::|static::|[A-Za-z_][A-Za-z0-9_]*::)?\$?([A-Za-z_][A-Za-z0-9_]*)"#).unwrap();
+    for top in ["plugins", "themes"] {
+        let Ok(rd) = std::fs::read_dir(content.join(top)) else { continue };
+        for e in rd.flatten() {
+            let dir = e.path();
+            if !dir.is_dir() {
+                continue;
+            }
+            walk_php(&dir, 8000, |_, s| {
+                for c in re_lit.captures_iter(s) {
+                    tags.insert(c[1].to_lowercase());
+                }
+                for c in re_dyn.captures_iter(s) {
+                    let name = c.get(1).map(|m| m.as_str()).unwrap_or("");
+                    if name.is_empty() {
+                        continue;
+                    }
+                    let decl = regex::Regex::new(&format!(
+                        r#"(?:{n}|\${n})\s*=\s*['"]([a-zA-Z0-9_-]{{2,}})['"]"#,
+                        n = regex::escape(name)
+                    ))
+                    .unwrap();
+                    for d in decl.captures_iter(s) {
+                        tags.insert(d[1].to_lowercase());
+                    }
+                }
+                false
+            });
+        }
+    }
+    tags
 }
 
 /// wp_options name → count, grouped by a 2-segment prefix
@@ -403,11 +463,29 @@ pub fn run(dump: &Path, www: Option<&Path>) -> Result<()> {
         }
     }
 
+    // WP only expands registered shortcodes — raw `[...]` matches also
+    // catch CSS attribute selectors and prose brackets, so unregistered
+    // names collapse into one line instead of flooding the report.
     let sc = shortcodes(dump);
     if !sc.is_empty() {
+        let known = registered_shortcodes(content.as_deref());
+        let mut other_n = 0u64;
+        let mut other_k = 0usize;
         println!("\n== shortcodes in post_content ==");
-        for (tag, n) in sc.iter().filter(|(_, n)| **n > 0) {
-            println!("  [{tag}] ×{n}");
+        for (tag, n) in sc.iter() {
+            if RENDERED_SHORTCODES.contains(&tag.as_str()) {
+                println!("  [{tag}] ×{n} → rpress renders natively");
+            } else if CORE_SHORTCODES.contains(&tag.as_str()) {
+                println!("  [{tag}] ×{n} → wp core tag — unexpanded unless rpress handles it");
+            } else if known.contains(tag.as_str()) {
+                println!("  [{tag}] ×{n} → registered in plugin/theme source — needs render support");
+            } else {
+                other_k += 1;
+                other_n += n;
+            }
+        }
+        if other_k > 0 {
+            println!("  … {other_k} unregistered bracket patterns ({other_n} hits) — CSS/prose noise or a shortcode whose source isn't pulled");
         }
     }
 
