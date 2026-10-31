@@ -27,7 +27,7 @@ Rule: **SQL statement text lives only in `src/db/sql/`** — loaded via the
 may hold a SQL literal (exceptions: `src/plugins/` adapter internals,
 `import.rs`/`sqldump.rs` dump-parsing — their statements are dynamic or
 plugin-owned). Rendering helpers (`esc`, `chrome`, `html_admin`, `need_auth`)
-live in `src/admin/mod.rs` and are `pub(crate)` for siblings.
+live in `src/admin/chrome.rs`/`util.rs`, re-exported through `admin/mod.rs`.
 
 ## Sites — multisite by process
 
@@ -76,7 +76,10 @@ imported WP domain; empty = no rewrite).
 
 | File | WP analog | Contents |
 |---|---|---|
-| `mod.rs` | `wp-admin/admin.php` + `admin-header.php` | `serve()` router, `App`/`Sess`, sessions, `need_auth`, `chrome*` sidebar, `menu_li`/`menu_li_badge`, `esc`, `html_admin` — the **kernel** only; public serving is in `serve.rs` |
+| `mod.rs` | `wp-admin/admin.php` | `serve()` router, `App`/`Sess`, sessions, `need_auth` — the **kernel** only; `pub(crate) use` facades re-export chrome/util for the sibling + external callers (plugins/, render/) |
+| `chrome.rs` | `admin-header.php` + menu | `html_admin`/`html_page` frame, `chrome_start`/`chrome_end`, `menu_li`/`menu_li_badge` sidebar, admin menu assembly |
+| `util.rs` | `formatting.php`/`pluggable.php` bits | `esc`, `site_for`, crypto/shortcode helpers shared across admin modules |
+| `plugin_dispatch.rs` | `admin.php` plugin-page branch | plugin-screen route table + dispatch to adapter `ScreenDef`s |
 | `serve.rs` | the public `index.php` | `public_root`/`public_page` (cache-hit read → miss render+write-back, miss-rate limiter, canonical-301 gate), `write_cache` (tmp+rename), `.md` negotiation, `wp_asset`/`uploads`/`front_css` static fronting, `publish_due`, `purge_alias_caches` |
 | `auth.rs` | `wp-login.php` | login page/handler, logout, dashboard |
 | `list.rs` | `class-wp-list-table.php` | shared `subsubsub` views, `tablenav` bulk+pager, `row_actions`, `thead`, `empty_row`, `back_or` |
@@ -93,14 +96,16 @@ imported WP domain; empty = no rewrite).
 
 | File | Contents |
 |---|---|
-| `mod.rs` | `PluginAdapter` trait, `KindDef`/`ScreenDef`/`RenderCtx` registry (`adapters()`, `kind_def`, `adapter_for_kind`, `screen_for`, `resolve_bases`, `migrate_all`) — the one sanctioned seam every layer (admin screens, render, import) consults; also `ThemeDef` + the `theme_*` taxonomy-map API (`theme_for_site`, `theme_cat_path`, `theme_tag_base`, `theme_cat_children`, `theme_taxonomy_base`, `theme_cat_lang`, `theme_tax_lang`, `theme_tax_label`) + `DEFAULT_THEME` (neutral fallback) |
-| `spec.rs` | declarative adapter specs from `plugins/specs/*.toml` → generated `KindDef`s, `ScreenDef` settings screens (`[[screens]]` + `fields` — same `save_settings_fields` path as Rust screens), and generated `EditorHooks` (`[kinds.metabox]` — flat `post_meta` fields, quick-edit safe). Field kinds: `text`/`textarea`/`select`/`checkbox`/`serialized`/`note`. Top-level keys: `claim_types` (must match a `kinds[].kind`), `ignore_types` (deliberate skips — `wp-internals.toml` owns the cross-plugin storage CPT list), `option_prefixes`, `legacy_option_keys`, `screens`, `kinds`. Rust-only: render hooks, import `post_imported`, `submenu()`/`seeds()`/`widget_*`, bridge backends |
+| `mod.rs` | `PluginAdapter` trait, `KindDef`/`ScreenDef`/`RenderCtx` registry (`adapters()`, `kind_def`, `adapter_for_kind`, `screen_for`, `resolve_bases`, `migrate_all`) — the one sanctioned seam every layer (admin screens, render, import) consults; also `ThemeDef` + the `theme_*` taxonomy-map API (`theme_for_site`, `theme_for_stylesheet`, `theme_for_general_option`, `adapter_for_stylesheet`, `theme_cat_path`, `theme_tag_base`, `theme_cat_children`, `theme_taxonomy_base`, `theme_cat_lang`, `theme_tax_lang`, `theme_tax_label`) + `DEFAULT_THEME` (neutral fallback) |
+| `spec.rs` | declarative adapter specs from `plugins/specs/*.toml` → generated `KindDef`s, `ScreenDef` settings screens (`[[screens]]` + `fields` — same `save_settings_fields` path as Rust screens), and generated `EditorHooks` (`[kinds.metabox]` — flat `post_meta` fields, quick-edit safe). Field kinds: `text`/`textarea`/`select`/`checkbox`/`serialized`/`note`. Top-level keys: `claim_types` (must match a `kinds[].kind`), `ignore_types` (deliberate skips — `wp-internals.toml` owns the cross-plugin storage CPT list; Rust adapters also declare `ignore_types` for CPTs they tap via `post_seen`), `option_prefixes`, `legacy_option_keys`, `screens`, `kinds`. Rust-only: render hooks, import `post_seen`/`post_imported`/`after_import`, `submenu()`/`seeds()`/`widget_*`, bridge backends |
 | `themes.rs` | declarative theme specs from `themes/specs/*.toml` (same build.rs codegen) — URL shapes/class prefixes/admin labels; Rust `PluginAdapter::theme()` is the escape hatch and wins on collision (panic at `migrate_all`) |
 | `tourmaster/` | Tour kind (Rust port): schema, elements, screens, render |
 | `goodlayers/` | PhpBridge adapter boot + write spec |
 | `misc.rs` | wpDiscuz / CF7 / MetaSlider / Site-Reviews settings screens |
 | `chaty.rs` | Chaty settings |
 | `theme_traveltour/` | theme adapter + seed assets — `ThemeDef` fields drive the generic `theme_*` API; its old `cat_path`/`tag_base` readers retired here (phase 05) |
+| `presto_player.rs` | Presto Player — `[presto_player]` → YouTube embed; `post_seen` harvests video ids from the skipped `pp_video_block` CPT |
+| `readmore.rs` | Read More Without Refresh — `[read]…[/read]` toggle markup on generated pages |
 
 ## `src/db/` module map (wp-includes equivalents)
 
@@ -340,6 +345,7 @@ Ownership: `www/nav.js` — see its leading comment for the full contract.
 (ez-toc CSS, wpDiscuz, comment-reply) in `===NAME===` sections;
 `render_post::inject_post_assets` splices them into the rendered page.
 `filter_content` owns the_content-equivalent pipeline: `expand_body_
-shortcodes` (caption/button/embed/icon/widget_box), `wpautop`,
-`texturize`, `rmwr_wrap` (`[read more]` → hidden div + toggle), `ez_toc`
+shortcodes` (caption/button/embed/icon/widget_box/presto_player/read —
+`widget_box_html` is shared with `render/shortcode.rs`), `wpautop`,
+`texturize`, `rmwr_wrap` (orphan `[read more]` fallback), `ez_toc`
 (heading anchors + Sommaire container).
