@@ -577,8 +577,7 @@ fn read_out(sc: &SiteCtx, rel: &str) -> Option<Vec<u8>> {
     // `out` = disposable HTML cache. Persistent dirs (user uploads, vendored
     // plugin/theme assets, shared front assets) live under `www` — never
     // inside the cache.
-    let base = if rel.starts_with("wp-content/plugins")
-        || rel.starts_with("wp-content/themes")
+    let base = if rel.starts_with("wp-content/")
         || rel.starts_with("wp-includes/")
         || matches!(rel, "front.css" | "nav.js" | "llms.txt")
     {

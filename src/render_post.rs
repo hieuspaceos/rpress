@@ -811,10 +811,18 @@ pub(crate) fn rewrite_origin_with(raw: &str, site: &str, origin: &str) -> String
         if !origin.contains("://") {
             origin = format!("https://{origin}");
         }
+        let host = origin
+            .split_once("://")
+            .map(|(_, rest)| rest)
+            .unwrap_or(origin.as_str());
         s.replace(&origin, site)
             .replace(&origin.replacen("https://", "http://", 1), site)
             .replace(&origin.replacen("https://", "https:http://", 1), site)
             .replace(&origin.replacen("https://", "http:http://", 1), site)
+            // WP Fastest Cache et al. emit scheme-relative `//host/...`
+            // inside @font-face; HTML rewrite used to leave those pointing
+            // at production (CORS-blocked fonts → empty icon boxes).
+            .replace(&format!("//{host}"), site)
     }
 }
 

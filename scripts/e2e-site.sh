@@ -92,8 +92,14 @@ pull() {
         "$ROOT/../vps-ssh/.askpass/rsync-pull.sh" "$VPS_HOST" \
           "$WP_ROOT/wp-includes/$part/" "$WWW/wp-includes/$part/"
       done
+      # Minified bundles (WP Fastest Cache et al.) — pages still reference
+      # their /wp-content/cache/wpfc-minified/<hash>/*.css; theme fonts and
+      # icon sets live inside those bundles, not beside them. Skip the rest
+      # of the cache (it's the generator's own html output).
+      "$ROOT/../vps-ssh/.askpass/rsync-pull.sh" "$VPS_HOST" \
+        "$WP_ROOT/wp-content/cache/wpfc-minified/" "$WWW/wp-content/cache/wpfc-minified/"
     fi
-    fi
+  fi
   # Repo-owned front assets — always present locally, never 307.
   for f in front.css nav.js; do
     [ -f "$ROOT/www/$f" ] && cp "$ROOT/www/$f" "$WWW/$f"
@@ -141,6 +147,16 @@ configure() {
     echo "admin credentials -> work/$SITE/credentials.txt"
   fi
   sqlite3 "$DB" "SELECT key, substr(value,1,60) FROM settings WHERE key IN ('site_url','asset_origin','site_name','comment_moderation');"
+  # Vendor CSS/JS still carry the dump origin inside @font-face / url().
+  # HTML rewrite does not touch those files; rewrite them in place so
+  # icon fonts load same-origin (no CORS empty-boxes).
+  origin=$(sqlite3 "$DB" "SELECT value FROM settings WHERE key='legacy_origin';")
+  origin=${origin%/}
+  if [ -n "$origin" ] && [ -d "$WWW" ]; then
+    host=${origin#https://}; host=${host#http://}
+    find "$WWW" \( -name '*.css' -o -name '*.js' \) -type f -print0 \
+      | xargs -0 perl -pi -e "s#\Q$origin\E#$LOCAL_URL#g; s#http://\Q$host\E#$LOCAL_URL#g; s#//\Q$host\E#$LOCAL_URL#g"
+  fi
 }
 
 generate() {
