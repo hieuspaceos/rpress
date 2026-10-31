@@ -145,7 +145,7 @@ configure() {
 
 generate() {
   "$BIN" generate --db "$DB" --templates "$TEMPLATES" --out "$CACHE" --site-url "$LOCAL_URL" --tour-base "$TOUR_BASE"
-  [ -f "$CACHE/llms.txt" ] && cp "$CACHE/llms.txt" "$WWW/llms.txt"
+  mkdir -p "$WWW"; [ -f "$CACHE/llms.txt" ] && cp "$CACHE/llms.txt" "$WWW/llms.txt"
 }
 
 check() {
