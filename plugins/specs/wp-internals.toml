@@ -1,0 +1,62 @@
+slug = "wp-internals"
+name = "WP Internals"
+blurb = "Deliberate skips — plugin-internal storage CPTs that import never models. Listing them here keeps `rpress detect` from proposing spec work for types the schema intentionally lacks."
+ignore_types = [
+    # iThemes Security dashboard cards (storage, not content)
+    "itsec-dash-card", "itsec-dashboard",
+    # Code Snippets
+    "wpcode",
+    # MailChimp for WP forms
+    "mc4wp-form",
+    # Polylang string-translation objects + locale switcher rows
+    "polylang_mo", "language_switcher",
+    # Rank Math internals
+    "rm_content_editor", "rank_math_schema",
+    # Flamingo form-submission archive
+    "flamingo_contact", "flamingo_inbound",
+    # Popup Maker / popup-builder storage
+    "popup", "popup_theme", "popupbuilder", "aoc_popup",
+    # Presto Player block records
+    "pp_video_block",
+    # Divi library layouts
+    "et_pb_layout",
+    # Ninja Forms submissions
+    "nf_sub",
+    # Mailpoet landing pages
+    "mailpoet_page",
+    # Visual Composer grid items
+    "vc_grid_item",
+    # Bricks templates
+    "bricks_template",
+    # Elementor header/footer library
+    "elementor-hf",
+    # WP Maintenance Mode theme records
+    "wpmm_theme",
+    # SMTP log records
+    "amn_smtp",
+    # PDF embedder viewer records
+    "pdf_lv", "pdfviewer",
+    # YouTube gallery plugin CPT
+    "wpgp_youtube_gallery",
+    # wpDiscuz form records (adapter covers the comment feed)
+    "wpdiscuz_form",
+    # Flipbook plugins
+    "3d-flip-book", "dflip",
+    # WPForms records
+    "wpforms",
+    # Post-template selector records
+    "custom-post-template",
+    # Carousel/slider misc CPTs
+    "carousels", "sp_wp_carousel",
+    # Weather-widget records
+    "location_weather",
+    # Ajax search/filter CPTs
+    "uwpqsf",
+    # Google Web Stories
+    "web-story",
+    # The7 header/footer builder records
+    "tahefobu_footer",
+    # ElementsKit content library
+    "elementskit_content",
+]
+kinds = []

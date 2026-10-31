@@ -37,6 +37,30 @@ fn need<'a>(v: &'a [crate::sqldump::Val], n: usize, table: &str) -> Result<&'a c
     })
 }
 
+/// wp `post_type` → `posts.kind` — the ONE authority for "does import
+/// claim this type". Plugin adapters claim first; core post/page and
+/// the hard-coded storage kinds fall through. `detect` calls this so
+/// the report cannot drift from what import actually does.
+pub(crate) fn kind_for_post_type(t: &str) -> Option<&'static str> {
+    for a in crate::plugins::adapters() {
+        if let Some(kind) = a.import_hooks().and_then(|h| (h.claim_type)(t)) {
+            return Some(kind);
+        }
+    }
+    match t {
+        "post" => Some("post"),
+        "page" => Some("page"),
+        "site-review" => Some("site-review"),
+        // MetaSlider: slider CPT + its slide children (linked via the
+        // `ml-slider` taxonomy, term slug = slider post id). No routes
+        // — generate only selects post/page/tour; [metaslider] reads
+        // these rows from the DB at expand time.
+        "ml-slider" => Some("ml-slider"),
+        "ml-slide" => Some("ml-slide"),
+        _ => None,
+    }
+}
+
 #[derive(Default)]
 struct Post {
     id: i64,
@@ -466,28 +490,6 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path, force: bool) -> Resu
         }
     }
 
-    let kind_of = |t: &str| -> Option<&'static str> {
-        // Plugin adapters claim their wp post_types first; core post/page
-        // fall through.
-        for a in crate::plugins::adapters() {
-            if let Some(kind) = a.import_hooks().and_then(|h| (h.claim_type)(t)) {
-                return Some(kind);
-            }
-        }
-        match t {
-            "post" => Some("post"),
-            "page" => Some("page"),
-            "site-review" => Some("site-review"),
-            // MetaSlider: slider CPT + its slide children (linked via the
-            // `ml-slider` taxonomy, term slug = slider post id). No routes
-            // — generate only selects post/page/tour; [metaslider] reads
-            // these rows from the DB at expand time.
-            "ml-slider" => Some("ml-slider"),
-            "ml-slide" => Some("ml-slide"),
-            _ => None,
-        }
-    };
-
     let mut stmt_post = tx.prepare(
         sql!("import__insert_into_posts_2"),
     )?;
@@ -603,7 +605,7 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path, force: bool) -> Resu
 
     // posts pass
     for p in &posts {
-        match kind_of(&p.post_type) {
+        match kind_for_post_type(&p.post_type) {
             None => {
                 if p.post_type == "attachment" {
                     import_media(p, &mut stmt_media, &mut rep)?;
@@ -1115,7 +1117,7 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path, force: bool) -> Resu
                     }
                 }
                 pt => {
-                    if let Some(kind) = kind_of(pt) {
+                    if let Some(kind) = kind_for_post_type(pt) {
                         if matches!(p.status.as_str(), "publish" | "draft") {
                             let lang = post_lang.get(&p.id).cloned().unwrap_or_else(|| primary.clone());
                             *expect.entry(format!("posts:{kind}:{lang}")).or_default() += 1;

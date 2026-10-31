@@ -1,9 +1,9 @@
 ---
 title: "detect v4 — accuracy + coverage gaps"
 description: "Close the remaining gaps found by the 5-site detect audit: marker false-positives, missing-source warning, ignore-types convention, kind_of drift, adapter-declared shortcodes"
-status: pending
+status: completed
 priority: P2
-effort: "6h"
+effort: "6h (actual ~3h)"
 branch: main
 tags: [detect, audit, quality]
 blockedBy: []

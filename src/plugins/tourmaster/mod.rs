@@ -104,6 +104,12 @@ impl PluginAdapter for Tourmaster {
         // keys are plugin WIRE FORMAT — never folded (see phase-05).
         &["tourmaster_general", "tour_custom_taxs"]
     }
+    fn ignore_types(&self) -> &'static [&'static str] {
+        // tourmaster registers coupon/service CPTs for pricing config;
+        // rpress's `tours` table already carries the denormalized data,
+        // so these are documented skips, not missing adapters.
+        &["tour_coupon", "tour_service"]
+    }
     fn clone_post(&self, tx: &Connection, new_id: i64, old_id: i64) -> Result<()> {
         tx.execute(sql!("posts__insert_into_tours"), params![new_id, old_id])
             .map_err(|e| anyhow::anyhow!("clone tours {new_id}<={old_id}: {e}"))?;

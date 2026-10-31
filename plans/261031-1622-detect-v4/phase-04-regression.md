@@ -1,7 +1,7 @@
 ---
 phase: 4
 title: "Theme-CPT fixture + 5-site regression"
-status: pending
+status: completed
 priority: P2
 effort: "1h"
 dependencies: [1, 2, 3]

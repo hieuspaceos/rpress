@@ -1,7 +1,7 @@
 ---
 phase: 2
 title: "`ignore_types` spec field + storage-CPT decluttering"
-status: pending
+status: completed
 priority: P2
 effort: "1.5h"
 dependencies: []

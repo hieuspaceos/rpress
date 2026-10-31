@@ -68,6 +68,9 @@ impl PluginAdapter for GoodLayers {
             "gdlr-core-pb-sync-template",
         ]
     }
+    fn rendered_shortcodes(&self) -> &'static [&'static str] {
+        &["gdlr_core_button", "gdlr_core_icon"]
+    }
     /// `ajax` (and anything under it) reaches WP's admin-ajax — the 13
     /// `gdlr_core_*` actions are dispatched by the real plugin inside
     /// the bridge. Other paths pass through verbatim (asset/screen

@@ -108,6 +108,7 @@ impl PluginAdapter for Cf7 {
     }
     fn settings_prefixes(&self) -> &'static [&'static str] { &["cf7", "cf7sr_"] }
     fn screens(&self) -> &'static [ScreenDef] { CF7_SCREENS }
+    fn rendered_shortcodes(&self) -> &'static [&'static str] { &["contact-form-7"] }
 }
 
 // ─── MetaSlider ─────────────────────────────────────────────────────
@@ -136,6 +137,7 @@ impl PluginAdapter for MetaSlider {
     }
     fn settings_prefixes(&self) -> &'static [&'static str] { &["ml-slider_"] }
     fn screens(&self) -> &'static [ScreenDef] { METASLIDER_SCREENS }
+    fn rendered_shortcodes(&self) -> &'static [&'static str] { &["metaslider"] }
 }
 
 // ─── Site Reviews (glsr) ────────────────────────────────────────────
@@ -165,6 +167,7 @@ impl PluginAdapter for SiteReviews {
     }
     fn settings_prefixes(&self) -> &'static [&'static str] { &["glsr_"] }
     fn screens(&self) -> &'static [ScreenDef] { SITE_REVIEWS_SCREENS }
+    fn rendered_shortcodes(&self) -> &'static [&'static str] { &["site_reviews", "site_reviews_form"] }
 }
 
 // ─── Head & Footer Code (auhfc) ─────────────────────────────────────

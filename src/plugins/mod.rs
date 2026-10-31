@@ -270,6 +270,18 @@ pub(crate) trait PluginAdapter: Sync {
     fn import_hooks(&self) -> Option<&'static ImportHooks> {
         None
     }
+    /// wp `post_type`s this adapter deliberately skips at import
+    /// (storage CPTs) — detect lists them as `ignored` rather than
+    /// suggesting spec work. Empty default.
+    fn ignore_types(&self) -> &'static [&'static str] {
+        &[]
+    }
+    /// Shortcode tags this adapter's render path expands natively —
+    /// detect reports them as "rpress renders" instead of "needs
+    /// render support". Empty default.
+    fn rendered_shortcodes(&self) -> &'static [&'static str] {
+        &[]
+    }
     /// Full single-page render for a post of this adapter's kind —
     /// replaces the `kind == "tour"` dispatch arm in `render_slug`.
     /// `ctx` carries the rendered body + resolved `kind_base`.

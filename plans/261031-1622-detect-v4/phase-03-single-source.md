@@ -1,7 +1,7 @@
 ---
 phase: 3
 title: "Single source for claimed() and rendered shortcodes"
-status: pending
+status: completed
 priority: P2
 effort: "2h"
 dependencies: []

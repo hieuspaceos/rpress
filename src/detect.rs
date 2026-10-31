@@ -90,13 +90,24 @@ fn walk_php(root: &Path, files_cap: usize, mut hit: impl FnMut(&Path, &str) -> b
     }
 }
 
-/// Builder markers present in a plugin dir.
-fn scan_markers(dir: &Path) -> BTreeSet<&'static str> {
-    let mut found = BTreeSet::new();
-    walk_php(dir, 4000, |_, s| {
+/// Builder markers present in a plugin dir, with file counts and
+/// whether any hit sits in a top-level plugin file. A single `Widget_Base`
+/// string in one bundled shim is NOT a builder — aucoeur showed
+/// code-snippets/ez-toc/presto/simply-static false-positiving that way;
+/// a real builder hits its marker in ≥2 files or in `<dir>/<file>.php`
+/// at the plugin root.
+fn scan_markers(dir: &Path) -> BTreeMap<&'static str, (usize, bool)> {
+    let mut found: BTreeMap<&'static str, (usize, bool)> = BTreeMap::new();
+    walk_php(dir, 8000, |p, s| {
+        let top_level = p
+            .strip_prefix(dir)
+            .map(|r| r.components().count() == 1)
+            .unwrap_or(false);
         for (marker, label) in BUILDER_MARKERS {
             if s.contains(marker) {
-                found.insert(*label);
+                let e = found.entry(*label).or_default();
+                e.0 += 1;
+                e.1 |= top_level;
             }
         }
         found.len() == BUILDER_MARKERS.len()
@@ -212,14 +223,9 @@ fn shortcodes(dump: &Path) -> BTreeMap<String, u64> {
     counts
 }
 
-/// Shortcode names rpress renders natively — mirrors the match arms in
-/// `render/shortcode.rs::expand_shortcodes`. Drift check: when a new arm
-/// lands there, add the tag here (the names are stable strings).
-const RENDERED_SHORTCODES: &[&str] = &[
-    "site_reviews", "site_reviews_form", "contact-form-7",
-    "gdlr_core_button", "gdlr_core_icon", "metaslider",
-    "embed", "caption",
-];
+/// WP core shortcode tags rpress's own `expand_shortcodes` handles —
+/// adapter tags are declared on each adapter's `rendered_shortcodes`.
+const CORE_HANDLED: &[&str] = &["embed", "caption"];
 
 /// WP core shortcode tags — renderable only if rpress implements them;
 /// listed separately so they don't read as plugin work.
@@ -331,16 +337,36 @@ fn covered_prefix(k: &str) -> Option<&'static str> {
     None
 }
 
-/// The wp post_types already claimed: adapter claim_type is a fn, so
-/// probe every observed type rather than inverting the fns.
+/// The wp post_types already claimed: `import::kind_for_post_type` is
+/// the single authority — adapter claims, core post/page, and
+/// hard-coded storage kinds (ml-*) all live there. Core internals
+/// (attachment, revision, wpcf7_contact_form, custom_css…) are
+/// claimed separately in `CORE_TYPES`/`IMPORTED_BUILTINS` since
+/// `kind_for_post_type` returns `None` for them by design.
+const IMPORTED_BUILTINS: &[&str] = &[
+    "custom_css", "wpcf7_contact_form",
+];
 fn claimed<'a>(types: impl Iterator<Item = &'a String>) -> BTreeSet<String> {
-    let mut out: BTreeSet<String> = CORE_TYPES.iter().map(|s| s.to_string()).collect();
-    for t in ["post", "page", "site-review", "custom_css", "wpcf7_contact_form"] {
-        out.insert(t.to_string());
+    let mut out: BTreeSet<String> = CORE_TYPES
+        .iter()
+        .chain(IMPORTED_BUILTINS)
+        .map(|s| s.to_string())
+        .collect();
+    for t in types {
+        if crate::import::kind_for_post_type(t).is_some() {
+            out.insert(t.clone());
+        }
     }
+    out
+}
+
+/// wp `post_type`s adapters deliberately skip (`ignore_types`) — a
+/// documented skip, so they leave the unclaimed suggestion list too.
+fn ignored<'a>(types: impl Iterator<Item = &'a String>) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
     for t in types {
         for a in crate::plugins::adapters() {
-            if a.import_hooks().and_then(|h| (h.claim_type)(t)).is_some() {
+            if a.ignore_types().iter().any(|i| *i == t.as_str()) {
                 out.insert(t.clone());
             }
         }
@@ -371,6 +397,7 @@ pub fn run(dump: &Path, www: Option<&Path>) -> Result<()> {
     let plugins_dir = content.as_ref().map(|c| c.join("plugins"));
     let themes_dir = content.as_ref().map(|c| c.join("themes"));
 
+    let mut theme_missing: Option<String> = None;
     println!("== theme ==");
     match option_from_dump(Some(dump), "stylesheet") {
         Some(ss) => {
@@ -379,7 +406,10 @@ pub fn run(dump: &Path, www: Option<&Path>) -> Result<()> {
                 .or_else(|| crate::plugins::themes::theme_for_stylesheet(&ss))
             {
                 Some(_) => println!("  {ss} (parent: {parent}) → ThemeDef matched — chrome/import covered"),
-                None => println!("  {ss} (parent: {parent}) → NO ThemeDef — menus/chrome fall back to DEFAULT_THEME; consider a theme spec"),
+                None => {
+                    println!("  {ss} (parent: {parent}) → NO ThemeDef — menus/chrome fall back to DEFAULT_THEME; consider a theme spec");
+                    theme_missing = Some(ss);
+                }
             }
         }
         None => println!("  no stylesheet option in dump"),
@@ -407,6 +437,24 @@ pub fn run(dump: &Path, www: Option<&Path>) -> Result<()> {
             .as_ref()
             .map(|pd| scan_markers(&pd.join(dir_slug)))
             .unwrap_or_default();
+        // tier-3 evidence = a marker hit in a top-level plugin file.
+        // Bundled integration shims (inc/Integrations/Elementor/…) are
+        // the classic false positive — a real builder's marker reaches
+        // its main file.
+        // strong = marker in ≥3 files (real framework usage —
+        // elementor hits 68), or in the main <slug>.php, or combined
+        // with the plugin registering CPTs (runtime behavior like
+        // tevily-themer's elementor/el-widgets/ base).
+        let strong: Vec<&'static str> = markers
+            .iter()
+            .filter(|(_, (n, top))| *n >= 3 || *top)
+            .map(|(l, _)| *l)
+            .collect();
+        let marker_note = if markers.is_empty() {
+            String::new()
+        } else {
+            format!(" — markers: {}", markers.keys().cloned().collect::<Vec<_>>().join(", "))
+        };
         let cpts: Vec<&String> = owners
             .iter()
             .filter(|(_, o)| *o == dir_slug)
@@ -425,13 +473,13 @@ pub fn run(dump: &Path, www: Option<&Path>) -> Result<()> {
                     php_candidates.push(a.slug().to_string());
                 }
             }
-            None if !markers.is_empty() => {
-                println!("  {file} → NO adapter — markers: {}{cpt_note}", markers.iter().cloned().collect::<Vec<_>>().join(", "));
+            None if !strong.is_empty() || (!markers.is_empty() && !cpts.is_empty()) => {
+                println!("  {file} → NO adapter{marker_note}{cpt_note}");
                 println!("      tier-3 candidate: needs a PhpBridge adapter (query-forward + plugin-activation filter + write_specs)");
                 php_candidates.push(format!("<{dir_slug}: adapter needed>"));
             }
             None => {
-                println!("  {file} → NO adapter — data-only{cpt_note}");
+                println!("  {file} → NO adapter — data-only{marker_note}{cpt_note}");
             }
         }
     }
@@ -444,9 +492,16 @@ pub fn run(dump: &Path, www: Option<&Path>) -> Result<()> {
             println!("  {d}{}", if cpts.is_empty() { String::new() } else { format!(" · registers {}", cpts.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(",")) });
         }
     }
+    if !plugins_dir.as_deref().is_some_and(|d| d.is_dir()) {
+        println!("\n  note: wp-content/plugins not pulled — CPT-registration and builder-marker attribution unavailable; pass --www with a pulled wp-content to enrich");
+    }
+    if content.is_some() && !themes_dir.as_deref().is_some_and(|d| d.is_dir()) {
+        println!("  note: wp-content/themes not pulled — theme-registered CPTs unattributed");
+    }
 
     let types = post_types(dump);
     let claimed_set = claimed(types.keys());
+    let ignored_set = ignored(types.keys());
     println!("\n== post types ==");
     let mut unclaimed: Vec<(String, u64, Option<String>)> = Vec::new();
     for (t, n) in &types {
@@ -457,6 +512,8 @@ pub fn run(dump: &Path, www: Option<&Path>) -> Result<()> {
         let owner_note = owner.as_ref().map(|o| format!(" (registered by {o})")).unwrap_or_default();
         if claimed_set.contains(t) {
             println!("  {t} ({n}) → claimed{owner_note}");
+        } else if ignored_set.contains(t) {
+            println!("  {t} ({n}) → ignored by spec{owner_note} — storage CPT, skipped at import");
         } else {
             println!("  {t} ({n}) → UNCLAIMED{owner_note} — falls to generic post/page or is skipped");
             unclaimed.push((t.clone(), *n, owner));
@@ -467,13 +524,17 @@ pub fn run(dump: &Path, www: Option<&Path>) -> Result<()> {
     // catch CSS attribute selectors and prose brackets, so unregistered
     // names collapse into one line instead of flooding the report.
     let sc = shortcodes(dump);
+    let known = if sc.is_empty() { BTreeSet::new() } else { registered_shortcodes(content.as_deref()) };
     if !sc.is_empty() {
-        let known = registered_shortcodes(content.as_deref());
         let mut other_n = 0u64;
         let mut other_k = 0usize;
         println!("\n== shortcodes in post_content ==");
+        let rendered: BTreeSet<&'static str> = crate::plugins::adapters()
+            .iter()
+            .flat_map(|a| a.rendered_shortcodes().iter().copied())
+            .collect();
         for (tag, n) in sc.iter() {
-            if RENDERED_SHORTCODES.contains(&tag.as_str()) {
+            if rendered.contains(tag.as_str()) || CORE_HANDLED.contains(&tag.as_str()) {
                 println!("  [{tag}] ×{n} → rpress renders natively");
             } else if CORE_SHORTCODES.contains(&tag.as_str()) {
                 println!("  [{tag}] ×{n} → wp core tag — unexpanded unless rpress handles it");
@@ -500,14 +561,107 @@ pub fn run(dump: &Path, www: Option<&Path>) -> Result<()> {
         }
     }
 
-    println!("\n== suggested next steps ==");
+    // Routing board: each finding lands on the exact rpress artifact
+    // that owns the fix. detect's job ends at naming the file — the
+    // Backend choice stays a human decision.
+    println!("\n== routing — where each finding lands ==");
+    let mut routed = false;
+    if let Some(ss) = &theme_missing {
+        println!("  THEME  {ss} → themes/specs/{ss}.toml (+ templates/theme/{ss}/base_<lang>.html) — else DEFAULT_THEME chrome");
+        routed = true;
+    }
     if !php_candidates.is_empty() {
-        println!("  PLUGINS_PHP={}", php_candidates.join(","));
+        println!("  BRIDGE sites/<site>.env: PLUGINS_PHP={}", php_candidates.join(","));
+        routed = true;
+    }
+    let rendered2: BTreeSet<&'static str> = crate::plugins::adapters()
+        .iter()
+        .flat_map(|a| a.rendered_shortcodes().iter().copied())
+        .collect();
+    if !sc.is_empty() {
+        let need_render: Vec<&String> = sc
+            .keys()
+            .filter(|t| !rendered2.contains(t.as_str()) && !CORE_HANDLED.contains(&t.as_str())
+                && !CORE_SHORTCODES.contains(&t.as_str()) && known.contains(t.as_str()))
+            .collect();
+        if !need_render.is_empty() {
+            println!("  RENDER {} → render/shortcode.rs arm (+ owning adapter's rendered_shortcodes)", need_render.iter().map(|t| format!("[{t}]")).collect::<Vec<_>>().join(" "));
+            routed = true;
+        }
+    }
+    let unattributed = unclaimed.iter().filter(|(_, _, o)| o.is_none()).count();
+    if unattributed > 0 && !plugins_dir.as_deref().is_some_and(|d| d.is_dir()) {
+        println!("  PULL   {unattributed} unclaimed types show <plugin-slug> — pull wp-content/plugins to name the spec file");
     }
     for (t, n, owner) in &unclaimed {
         let owner = owner.as_deref().unwrap_or("<plugin-slug>");
-        println!("  unclaimed type {t} ({n} rows) → plugins/specs/{owner}.toml: claim_types += [\"{t}\"]");
+        println!("  CLAIM  {t} ({n} rows) → plugins/specs/{owner}.toml claim_types, or wp-internals.toml ignore_types if it's storage");
+        routed = true;
+    }
+    let unwhitelisted: Vec<&String> = opts
+        .keys()
+        .filter(|p| covered_prefix(p).is_none() && p.as_str() != "wp-core/misc")
+        .collect();
+    if !unwhitelisted.is_empty() {
+        let n: u64 = unwhitelisted.iter().map(|p| opts[*p]).sum();
+        println!("  IMPORT {} option prefixes ({n} rows) unwhitelisted → owning adapter's option_prefixes (plugins/specs/*.toml) or accept as loss", unwhitelisted.len());
+        routed = true;
+    }
+    if !routed {
+        println!("  nothing pending — this site's surface is fully covered");
     }
     println!("\nNOTE: attribution comes from register_post_type/option prefixes/shortcode tags in the dump+pulled source — structural facts. `Backend` choice (Rust port vs Data vs PhpBridge) still needs a human decision.");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Theme-dir CPT attribution: a `register_post_type` in the theme's
+    /// own PHP resolves to `theme:<dir>`, not a plugin slug — the sweep
+    /// had no theme-CPT site so this is the only coverage of that path.
+    #[test]
+    fn theme_registers_attribute_as_theme_dir() {
+        let root = std::env::temp_dir().join(format!("rpress-detect-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let theme = root.join("themes/fake-theme");
+        std::fs::create_dir_all(&theme).unwrap();
+        std::fs::write(
+            theme.join("functions.php"),
+            "<?php register_post_type('theme_faq', ['label'=>'FAQ']);",
+        )
+        .unwrap();
+        let owners = registered_types(&root);
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(owners.get("theme_faq").map(|s| s.as_str()), Some("theme:fake-theme"));
+    }
+
+    /// Dynamic `self::$var` registrations resolve against same-file
+    /// declarations — the ba-book-everything pattern the audit caught.
+    #[test]
+    fn dynamic_self_var_registration_resolves() {
+        let root = std::env::temp_dir().join(format!("rpress-detect-dyn-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let plug = root.join("plugins/fake-plug");
+        std::fs::create_dir_all(&plug).unwrap();
+        std::fs::write(
+            plug.join("types.php"),
+            "<?php class T { static $faq_post_type = 'faq'; function r() { register_post_type(self::$faq_post_type, []); } }",
+        )
+        .unwrap();
+        let owners = registered_types(&root);
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(owners.get("faq").map(|s| s.as_str()), Some("fake-plug"));
+    }
+
+    /// claim wins over ignore: core-claimed storage kinds can't sit in
+    /// `ignore_types` without the report lying.
+    #[test]
+    fn ml_types_claim_not_ignore() {
+        assert_eq!(crate::import::kind_for_post_type("ml-slider"), Some("ml-slider"));
+        for a in crate::plugins::adapters() {
+            assert!(!a.ignore_types().contains(&"ml-slider"), "{} ignores a core-claimed type", a.slug());
+        }
+    }
 }

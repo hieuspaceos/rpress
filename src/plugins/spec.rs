@@ -37,6 +37,11 @@ pub(crate) struct Spec {
     /// wp `post_type`s this stack claims; each must match a `kinds[].kind`.
     #[serde(default)]
     pub(crate) claim_types: Vec<String>,
+    /// wp `post_type`s this stack deliberately skips at import —
+    /// storage CPTs (dashboards, form submissions). Detection lists
+    /// them as `ignored` instead of proposing a `claim_types` spec.
+    #[serde(default)]
+    pub(crate) ignore_types: Vec<String>,
     #[serde(default)]
     pub(crate) option_prefixes: Vec<String>,
     #[serde(default)]
@@ -159,6 +164,12 @@ static SPECS: LazyLock<Vec<Spec>> = LazyLock::new(|| {
                 assert!(
                     spec.kinds.iter().any(|k| &k.kind == t),
                     "{slug}.toml: claim_types entry {t} has no matching kind"
+                );
+            }
+            for t in &spec.ignore_types {
+                assert!(
+                    !spec.claim_types.contains(t),
+                    "{slug}.toml: {t} is in both claim_types and ignore_types — claim wins, pick one"
                 );
             }
             for s in &spec.screens {
@@ -298,6 +309,15 @@ static CLAIMS: LazyLock<Vec<Vec<(&'static str, &'static str)>>> = LazyLock::new(
     SPECS
         .iter()
         .map(|spec| spec.claim_types.iter().map(|t| (t.as_str(), t.as_str())).collect())
+        .collect()
+});
+
+/// `wp_type`s each spec ignores — parallel to `CLAIMS` but only the
+/// names matter (they're skipped, not mapped to kinds).
+static IGNORES: LazyLock<Vec<Vec<&'static str>>> = LazyLock::new(|| {
+    SPECS
+        .iter()
+        .map(|spec| spec.ignore_types.iter().map(|t| t.as_str()).collect())
         .collect()
 });
 
@@ -792,6 +812,9 @@ impl PluginAdapter for SpecAdapter {
     }
     fn legacy_option_keys(&self) -> &'static [&'static str] {
         LEGACY_KEYS[self.idx].as_slice()
+    }
+    fn ignore_types(&self) -> &'static [&'static str] {
+        IGNORES[self.idx].as_slice()
     }
     fn import_hooks(&self) -> Option<&'static ImportHooks> {
         if CLAIMS[self.idx].is_empty() && PREFIXES[self.idx].is_empty() {
