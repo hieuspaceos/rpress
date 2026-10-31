@@ -7,12 +7,14 @@ use std::fs;
 use std::path::Path;
 
 fn main() {
-    emit_specs("plugins/specs", "SPEC_SRCS", "specs.rs");
+    let spec_count = emit_specs("plugins/specs", "SPEC_SRCS", "specs.rs");
     emit_specs("themes/specs", "THEME_SPEC_SRCS", "theme_specs.rs");
+    emit_claim_slots(spec_count);
 }
 
 /// One `<dir>/*.toml` → `(slug, src)` const table in OUT_DIR.
-fn emit_specs(dir_name: &str, sym: &str, out_name: &str) {
+/// Returns the spec count.
+fn emit_specs(dir_name: &str, sym: &str, out_name: &str) -> usize {
     let dir = Path::new(dir_name);
     println!("cargo:rerun-if-changed={dir_name}");
     let mut specs: Vec<(String, String)> = Vec::new();
@@ -37,4 +39,30 @@ fn emit_specs(dir_name: &str, sym: &str, out_name: &str) {
     out.push_str("];\n");
     fs::write(Path::new(&env::var("OUT_DIR").unwrap()).join(out_name), out)
         .unwrap_or_else(|e| panic!("write {out_name}: {e}"));
+    specs.len()
+}
+
+/// `OUT_DIR/spec_claims.rs` — one `spec_claim_K` fn per embedded spec,
+/// each indexing `CLAIMS[K]` (a fn pointer can't capture the spec
+/// index, so the body is generated textually). `CLAIM_SLOTS` is sized
+/// to the real spec count: new specs need no slot-table bump.
+/// Emitted separately from `specs.rs` because that generator is shared
+/// with `themes/specs`, whose includer has no `CLAIMS` in scope.
+fn emit_claim_slots(count: usize) {
+    let mut out = String::new();
+    for k in 0..count {
+        out.push_str(&format!(
+            "fn spec_claim_{k}(t: &str) -> Option<&'static str> {{\n    CLAIMS[{k}].iter().find(|(ty, _)| *ty == t).map(|(_, k)| *k)\n}}\n"
+        ));
+    }
+    out.push_str("static CLAIM_SLOTS: &[fn(&str) -> Option<&'static str>] = &[\n");
+    for k in 0..count {
+        out.push_str(&format!("    spec_claim_{k},\n"));
+    }
+    out.push_str("];\n");
+    fs::write(
+        Path::new(&env::var("OUT_DIR").unwrap()).join("spec_claims.rs"),
+        out,
+    )
+    .unwrap_or_else(|e| panic!("write spec_claims.rs: {e}"));
 }

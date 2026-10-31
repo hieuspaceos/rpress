@@ -288,6 +288,9 @@ pub(crate) fn render_list(
                 let sel = if slug == cat { " selected" } else { "" };
                 o.push_str(&format!(r#"<option value="{}"{}>{}</option>"#, esc(slug), sel, esc(name)));
             }
+            if list.len() > 40 {
+                o.push_str(&format!(r#"<option disabled>… ({} more — type to search)</option>"#, list.len() - 40));
+            }
         }
         o.push_str("</select>");
         o
@@ -359,6 +362,12 @@ pub(crate) fn render_list(
                         esc(slug), esc(name)
                     ));
                 }
+                if list.len() > 80 {
+                    cat_checks.push_str(&format!(
+                        r#"<li><label class="howto">… ({} more — use the filter above)</label></li>"#,
+                        list.len() - 80
+                    ));
+                }
             }
             format!(
                 r#"<div>
@@ -415,6 +424,12 @@ pub(crate) fn render_list(
                 cat_checks.push_str(&format!(
                     r#"<li><label><input type="checkbox" name="bcat-{}" value="1"> {}</label></li>"#,
                     esc(slug), esc(name)
+                ));
+            }
+            if list.len() > 80 {
+                cat_checks.push_str(&format!(
+                    r#"<li><label class="howto">… ({} more)</label></li>"#,
+                    list.len() - 80
                 ));
             }
         }
@@ -1165,6 +1180,9 @@ window.deleteUserSetting = window.deleteUserSetting || function(n) {{ try {{ loc
                     esc(&serde_json::to_string(&name).unwrap_or_else(|_| "\"\"".to_string())),
                     esc(name)
                 ));
+            }
+            if list.len() > 20 {
+                c.push_str(&format!(", <em>… ({} more)</em>", list.len() - 20));
             }
         }
         c

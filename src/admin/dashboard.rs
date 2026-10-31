@@ -152,14 +152,18 @@ fn activity_post_row(r: &crud::posts::DashPostRow, csrf: &str) -> String {
 /// One Activity comment row: author + excerpt + "On: post" + inline
 /// Approve/Spam/Trash posting to `comments::comment_action` (`back=/admin`).
 fn activity_comment_row(r: &crud::comments::CommentRow, csrf: &str) -> String {
-    let excerpt: String = r
+    let body = r
         .body
         .split_whitespace()
         .collect::<Vec<_>>()
-        .join(" ")
+        .join(" ");
+    let mut excerpt: String = body
         .chars()
         .take(80)
         .collect();
+    if body.chars().count() > 80 {
+        excerpt.push('…');
+    }
     let mut acts = String::new();
     if r.status == "pending" {
         acts.push_str(
@@ -194,14 +198,18 @@ fn activity_box(_c: &Connection, sc: &SiteCtx, csrf: &str) -> String {
             "<div class=\"dashboard-pending-comments\"><span class=\"awaiting-mod count-{pending}\"><span class=\"pending-count\" aria-hidden=\"true\">{pending}</span></span> <a href=\"/admin/comments?status=pending\">pending moderation</a>"
         );
         if let Ok(Some(p)) = crud::comments::first_pending(&sc.db) {
-            let excerpt: String = p
+            let body = p
                 .body
                 .split_whitespace()
                 .collect::<Vec<_>>()
-                .join(" ")
+                .join(" ");
+            let mut excerpt: String = body
                 .chars()
                 .take(100)
                 .collect();
+            if body.chars().count() > 100 {
+                excerpt.push('…');
+            }
             bubble.push_str(&format!(
                 " — <strong>{}</strong>: {} <a href=\"/admin/comments?status=pending\">Moderate</a>",
                 esc(&p.author),

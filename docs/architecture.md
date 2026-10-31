@@ -172,11 +172,15 @@ registered in `settings.languages`, `ThemeDef::tax_lang`, or the blob.
   tour taxonomies (`duree`, `region`, …) untouched.
 - **No domain literals in `src/` — gated by `check-layers.sh` rules 4–5.**
   Any string naming a host, brand, taxonomy, or URL segment comes from
-  `SiteCtx` (CLI), `settings.*` (DB), `ThemeDef`/`KindDef` data, or
-  `src/seed/` (reference-theme payloads). Adding a site must never
-  require a code change. `src/widgets.rs` SEED_WIDGETS + `src/seed/*.json`
-  are the reference theme's default widget set — replace both for your
-  own theme. Live-path language codes resolve through `lang::config` —
+  `SiteCtx` (CLI), `settings.*` (DB), `ThemeDef`/`KindDef` data, or a
+  theme adapter's seed payloads. Adding a site must never
+  require a code change. Widget seed rows are plugin/theme data:
+  `theme-traveltour`'s `SEEDS` table (plus its `seed/*.json` capture
+  assets) lives in `src/plugins/theme_traveltour/widgets_theme.rs` and
+  reaches the DB through `PluginAdapter::seeds`, folded into
+  `widgets::seed_widgets()` after the (empty) core table — replace it
+  for your own theme. Live-path language codes
+  resolve through `lang::config` —
   never `"fr"`/`"es"` in admin/render code (gate-allow: boot defaults
   where no DB exists yet).
 - **Themes are data, not code.** A new theme onboards as

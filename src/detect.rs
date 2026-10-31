@@ -59,14 +59,13 @@ fn active_plugins(dump: &Path) -> Vec<(String, String)> {
 }
 
 /// Walk plugin/theme PHP files (vendor/tests skipped so fixtures can't
-/// produce false positives). `hit(path, src)` sees every file under
-/// `files` cap — early return `true` from `hit` stops that dir.
-fn walk_php(root: &Path, files_cap: usize, mut hit: impl FnMut(&Path, &str) -> bool) {
+/// produce false positives). `hit(path, src)` sees every PHP file in the
+/// tree — early return `true` from `hit` stops that dir.
+fn walk_php(root: &Path, mut hit: impl FnMut(&Path, &str) -> bool) {
     if !root.is_dir() {
         return;
     }
     let mut stack = vec![root.to_path_buf()];
-    let mut files = 0usize;
     'dirs: while let Some(d) = stack.pop() {
         let Ok(rd) = std::fs::read_dir(&d) else { continue };
         for e in rd.flatten() {
@@ -77,10 +76,6 @@ fn walk_php(root: &Path, files_cap: usize, mut hit: impl FnMut(&Path, &str) -> b
                     stack.push(p);
                 }
             } else if p.extension().map(|x| x == "php").unwrap_or(false) {
-                files += 1;
-                if files > files_cap {
-                    break 'dirs;
-                }
                 let Ok(s) = std::fs::read_to_string(&p) else { continue };
                 if hit(&p, &s) {
                     break 'dirs;
@@ -98,7 +93,7 @@ fn walk_php(root: &Path, files_cap: usize, mut hit: impl FnMut(&Path, &str) -> b
 /// at the plugin root.
 fn scan_markers(dir: &Path) -> BTreeMap<&'static str, (usize, bool)> {
     let mut found: BTreeMap<&'static str, (usize, bool)> = BTreeMap::new();
-    walk_php(dir, 8000, |p, s| {
+    walk_php(dir, |p, s| {
         let top_level = p
             .strip_prefix(dir)
             .map(|r| r.components().count() == 1)
@@ -129,7 +124,7 @@ fn registered_types(wp_content: &Path) -> BTreeMap<String, String> {
     /// literal + dynamic registrations merged.
     fn scan_dir(dir: &Path, owner: &str, re_lit: &regex::Regex, re_dyn: &regex::Regex,
                 owners: &mut BTreeMap<String, String>) {
-        walk_php(dir, 8000, |_, s| {
+        walk_php(dir, |_, s| {
             for c in re_lit.captures_iter(s) {
                 owners.entry(c[1].to_string()).or_insert_with(|| owner.to_string());
             }
@@ -249,7 +244,7 @@ fn registered_shortcodes(wp_content: Option<&Path>) -> BTreeSet<String> {
             if !dir.is_dir() {
                 continue;
             }
-            walk_php(&dir, 8000, |_, s| {
+            walk_php(&dir, |_, s| {
                 for c in re_lit.captures_iter(s) {
                     tags.insert(c[1].to_lowercase());
                 }
