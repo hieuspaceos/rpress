@@ -221,6 +221,22 @@ parity of nav `<li>` sequence + footer text against
 `tests/fixtures/aucoeur-*-baseline.txt` (recapture via the fixture
 comments after intentional chrome changes).
 
+### Bridge e2e gate
+
+`scripts/e2e-bridge.sh` is the live proof for the PHP bridge — unit
+tests can't spawn `php -S`, so token/header/URL-rewrite regressions only
+show here. Run it after touching `src/admin/bridge/**` or the dispatch
+code in `src/admin/mod.rs`:
+
+```bash
+./scripts/e2e-bridge.sh aucoeur-test            # default 127.0.0.1:8430
+```
+
+It starts a real server, logs in, then asserts: proxied pages return
+200, `Location`/body URLs never leak `127.0.0.1:<port>`, the raw bridge
+port 403s without the bearer and 204s `/__rpress_ident` with it, and
+the admin-ajax pipe is live.
+
 ### Declarative plugin adapters — `plugins/specs/*.toml`
 
 New WP plugin stacks on-board without Rust: drop a TOML spec into
@@ -335,7 +351,7 @@ src/
   sitefx.rs     sitemap, feeds, robots.txt, 404, redirects.map, llms.txt
   schema.rs     DDL owner
 templates/      minijinja templates — admin/ + public theme shells (base_<lang>.html)
-scripts/        e2e-site.sh — dump→serve workflow; check-layers.sh — architecture gate
+scripts/        e2e-site.sh — dump→serve workflow; check-layers.sh — architecture gate; e2e-bridge.sh — live php-bridge gate
 plugins/specs/  declarative plugin adapters (baked into the binary by build.rs)
 themes/specs/  declarative themes (stylesheet match → ThemeDef; same codegen)
 install.sh     one-command Linux VPS installer
