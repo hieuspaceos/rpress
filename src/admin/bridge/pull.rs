@@ -85,9 +85,15 @@ impl WriteSpec {
 }
 
 /// sqlite-integration writes the real DB as `.ht.<hash>/.ht.sqlite` inside
-/// the mounted database dir. Resolve it lazily — the file only exists
-/// after WP's first write.
+/// the mounted database dir on the secret-path (Playground) layout; the
+/// PhpCgi runtime instead defines `FQDB = <db_dir>/wp.db` explicitly and
+/// the integration stores the file verbatim. Resolve lazily — the file
+/// only exists after WP's first write.
 pub(crate) fn locate(db_dir: &Path) -> Option<PathBuf> {
+    let direct = db_dir.join("wp.db");
+    if direct.exists() {
+        return Some(direct);
+    }
     std::fs::read_dir(db_dir)
         .ok()?
         .filter_map(|e| e.ok())

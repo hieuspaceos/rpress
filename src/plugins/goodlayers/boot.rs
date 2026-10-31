@@ -1118,6 +1118,7 @@ fn background_template(conn: &Connection, n: &Map<String, Value>) -> String {
     wrapper += "</div></div></div></div></div>";
     let pid = rnd_id();
     wrapper += &format!("<script id=\"gdlr-core-preview-background-{pid}\" >\njQuery(document).ready(function(){{\n\tvar background_wrap = jQuery('#gdlr-core-preview-background-{pid}').parent();\n\tbackground_wrap.gdlr_core_parallax_background().gdlr_core_particle_background().gdlr_core_marquee().gdlr_core_fluid_video().gdlr_core_ux();\n\tjQuery(window).trigger('scroll');\n}});\n</script>");
+    wrapper += "</div>";
     wrapper
 }
 
@@ -1185,6 +1186,7 @@ fn sidebar_template(conn: &Connection, n: &Map<String, Value>) -> String {
     wrapper += "</div></div>";
     let pid = rnd_id();
     wrapper += &format!("<script id=\"gdlr-core-preview-sidebar-background-{pid}\" >\njQuery(document).ready(function(){{\n\tvar background_wrap = jQuery('#gdlr-core-preview-sidebar-background-{pid}').parent();\n\tnew gdlr_core_sidebar_wrapper( background_wrap );\n\tbackground_wrap.gdlr_core_parallax_background().gdlr_core_ux();\n\tjQuery(window).trigger('scroll');\n}});\n</script>");
+    wrapper += "</div>";
     wrapper
 }
 

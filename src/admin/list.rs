@@ -184,7 +184,7 @@ pub(crate) fn empty_row(cols: usize, msg: &str) -> String {
 pub(crate) fn back_or<'a>(f: &'a HashMap<String, String>, default: &'a str) -> &'a str {
     f.get("back")
         .map(|s| s.as_str())
-        .filter(|s| s.starts_with('/') && !s.starts_with("//"))
+        .filter(|s| s.starts_with('/') && !s.starts_with("//") && !s.contains('\\'))
         .unwrap_or(default)
 }
 

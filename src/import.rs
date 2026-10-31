@@ -712,6 +712,15 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path, force: bool) -> Resu
                 let seo_desc = meta1(p, "rank_math_description");
                 let feat: Option<i64> = meta1(p, "_thumbnail_id").and_then(|s| s.parse().ok());
                 let template = meta1(p, "_wp_page_template");
+                // `published_at` convention is UTC (see save_post_on);
+                // WP `post_date` is site-local — convert through the
+                // site's own `timezone_string` option (falls back to the
+                // raw value when the host can't resolve the zone).
+                let pub_utc = crate::db::misc::local_to_utc(
+                    &p.date,
+                    options.get("timezone_string").map(|s| s.as_str()).unwrap_or("UTC"),
+                )
+                .unwrap_or_else(|| p.date.clone());
                 stmt_post.execute(params![
                     p.id,
                     p.slug,
@@ -722,7 +731,7 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path, force: bool) -> Resu
                     p.status,
                     null_zero(p.parent),
                     p.menu_order,
-                    p.date,
+                    pub_utc,
                     p.modified,
                     seo_title,
                     seo_desc,
@@ -1434,6 +1443,10 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path, force: bool) -> Resu
     drop(conn);
     let _ = std::fs::remove_file(format!("{}-wal", stage.display()));
     let _ = std::fs::remove_file(format!("{}-shm", stage.display()));
+    /* The old DB's WAL/SHM must not survive the swap either — leftover
+       frames could be replayed into the renamed file. */
+    let _ = std::fs::remove_file(format!("{}-wal", db_path.display()));
+    let _ = std::fs::remove_file(format!("{}-shm", db_path.display()));
     std::fs::rename(&stage, db_path)
         .with_context(|| format!("publish {} → {}", stage.display(), db_path.display()))?;
 

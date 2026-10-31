@@ -124,7 +124,7 @@ fn delete_ids(map: &HashMap<String, String>) -> Vec<i64> {
 
 fn back_target(map: &HashMap<String, String>, default: &str) -> String {
     map.get("back")
-        .filter(|b| b.starts_with('/') && !b.starts_with("//"))
+        .filter(|b| b.starts_with('/') && !b.starts_with("//") && !b.contains('\\'))
         .cloned()
         .unwrap_or_else(|| default.to_string())
 }
@@ -828,7 +828,7 @@ pub(crate) async fn user_edit_page(
     };
     let back = q
         .get("back")
-        .filter(|b| b.starts_with('/') && !b.starts_with("//"))
+        .filter(|b| b.starts_with('/') && !b.starts_with("//") && !b.contains('\\'))
         .cloned()
         .unwrap_or_else(|| "/admin/users".into());
     // HARDENING (beyond WP): the sole remaining admin's role is locked.
@@ -893,7 +893,7 @@ pub(crate) async fn users_save(State(app): State<App>, headers: HeaderMap, Form(
     } else {
         format!("/admin/user-edit/{}", f.id)
     };
-    let back = if f.back.starts_with('/') && !f.back.starts_with("//") { f.back.clone() } else { err_back.clone() };
+    let back = if f.back.starts_with('/') && !f.back.starts_with("//") && !f.back.contains('\\') { f.back.clone() } else { err_back.clone() };
     let Ok(Some(cur)) = udb::get(&sc.db, f.id) else {
         return redirect_with("/admin/users", "msg=err-nouser");
     };
@@ -1007,7 +1007,7 @@ pub(crate) async fn users_delete_page(
     let ids = parse_ids(q.get("ids").map(|s| s.as_str()).unwrap_or(""));
     let back = q
         .get("back")
-        .filter(|b| b.starts_with('/') && !b.starts_with("//"))
+        .filter(|b| b.starts_with('/') && !b.starts_with("//") && !b.contains('\\'))
         .cloned()
         .unwrap_or_else(|| "/admin/users".into());
     if ids.is_empty() {

@@ -396,7 +396,7 @@ pub async fn serve(db: PathBuf, templates: PathBuf, out: PathBuf, www: PathBuf, 
             .map(|sc| crate::db::setting_value(&sc.db, "site_url", ""))
             .unwrap_or_default();
         let localhosty = su.is_empty() || su == "/" || su.contains("localhost") || su.contains("127.0.0.1") || su.contains("[::1]");
-        if bind.ip().is_loopback() && TRUSTED_PROXIES.is_empty() && !localhosty {
+        if (bind.ip().is_loopback() || bind.ip().is_unspecified()) && TRUSTED_PROXIES.is_empty() && !localhosty {
             eprintln!(
                 "rpress: WARNING — bound to loopback and RPRESS_TRUSTED_PROXY is unset, \
                  but site_url is {su}: X-Forwarded-For is ignored and every client IP \
@@ -1150,12 +1150,20 @@ async fn plugin_screen(
             Ok(b) => b,
             Err(_) => return StatusCode::BAD_REQUEST.into_response(),
         };
+        /* Adapter POSTs must carry the session CSRF token. Tourmaster's
+           shipped JS names the field `security` (its nonce), first-party
+           screens use `csrf` — accept either; the screen's own handler
+           keeps its `action`-non-empty exemption (WP-parity buttons). */
         let sent = serde_urlencoded::from_bytes::<HashMap<String, String>>(&bytes)
             .ok()
-            .and_then(|f| f.get("csrf").cloned())
+            .and_then(|f| f.get("csrf").or_else(|| f.get("security")).cloned())
             .unwrap_or_default();
-        if let Err(r) = check_csrf(&s, &sent) {
-            return r;
+        let action_empty = serde_urlencoded::from_bytes::<HashMap<String, String>>(&bytes)
+            .ok()
+            .map(|f| f.get("action").cloned().unwrap_or_default().is_empty())
+            .unwrap_or(true);
+        if check_csrf(&s, &sent).is_err() && action_empty {
+            return StatusCode::FORBIDDEN.into_response();
         }
         req = axum::extract::Request::from_parts(parts, Body::from(bytes));
     }
@@ -1238,34 +1246,40 @@ async fn bridge_dispatch(
         fwd.push(("X-Rpress-Bridge".into(), token));
         let r = st.rt.request(&method, &path, &fwd, &body)?;
         // Pull whitelisted writes in the same task — no drift window.
-        // A failed pull LOSES the edit the user just made in the bridged
-        // screen — never `let _ =` it and never answer WP's success:1;
-        // surface a 502 the editor JS can report instead.
+        // A failed pull on a WRITE loses the edit the user just made —
+        // never `let _ =` it and never answer WP's success:1; surface a
+        // 502 the editor JS can report. A failed pull on a read-side
+        // request (GET/asset) has nothing to lose; warn and serve.
+        let is_write = !matches!(method.as_str(), "GET" | "HEAD" | "OPTIONS");
         match bridge::pull::locate(&st.wp_db) {
             Some(wp_db) => {
                 if let Err(e) = bridge::pull::pull(&wp_db, &db, &specs) {
                     eprintln!("bridge pull {site}/{slug}: {e:#}");
-                    // Client gets the summary; the anyhow chain stays in the log.
-                    return Ok(axum::response::Response::builder()
-                        .status(StatusCode::BAD_GATEWAY)
-                        .header(header::CONTENT_TYPE, "application/json")
-                        .body(Body::from(format!(
-                            r#"{{"success":0,"error":"rpress pull-back failed — your edit was not saved: {e}"}}"#
-                        )))
-                        .unwrap_or_else(|_| StatusCode::BAD_GATEWAY.into_response()));
+                    if is_write {
+                        // Client gets the summary; the anyhow chain stays in the log.
+                        return Ok(axum::response::Response::builder()
+                            .status(StatusCode::BAD_GATEWAY)
+                            .header(header::CONTENT_TYPE, "application/json")
+                            .body(Body::from(format!(
+                                r#"{{"success":0,"error":"rpress pull-back failed — your edit was not saved: {e}"}}"#
+                            )))
+                            .unwrap_or_else(|_| StatusCode::BAD_GATEWAY.into_response()));
+                    }
                 }
             }
             None => {
-                // wp.db should always exist post-install; if it doesn't the
-                // edit silently went nowhere — same failure mode, same 502.
+                // wp.db should always exist post-install; a missing pull
+                // source on a write silently drops the edit — 502 it.
                 eprintln!("bridge pull {site}/{slug}: no pull source for {}", st.wp_db.display());
-                return Ok(axum::response::Response::builder()
-                    .status(StatusCode::BAD_GATEWAY)
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(
-                        r#"{"success":0,"error":"rpress pull-back unavailable — your edit was not saved"}"#.to_string(),
-                    ))
-                    .unwrap_or_else(|_| StatusCode::BAD_GATEWAY.into_response()));
+                if is_write {
+                    return Ok(axum::response::Response::builder()
+                        .status(StatusCode::BAD_GATEWAY)
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(
+                            r#"{"success":0,"error":"rpress pull-back unavailable — your edit was not saved"}"#.to_string(),
+                        ))
+                        .unwrap_or_else(|_| StatusCode::BAD_GATEWAY.into_response()));
+                }
             }
         }
         let mut b = axum::response::Response::builder().status(

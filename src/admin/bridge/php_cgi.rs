@@ -559,10 +559,9 @@ pub(crate) fn spawn(
     };
     // Pidfile BEFORE the probe loop + wp_install: a mid-spawn crash leaves
     // a tracked child `reap_stale_pidfile` can kill (format `pid:port`).
-    {
-        let pf = pidfile_path(www, slug);
-        let _ = std::fs::write(&pf, format!("{}:{port}\n", child.id()));
-    }
+    // Per-pid name — a losing spawn race can never clobber the winner's.
+    let pidfile = pidfile_path(www, slug, child.id());
+    let _ = std::fs::write(&pidfile, format!("{}:{port}\n", child.id()));
 
     // php -S boots near-instantly vs the WASM cold start; still probe with
     // the same deadline pattern.
@@ -690,6 +689,6 @@ pub(crate) fn spawn(
         spawned_at: Instant::now(),
         token,
         wp_db,
-        pidfile: PathBuf::new(), // filled by mod::spawn
+        pidfile,
     })
 }

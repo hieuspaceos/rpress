@@ -80,11 +80,34 @@ where
             break;
         }
         if !dump_latin1 && header_lines < 200 && line.len() < 4096 {
-            let l = String::from_utf8_lossy(&line).to_ascii_lowercase();
-            if l.contains("set names latin1")
-                || (l.contains("character_set_client") && l.contains("latin1"))
-            {
-                dump_latin1 = true;
+            /* Sniff `SET NAMES latin1` / `character_set_client = latin1`
+               as STATEMENTS only — a `--`/`#` comment line or a match
+               inside a '…' literal must not flip the whole dump to
+               cp1252. `/*! … */` versioned comments DO execute in
+               MySQL, so block comments are kept. */
+            let t = line.iter().position(|&b| !b.is_ascii_whitespace()).unwrap_or(0);
+            let starts_comment = line[t..].starts_with(b"--")
+                || line[t..].starts_with(b"#");
+            if !starts_comment {
+                // Strip '…' literals so their contents can't match.
+                let mut scrub = String::from_utf8_lossy(&line).to_ascii_lowercase();
+                let mut out = String::with_capacity(scrub.len());
+                let mut in_str = false;
+                let mut chars = scrub.chars().peekable();
+                while let Some(c) = chars.next() {
+                    match c {
+                        '\'' => in_str = !in_str,
+                        '\\' if in_str => { let _ = chars.next(); }
+                        _ if in_str => {}
+                        _ => out.push(c),
+                    }
+                }
+                scrub = out;
+                if scrub.contains("set names latin1")
+                    || (scrub.contains("character_set_client") && scrub.contains("latin1"))
+                {
+                    dump_latin1 = true;
+                }
             }
             header_lines += 1;
         }
@@ -459,13 +482,33 @@ fn add_col_def(def: &[u8], cols: &mut Vec<String>) {
 /// Statement ends with `;` at top level — no unclosed `'…'` string.
 /// `\'`, `\\` and `''` escapes are honored; trailing `-- …` / `/* … */`
 /// comments after the `;` count as complete (phpMyAdmin emits them).
+/// `;` inside a `--`/`#`/`/* … */` comment is not a terminator — a
+/// `; -- note; trailing text` line must not mark the buffer complete.
 fn is_complete(stmt: &[u8]) -> bool {
     let mut in_str = false;
     let mut in_tick = false;
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
     let mut end = 0usize; // offset just past the top-level ';'
     let mut i = 0;
     while i < stmt.len() {
-        match stmt[i] {
+        let c = stmt[i];
+        if in_line_comment {
+            if c == b'\n' {
+                in_line_comment = false;
+            }
+            i += 1;
+            continue;
+        }
+        if in_block_comment {
+            if c == b'*' && stmt.get(i + 1) == Some(&b'/') {
+                in_block_comment = false;
+                i += 1;
+            }
+            i += 1;
+            continue;
+        }
+        match c {
             b'\'' if !in_tick => {
                 if in_str && stmt.get(i + 1) == Some(&b'\'') {
                     i += 2; // '' inside a string is an escaped quote
@@ -475,6 +518,18 @@ fn is_complete(stmt: &[u8]) -> bool {
             }
             b'`' if !in_str => in_tick = !in_tick,
             b'\\' if in_str => i += 1, // skip the escaped byte
+            b'-' if !in_str && !in_tick
+                && stmt.get(i + 1) == Some(&b'-')
+                && stmt.get(i + 2).map_or(true, |&b| b == b' ' || b == b'\t' || b == b'\n' || b == b'\r') =>
+            {
+                in_line_comment = true;
+                i += 1;
+            }
+            b'#' if !in_str && !in_tick => in_line_comment = true,
+            b'/' if !in_str && !in_tick && stmt.get(i + 1) == Some(&b'*') => {
+                in_block_comment = true;
+                i += 1;
+            }
             b';' if !in_str && !in_tick => end = i + 1,
             _ => {}
         }

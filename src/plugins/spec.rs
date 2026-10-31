@@ -606,7 +606,9 @@ fn spec_metabox(sc: &crate::admin::SiteCtx, _s: &crate::admin::Sess, f: &crate::
         }
     }
     let _ = sc;
-    format!("<div class=\"postbox\"><h2>{title}</h2><div class=\"inside\"><input type=\"hidden\" name=\"__present\" value=\"1\">{rows}</div></div>")
+    // Marker is namespaced per kind: another kind's metabox can't claim
+    // this one was on the form.
+    format!("<div class=\"postbox\"><h2>{title}</h2><div class=\"inside\"><input type=\"hidden\" name=\"__present_{kind}\" value=\"1\">{rows}</div></div>", kind = f.kind)
 }
 
 fn spec_assets() -> &'static str {
@@ -621,10 +623,11 @@ fn spec_editor_save(c: &Connection, id: i64, f: &crate::db::posts::PostForm) -> 
     let Some(fields) = metabox_fields_for(&f.kind) else {
         return Ok(());
     };
-    // `__present` proves the metabox was on the form even when every
+    // `__present_<kind>` proves the metabox was on the form even when every
     // field is an unchecked checkbox (checkboxes post nothing when off);
-    // the legacy per-field probe stays for pre-marker callers.
-    let box_present = f.extra.contains_key("__present")
+    // bare `__present` + the legacy per-field probe stay for old callers.
+    let box_present = f.extra.contains_key(&format!("__present_{}", f.kind))
+        || f.extra.contains_key("__present")
         || fields.iter().any(|fs| f.extra.contains_key(fs.key));
     if !box_present {
         return Ok(());

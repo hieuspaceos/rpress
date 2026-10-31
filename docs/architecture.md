@@ -231,16 +231,28 @@ registered in `settings.languages`, `ThemeDef::tax_lang`, or the blob.
   and slirp4netns/pasta *add* outbound NAT. So the bwrap profile keeps
   `--share-net` and the deploy unit hardens egress service-wide:
   `IPAddressAllow=localhost`/`IPAddressDeny=any` in the generated systemd
-  unit (install.sh; rpress itself needs no outbound — pull.rs is
-  local-file). A host where the bridge runs outside that unit (bare
-  `rpress serve`) has no egress fence. When neither sandbox tool exists,
-  spawn fails closed unless `RPRESS_BRIDGE_UNSAFE=1` is set explicitly.
+  unit — emitted only when the site's `BIND` is loopback (a public bind
+  would lose inbound connections; the Playground runtime also needs a
+  one-time wordpress.org download). rpress itself needs no outbound —
+  pull.rs is local-file. A host where the bridge runs outside that unit
+  (bare `rpress serve`) has no egress fence. When neither sandbox tool
+  exists, spawn fails closed unless `RPRESS_BRIDGE_UNSAFE=1` is set
+  explicitly.
+- **Pull-back resolves the WP DB by layout.** The PhpCgi runtime defines
+  `FQDB=<dir>/wp.db` (explicit path); Playground's mount uses the
+  sqlite-integration secret dir (`.ht.<hash>/.ht.sqlite`).
+  `pull::locate()` tries `wp.db` first, then the `.ht.sqlite` glob; a
+  failed pull on a mutating request returns 502 to the editor — reads
+  only log a warning. Pidfiles are per-spawn (`<slug>.<pid>.pid`,
+  `pid:port` content) so a losing spawn race can't delete the winner's
+  record; `reap_stale_pidfile` globs them and verifies the child's argv
+  before killing.
 - **`RPRESS_TRUSTED_PROXY` must name the reverse proxy's IP.** Behind
   nginx/caddy the peer addr is 127.0.0.1; without the env var
   `X-Forwarded-For` is ignored and rate limits, session stamps and
   app-pass `last_ip` all record the proxy's loopback. Startup warns once
-  when bind is loopback, the var is unset, and `site_url` is a
-  non-localhost production URL.
+  when bind is loopback or unspecified (`0.0.0.0`/`[::]`), the var is
+  unset, and `site_url` is a non-localhost production URL.
 
 ## What this is NOT
 

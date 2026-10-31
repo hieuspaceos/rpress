@@ -30,6 +30,7 @@ pub(crate) fn request(
             && !path.contains('?')
             && !path.contains('#')
             && !path.contains(':')
+            && !path.contains('\\')
             && !path.starts_with("//"),
         "bridge path rejected: {path:?}"
     );
@@ -49,7 +50,7 @@ pub(crate) fn request(
         // app-password `Authorization`, or a bearer `X-Forwarded-*` chain
         // handed to vendored plugin code is exfiltratable via `$_SERVER`
         // (audit M1). The bridge's auth is `X-Rpress-Bridge` only.
-        if matches!(kl.as_str(), "host" | "connection" | "content-length" | "transfer-encoding" | "cookie" | "expect" | "authorization" | "proxy-authorization")
+        if matches!(kl.as_str(), "host" | "connection" | "content-length" | "transfer-encoding" | "cookie" | "expect" | "authorization" | "proxy-authorization" | "x-rpress-bridge")
             || kl.starts_with("x-forwarded-")
             || kl.starts_with("x-real-")
         {

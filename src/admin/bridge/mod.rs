@@ -120,38 +120,48 @@ pub(crate) fn opt_in(env_list: &str, slug: &str) -> bool {
 /// Spawn the runtime for `slug` at `site`, projecting `post_id`'s context
 /// into a fresh `wp.db` under `www/bridge/<slug>/`. Errors when the
 /// runtime binary is missing — caller renders the degrade screen.
-/// `<www>/bridge/<slug>.pid` — the runtime dir itself is wiped on respawn,
-/// so the pidfile sits one level up, out of the wipe path.
-pub(crate) fn pidfile_path(www: &std::path::Path, slug: &str) -> PathBuf {
-    www.join("bridge").join(format!("{slug}.pid"))
+/// `<www>/bridge/<slug>.<pid>.pid` — per-spawn-attempt name so a losing
+/// racer's cleanup can never delete the winner's record, and the file
+/// sits one level up, out of the wiped runtime dir.
+pub(crate) fn pidfile_path(www: &std::path::Path, slug: &str, pid: u32) -> PathBuf {
+    www.join("bridge").join(format!("{slug}.{pid}.pid"))
 }
 
-/// Reap the bridge a *previous* serve process left behind (crash before
-/// Drop/SIGTERM). `pid:port` in the file; the pid must still be alive to
-/// die — a stale file is just removed. Command-line check keeps a
-/// PID-recycled process (post boot) safe from a stray kill.
+/// Reap bridge processes a *previous* serve left behind (crash before
+/// Drop/SIGTERM). `<slug>.<pid>.pid` files carry `pid:port`; each pid must
+/// still be alive to die — stale files are just removed. Command-line
+/// check keeps a PID-recycled process safe from a stray kill.
 fn reap_stale_pidfile(www: &std::path::Path, slug: &str) {
-    let pf = pidfile_path(www, slug);
-    let Ok(raw) = std::fs::read_to_string(&pf) else { return };
-    let pid: Option<u32> = raw.split(':').next().and_then(|s| s.trim().parse().ok());
-    if let Some(pid) = pid {
-        // Match the child's actual argv signature, not just the image name:
-        // a PID recycled into an unrelated php/node process (dev server,
-        // another tool) must never be killed. Expected argv contains the
-        // bridge docroot/port or the playground workdir.
-        let ps = Command::new("ps").args(["-p", &pid.to_string(), "-o", "args="]).output();
-        if let Ok(o) = ps {
-            let args = String::from_utf8_lossy(&o.stdout);
-            let ours = o.status.success()
-                && (args.contains(&format!("bridge/{slug}"))
-                    || args.contains("wp-playground"));
-            if ours {
-                let _ = Command::new("kill").arg(pid.to_string()).status();
-                eprintln!("bridge: reaped orphan {slug} pid {pid}");
+    let dir = www.join("bridge");
+    let prefix = format!("{slug}.");
+    let Ok(entries) = std::fs::read_dir(&dir) else { return };
+    for e in entries.filter_map(|e| e.ok()) {
+        let name = e.file_name().to_string_lossy().to_string();
+        if !(name.starts_with(&prefix) && name.ends_with(".pid")) {
+            continue;
+        }
+        let pf = e.path();
+        let Ok(raw) = std::fs::read_to_string(&pf) else { continue };
+        let pid: Option<u32> = raw.split(':').next().and_then(|s| s.trim().parse().ok());
+        if let Some(pid) = pid {
+            // Match the child's actual argv signature, not just the image
+            // name: a PID recycled into an unrelated php/node process
+            // must never be killed. Expected argv contains the bridge
+            // docroot/port or the playground workdir.
+            let ps = Command::new("ps").args(["-p", &pid.to_string(), "-o", "args="]).output();
+            if let Ok(o) = ps {
+                let args = String::from_utf8_lossy(&o.stdout);
+                let ours = o.status.success()
+                    && (args.contains(&format!("bridge/{slug}"))
+                        || args.contains("wp-playground"));
+                if ours {
+                    let _ = Command::new("kill").arg(pid.to_string()).status();
+                    eprintln!("bridge: reaped orphan {slug} pid {pid}");
+                }
             }
         }
+        let _ = std::fs::remove_file(&pf);
     }
-    let _ = std::fs::remove_file(&pf);
 }
 
 fn spawn(
@@ -165,7 +175,7 @@ fn spawn(
     templates: &std::path::Path,
 ) -> Result<BridgeState> {
     reap_stale_pidfile(www, slug);
-    let pidfile = pidfile_path(www, slug);
+    // Runtimes write their own per-pid pidfile right after Command::spawn.
     // The port picked by free_port() can be stolen between the probe
     // close and `php -S`/cli's bind; the identity probe catches it
     // (foreign listener can't answer our token), so retry the spawn
@@ -196,7 +206,6 @@ fn spawn(
             continue;
         }
         st.rt = rt;
-        st.pidfile = pidfile.clone();
         return Ok(st);
     }
     Err(last_err.unwrap_or_else(|| anyhow::anyhow!("bridge {slug}: spawn failed")))
@@ -273,15 +282,9 @@ pub(crate) fn bridge_for(
         drop(map);
         let mut loser = st;
         let _ = loser.rt.kill();
-        // Read-compare-remove: the winner's spawn already wrote ITS pid to
-        // this path — a live winner's pidfile must never be deleted.
-        let loser_pid = loser.rt.pid().to_string();
-        if std::fs::read_to_string(&loser.pidfile)
-            .ok()
-            .is_some_and(|c| c.split(':').next().map(str::trim) == Some(loser_pid.as_str()))
-        {
-            let _ = std::fs::remove_file(&loser.pidfile);
-        }
+        // Per-pid pidfiles: the loser's file is uniquely its own — remove
+        // it unconditionally; the winner's record is untouchable.
+        let _ = std::fs::remove_file(&loser.pidfile);
         out.lock().last_used = Instant::now();
         return Ok(out);
     }

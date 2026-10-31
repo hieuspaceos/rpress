@@ -236,11 +236,10 @@ pub(crate) fn spawn(
         .spawn()
         .context("spawn @wp-playground/cli — is Node installed?")?;
     // Pidfile BEFORE the probe loop: a mid-spawn crash leaves a tracked
-    // child `reap_stale_pidfile` can kill (format `pid:port`).
-    {
-        let pf = super::pidfile_path(www, slug);
-        let _ = std::fs::write(&pf, format!("{}:{port}\n", child.id()));
-    }
+    // child `reap_stale_pidfile` can kill (format `pid:port`). Per-pid
+    // name — a losing spawn race can never clobber the winner's.
+    let pidfile = super::pidfile_path(www, slug, child.id());
+    let _ = std::fs::write(&pidfile, format!("{}:{port}\n", child.id()));
 
     // Wait for the HTTP surface (cold WASM boot ~1-3s; allow 30s).
     let deadline = Instant::now() + std::time::Duration::from_secs(30);
@@ -258,7 +257,7 @@ pub(crate) fn spawn(
         spawned_at: Instant::now(),
         token,
         wp_db,
-        pidfile: PathBuf::new(), // filled by mod::spawn
+        pidfile,
     })
 }
 

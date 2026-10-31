@@ -91,9 +91,13 @@ async fn x(State(app): State<App>, headers: HeaderMap, Form(f): Form<F>) -> Resp
 ## Status vocabulary
 
 `publish | future | draft | pending | trash`. Validate before writing —
-`bulk_apply`/`quick_update`/`save_post` reject anything else. `future` is
 scheduled: `published_at` in the future; `publish_due` (called from
 `get_sess`) flips due rows to `publish` and regenerates their files.
+`published_at` is stored **UTC** (not WP's site-local `post_date`): the
+`datetime-local` input converts via `settings.timezone` at save, import
+converts `post_date` via the dump's `timezone_string`, and the metabox
+converts back to site-local for display. `effective_status` compares
+UTC-to-UTC lexicographically.
 
 ## Do NOT
 

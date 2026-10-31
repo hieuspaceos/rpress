@@ -104,6 +104,18 @@ fi
 
 UNIT="/etc/systemd/system/rpress-${SITE}.service"
 say "writing systemd unit $UNIT"
+# Loopback-only egress confines the PHP bridge (it can't be netns-isolated
+# without root; rpress itself needs no outbound traffic). Only safe when
+# the site binds loopback — a public BIND would also lose INBOUND
+# connections, so emit the deny lines only for loopback binds.
+BIND_ENV=$(grep -E '^BIND=' "$ROOT/sites/$SITE.env" 2>/dev/null | cut -d= -f2- || true)
+EGRESS=""
+case "${BIND_ENV:-127.0.0.1}" in
+  127.0.0.1*|localhost*|*\[::1\]*)
+    EGRESS="IPAddressAllow=localhost
+IPAddressDeny=any" ;;
+  *) say "non-loopback BIND='$BIND_ENV' — skipping IPAddressAllow/Deny hardening" ;;
+esac
 as_root tee "$UNIT" >/dev/null <<EOF
 [Unit]
 Description=rpress ${SITE} (WordPress-replacement static site)
@@ -123,12 +135,7 @@ PrivateTmp=yes
 NoNewPrivileges=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes
-# Loopback-only egress: the PHP bridge runs inside this unit and can't be
-# netns-isolated without root (bwrap --unshare-net would cut the host's
-# proxy path to the child). rpress itself needs no outbound traffic —
-# pull.rs is local-file based — so deny everything but localhost.
-IPAddressAllow=localhost
-IPAddressDeny=any
+${EGRESS}
 
 [Install]
 WantedBy=multi-user.target
