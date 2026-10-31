@@ -249,6 +249,7 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path, force: bool) -> Resu
                         "page_on_front" | "show_on_front" | "siteurl"
                             | "stylesheet" | "template" | "active_plugins"
                             | "blogname" | "rss_use_excerpt"
+                            | "timezone_string" | "gmt_offset"
                             | "require_name_email" | "comment_moderation"
                             | "comment_max_links" | "comment_previously_approved"
                             | "default_comment_status" | "moderation_keys"

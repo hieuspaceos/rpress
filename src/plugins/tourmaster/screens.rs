@@ -43,8 +43,9 @@ fn save_option<'a>(
             return StatusCode::BAD_REQUEST.into_response();
         };
         // WP-parity: the plugin's field buttons (booking/mail actions)
-        // post no nonce — those actions aren't migrated anyway, so the
-        // CSRF exemption only reaches the "Not migrated" reply below.
+        // post no nonce — they now 403 at the dispatch CSRF gate before
+        // reaching this handler; this branch stays for direct internal
+        // calls that bypass dispatch.
         if check_csrf(&s, &f.csrf).is_err() && f.action.is_empty() {
             return axum::Json(serde_json::json!({
                 "status": "failed", "head": "Invalid Nonce",

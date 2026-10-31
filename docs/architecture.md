@@ -222,10 +222,18 @@ registered in `settings.languages`, `ThemeDef::tax_lang`, or the blob.
   `bridge_for` falls back to `RuntimeKind::Playground` automatically.
 - **Bridged wp-admin POSTs rely on `SameSite=Lax`, not the rpress CSRF token.**
   `/admin/plugins/<slug>/*` enforces `check_csrf` on adapter `ScreenDef`
-  posts, but bridged wp-admin traffic carries WP's own nonces and can't
-  know our token; the fences are the session cookie's `SameSite=Lax` (a
-  cross-site POST never reaches the handler) plus the per-spawn bridge
-  bearer inside the proxy hop. Do not weaken the cookie's SameSite.
+  posts (accepts `csrf` or `security` — tourmaster JS names the field
+  `security`; NO `action`-non-empty exemption at dispatch, that stays
+  inside tourmaster's handler), but bridged wp-admin traffic carries
+  WP's own nonces and can't know our token; the fences are the session
+  cookie's `SameSite=Lax` plus the per-spawn `X-Rpress-Bridge` bearer
+  inside the proxy hop. Header rule: `bridge_dispatch` strips any
+  client-supplied `X-Rpress-Bridge` from `fwd` before injecting the real
+  one — the socket-level denylist in `http::request` must NOT list it
+  or it strips our injected token too (bit us once: cc68055 → reverted).
+  BridgeState.token is the RAW hex; `php_str(&token)` is only for the
+  install-snippet PHP literal — a quoted token in BridgeState fails
+  `hash_equals` in bridge.php and every spawn dies at the identity probe.
 - **Bridge egress can't be netns-isolated without root (residual risk).**
   `bwrap --unshare-net` would cut the host→child loopback the proxy needs,
   and slirp4netns/pasta *add* outbound NAT. So the bwrap profile keeps

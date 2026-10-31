@@ -579,7 +579,7 @@ pub(crate) fn spawn(
     // wp_remote_get (version check, theme files, cron) inside the sandbox.
     // Guard on `wp_options.siteurl` so respawns against a seeded wp.db skip.
     let fqdb = php_str(&format!("{}/wp.db", db_dir.display()));
-    let token = php_str(&token); // hex-only, but every interpolated PHP literal goes through php_str
+    let token_php = php_str(&token); // quoted PHP literal for the install snippet — the header token stays raw
     let install_php = format!(
         "define('DB_ENGINE','sqlite'); define('FQDB',{fqdb}); \
          define('DB_NAME','wordpress'); define('DB_USER',''); define('DB_PASSWORD',''); define('DB_HOST','localhost'); \
@@ -590,11 +590,11 @@ pub(crate) fn spawn(
          define('WP_PLUGIN_DIR',WP_CONTENT_DIR.'/plugins'); define('WP_PLUGIN_URL','http://x'); \
          define('WPMU_PLUGIN_DIR',WP_CONTENT_DIR.'/mu-plugins'); define('WPMU_PLUGIN_URL','x'); \
          define('UPLOADS','wp-content/uploads'); \
-         define('RPRESS_BRIDGE_TOKEN',{token}); define('RPRESS_BRIDGE_PLUGIN',{plugin}); \
+         define('RPRESS_BRIDGE_TOKEN',{token_php}); define('RPRESS_BRIDGE_PLUGIN',{plugin}); \
          define('RPRESS_BRIDGE_THEME',{theme}); \
          define('WP_INSTALLING',true); \
          $table_prefix='wp_'; \
-         $_SERVER['HTTP_X_RPRESS_BRIDGE']={token}; \
+         $_SERVER['HTTP_X_RPRESS_BRIDGE']={token_php}; \
          define('ABSPATH',{docroot} . '/'); \
          require ABSPATH.'wp-settings.php'; \
          if (get_option('siteurl') !== WP_HOME || get_option('blogname') === '') {{ \

@@ -49,10 +49,11 @@ pub(crate) fn request(
         // Credentials never cross either: a live `rpress_session` cookie,
         // app-password `Authorization`, or a bearer `X-Forwarded-*` chain
         // handed to vendored plugin code is exfiltratable via `$_SERVER`
-        // (audit M1). The bridge's auth is `X-Rpress-Bridge` only.
-        if matches!(kl.as_str(), "host" | "connection" | "content-length" | "transfer-encoding" | "cookie" | "expect" | "authorization" | "proxy-authorization" | "x-rpress-bridge")
+        // (audit M1). `x-rpress-bridge` is NOT stripped here: dispatch
+        // (admin/mod.rs) removes any client-supplied copy before injecting
+        // the real bearer — filtering it here would strip ours too.
+        if matches!(kl.as_str(), "host" | "connection" | "content-length" | "transfer-encoding" | "cookie" | "expect" | "authorization" | "proxy-authorization")
             || kl.starts_with("x-forwarded-")
-            || kl.starts_with("x-real-")
         {
             continue;
         }

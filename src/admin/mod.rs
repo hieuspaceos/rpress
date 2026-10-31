@@ -1152,17 +1152,15 @@ async fn plugin_screen(
         };
         /* Adapter POSTs must carry the session CSRF token. Tourmaster's
            shipped JS names the field `security` (its nonce), first-party
-           screens use `csrf` — accept either; the screen's own handler
-           keeps its `action`-non-empty exemption (WP-parity buttons). */
+           screens use `csrf` — accept either. The `action`-exemption is
+           NOT repeated here (any non-empty action would bypass the gate
+           for every adapter): tourmaster's own handler re-applies its
+           WP-parity exemption internally after this gate passes. */
         let sent = serde_urlencoded::from_bytes::<HashMap<String, String>>(&bytes)
             .ok()
             .and_then(|f| f.get("csrf").or_else(|| f.get("security")).cloned())
             .unwrap_or_default();
-        let action_empty = serde_urlencoded::from_bytes::<HashMap<String, String>>(&bytes)
-            .ok()
-            .map(|f| f.get("action").cloned().unwrap_or_default().is_empty())
-            .unwrap_or(true);
-        if check_csrf(&s, &sent).is_err() && action_empty {
+        if check_csrf(&s, &sent).is_err() {
             return StatusCode::FORBIDDEN.into_response();
         }
         req = axum::extract::Request::from_parts(parts, Body::from(bytes));
@@ -1242,7 +1240,11 @@ async fn bridge_dispatch(
         // lock is already released — other sites' bridge traffic flows.
         let mut st = h.lock();
         let token = st.token.clone();
-        let mut fwd = hdrs.clone();
+        let mut fwd: Vec<(String, String)> = hdrs
+            .iter()
+            .filter(|(k, _)| !k.eq_ignore_ascii_case("x-rpress-bridge"))
+            .cloned()
+            .collect();
         fwd.push(("X-Rpress-Bridge".into(), token));
         let r = st.rt.request(&method, &path, &fwd, &body)?;
         // Pull whitelisted writes in the same task — no drift window.
