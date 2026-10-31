@@ -33,11 +33,11 @@ pub(crate) const AJAX_URL: &str = "/admin/plugins/goodlayers/ajax";
 const LEGACY_AJAX: &str = "/admin/api/gdlr/ajax";
 
 static WRITE_SPECS: &[WriteSpec] = &[
-    WriteSpec { table: PullTable::PostMeta, key_column: "meta_key", key_prefix: "gdlr-core-%", key_map: None },
+    WriteSpec { table: PullTable::PostMeta, key_column: "meta_key", key_prefix: "gdlr-core", key_map: None },
     WriteSpec {
         table: PullTable::Settings,
         key_column: "key",
-        key_prefix: "gdlr-core-%",
+        key_prefix: "gdlr-core",
         key_map: Some("plugin:goodlayers:"),
     },
     WriteSpec { table: PullTable::BodyJson, key_column: "meta_key", key_prefix: "gdlr-core-page-builder", key_map: None },

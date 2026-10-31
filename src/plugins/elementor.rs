@@ -3,15 +3,20 @@
 //! mounts `/admin/plugins/elementor/{*}` onto the sidecar.
 
 use super::{Backend, PluginAdapter};
-use crate::admin::bridge::pull::WriteSpec;
+use crate::admin::bridge::pull::{PullTable, WriteSpec};
 
 pub(crate) struct Elementor;
 pub(crate) static ADAPTER: Elementor = Elementor;
 
-// Spike: no write_specs. `_elementor%` is illegal today (`_` is LIKE
-// wildcard in pull::WriteSpec::validate) and specs are UNION'd on every
-// bridge pull — a bad Elementor spec would 502 GoodLayers saves.
-static WRITE_SPECS: &[WriteSpec] = &[];
+// Elementor saves land in wp.db as `_elementor*` post meta plus the
+// compiled markup in `wp_posts.post_content`. Pull both: meta verbatim
+// into `post_meta`, post_content/post_status onto posts.body_html/
+// status (body_json is rebuilt only when it is the generic import
+// text-box — the renderer can't consume Elementor's own JSON).
+static WRITE_SPECS: &[WriteSpec] = &[
+    WriteSpec { table: PullTable::PostMeta, key_column: "meta_key", key_prefix: "_elementor", key_map: None },
+    WriteSpec { table: PullTable::PostFields, key_column: "meta_key", key_prefix: "", key_map: None },
+];
 
 impl PluginAdapter for Elementor {
     fn slug(&self) -> &'static str {

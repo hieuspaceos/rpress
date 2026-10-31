@@ -139,7 +139,7 @@ impl PluginAdapter for ThemeTraveltour {
             crate::admin::bridge::pull::WriteSpec {
                 table: crate::admin::bridge::pull::PullTable::Settings,
                 key_column: "key",
-                key_prefix: "traveltour%",
+                key_prefix: "traveltour",
                 key_map: Some("plugin:theme-traveltour:"),
             },
         ];

@@ -331,46 +331,7 @@ async fn bridge_dispatch(
                 s = s.replace("\"/wp-json/", &format!("\"{mount}/wp-json/"));
                 s = s.replace("'/wp-json/", &format!("'{mount}/wp-json/"));
                 s = s.replace("\\/wp-json\\/", &format!("{mount_esc}\\/wp-json\\/"));
-                // `/wp-admin/` also matches inside `{mount}/wp-admin/` →
-                // doubled path. Only collapse when the double is a rewrite
-                // artifact — followed by `/wp-`, a query/quote, or EOS —
-                // never two legit adjacent mount URLs.
-                let twice = format!("{mount}{mount}");
-                let mut out = String::with_capacity(s.len());
-                let mut rest_s = s.as_str();
-                while let Some(i) = rest_s.find(&twice) {
-                    out.push_str(&rest_s[..i]);
-                    let after = &rest_s[i + twice.len()..];
-                    if after.is_empty()
-                        || after.starts_with("/wp-")
-                        || after.starts_with(['?', '&', '"', '\'', ')', ']', '\\'])
-                    {
-                        out.push_str(&mount);
-                    } else {
-                        out.push_str(&twice);
-                    }
-                    rest_s = after;
-                }
-                out.push_str(rest_s);
-                let s_tmp = out;
-                let twice_esc = format!("{mount_esc}{mount_esc}");
-                let mut out = String::with_capacity(s_tmp.len());
-                let mut rest_s = s_tmp.as_str();
-                while let Some(i) = rest_s.find(&twice_esc) {
-                    out.push_str(&rest_s[..i]);
-                    let after = &rest_s[i + twice_esc.len()..];
-                    if after.is_empty()
-                        || after.starts_with("\\\\/wp-")
-                        || after.starts_with(['?', '&', '"', '\'', ')', ']'])
-                    {
-                        out.push_str(&mount_esc);
-                    } else {
-                        out.push_str(&twice_esc);
-                    }
-                    rest_s = after;
-                }
-                out.push_str(rest_s);
-                out.into_bytes()
+                collapse_doubled_mount(&s, &mount, &mount_esc).into_bytes()
             } else {
                 r.body
             }
@@ -408,4 +369,64 @@ pub(super) async fn save_option_shim() -> Response {
 /// real-site parity checklist passed (phase-07).
 pub(super) async fn gdlr_ajax() -> Response {
     Redirect::temporary("/admin/plugins/goodlayers/ajax").into_response()
+}
+/// Collapse `{mount}{mount}` and `{mount_esc}{mount_esc}` pairs left by
+/// the URL rewrites above — artifacts of `/wp-admin/` matching inside an
+/// already-mounted URL. A pair collapses only when followed by `/wp-`
+/// (or `\/wp-` in the escaped pass), a JSON delimiter, or EOS — never
+/// two legit adjacent mount URLs.
+fn collapse_doubled_mount(s: &str, mount: &str, mount_esc: &str) -> String {
+    let pass = |s: &str, twice: &str, single: &str, wp_tail: &str| -> String {
+        let mut out = String::with_capacity(s.len());
+        let mut rest_s = s;
+        while let Some(i) = rest_s.find(twice) {
+            out.push_str(&rest_s[..i]);
+            let after = &rest_s[i + twice.len()..];
+            if after.is_empty()
+                || after.starts_with(wp_tail)
+                || after.starts_with(['?', '&', '"', '\'', ')', ']', '}', ','])
+            {
+                out.push_str(single);
+            } else {
+                out.push_str(twice);
+            }
+            rest_s = after;
+        }
+        out.push_str(rest_s);
+        out
+    };
+    let s = pass(s, &format!("{mount}{mount}"), mount, "/wp-");
+    pass(&s, &format!("{mount_esc}{mount_esc}"), mount_esc, "\\/wp-")
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn collapse_artifacts() {
+        let m = "/admin/plugins/elementor";
+        let me = "\\/admin\\/plugins\\/elementor";
+        // Plain doubled mount before a wp path collapses.
+        assert_eq!(
+            super::collapse_doubled_mount(&format!("{m}{m}/wp-admin/x"), m, me),
+            format!("{m}/wp-admin/x")
+        );
+        // Escaped doubled mount before `\/wp-` collapses — the bug this
+        // pass shipped with expected `\\/wp-` (double-backslash).
+        assert_eq!(
+            super::collapse_doubled_mount(&format!("{me}{me}\\/wp-admin\\/x"), m, me),
+            format!("{me}\\/wp-admin\\/x")
+        );
+        // Legit adjacent mounts (followed by non-wp text) stay.
+        assert_eq!(
+            super::collapse_doubled_mount(&format!("{m}{m}/edit.php"), m, me),
+            format!("{m}{m}/edit.php")
+        );
+        // JSON delimiter followers collapse.
+        for tail in ["\"}", "\",", "?x=1", "']"] {
+            assert_eq!(
+                super::collapse_doubled_mount(&format!("{m}{m}{tail}"), m, me),
+                format!("{m}{tail}"), "tail {tail}"
+            );
+        }
+    }
 }

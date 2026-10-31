@@ -135,13 +135,16 @@ pub(crate) fn spawn(
     let db_dir = dir.join("db");
     std::fs::create_dir_all(&db_dir)?;
     let wp_db = db_dir.clone();
+    let mut seeded_post = None;
     if let Some(id) = post_id {
         // Seed lands in the disposable bridge dir, then mounts into the
         // VFS explicitly — writing under www/wp-content would both be
         // unmounted here (enumeration already ran) AND world-readable via
-        // the public static server.
+        // the public static server. Only claim `seeded_post` when the
+        // seed file actually landed.
         let seed_src = dir.join("seed");
         if project_post(rpress_db, &seed_src, id)? {
+            seeded_post = Some(id);
             mounts.push((
                 seed_src.join("rpress-seed/post.json"),
                 "/wordpress/wp-content/rpress-seed/post.json".into(),
@@ -271,7 +274,7 @@ pub(crate) fn spawn(
         token,
         wp_db,
         pidfile,
-        seeded_post: post_id,
+        seeded_post,
     })
 }
 

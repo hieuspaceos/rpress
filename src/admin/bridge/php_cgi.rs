@@ -502,12 +502,18 @@ pub(crate) fn spawn(
     symlink_dir(&db_dir, &content.join("database"))?;
     let wp_db = db_dir.clone();
 
-    if let Some(id) = post_id {
-        // Seed goes into the DOCROOT's wp-content — never `www/wp-content`
-        // (the site static server exposes that tree verbatim; a seed
-        // there would leak draft content + builder meta unauthenticated).
-        let _ = project_post(rpress_db, &content, id)?;
-    }
+    // `seeded_post` must reflect a seed that actually landed —
+    // `project_post` returns false when the post isn't in rpress.db;
+    // claiming it anyway would poison the skip-reseed check.
+    let seeded_post = match post_id {
+        Some(id) => {
+            // Seed goes into the DOCROOT's wp-content — never `www/wp-content`
+            // (the site static server exposes that tree verbatim; a seed
+            // there would leak draft content + builder meta unauthenticated).
+            if project_post(rpress_db, &content, id)? { Some(id) } else { None }
+        }
+        None => None,
+    };
     // Housekeeping: older builds wrote the seed into the PUBLIC
     // wp-content tree — remove any leftover so it stops being served.
     let _ = std::fs::remove_dir_all(www.join("wp-content/rpress-seed"));
@@ -751,6 +757,6 @@ pub(crate) fn spawn(
         token,
         wp_db,
         pidfile,
-        seeded_post: post_id,
+        seeded_post,
     })
 }

@@ -357,11 +357,14 @@ pub(crate) fn reseed_post(www: &std::path::Path, slug: &str, wp_db: &std::path::
     if !playground::project_post(rpress_db, &wp_content, post_id)? {
         return Ok(false);
     }
-    if let Some(db_file) = pull::locate(wp_db) {
-        let conn = crate::db::conn(&db_file).context("open wp.db for reseed")?;
-        conn.execute("DELETE FROM wp_options WHERE option_name = 'rpress_post_seeded'", [])
-            .context("clear rpress_post_seeded")?;
-    }
+    // No wp.db → nothing cleared the mu-plugin flag; claiming a reseed
+    // would leave `rpress_post_seeded` set and silently skip the insert.
+    let Some(db_file) = pull::locate(wp_db) else {
+        return Ok(false);
+    };
+    let conn = crate::db::conn(&db_file).context("open wp.db for reseed")?;
+    conn.execute("DELETE FROM wp_options WHERE option_name = 'rpress_post_seeded'", [])
+        .context("clear rpress_post_seeded")?;
     Ok(true)
 }
 pub(crate) type Bridges = Arc<Mutex<HashMap<String, BridgeHandle>>>;
