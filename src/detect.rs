@@ -135,9 +135,13 @@ pub fn run(dump: &Path, www: Option<&Path>) -> Result<()> {
             // Child theme: render uses stylesheet; bridge needs `template`
             // (the parent) — report both, matching the wp-config render.
             let parent = option_from_dump(Some(dump), "template").unwrap_or_default();
-            match crate::plugins::theme_for_stylesheet(&ss) {
+            // Same chain as runtime theme_for_site: Rust adapter →
+            // TOML spec → default.
+            match crate::plugins::theme_for_stylesheet(&ss)
+                .or_else(|| crate::plugins::themes::theme_for_stylesheet(&ss))
+            {
                 Some(_) => println!("  {ss} (parent: {parent}) → ThemeDef matched — chrome/import covered"),
-                None => println!("  {ss} (parent: {parent}) → NO ThemeDef — menus/chrome fall back to defaults; consider a theme spec"),
+                None => println!("  {ss} (parent: {parent}) → NO ThemeDef — menus/chrome fall back to DEFAULT_THEME; consider a theme spec"),
             }
         }
         None => println!("  no stylesheet option in dump"),
