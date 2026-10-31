@@ -394,7 +394,7 @@ fn upgrade(conn: &Connection) -> Result<()> {
     )?;
     tx.execute(
         crate::sql!("widgets__convert_tour_list"),
-        rusqlite::params![LEGACY_CH13, r#"{"mode": "manual", "manual_ids": [15585, 6416, 6598, 6797, 6607, 6603, 6775, 6624, 6618, 7363, 9280, 7370, 7364, 7007, 6853, 9253, 9285], "count": 17, "title": "Voyages suggérés", "wrapper": "custom_html-13", "inner": "tourmaster-tour-widget-2"}"#],
+        rusqlite::params![LEGACY_CH13, r#"{"mode": "manual", "manual_ids": [15585, 6416, 6598, 6797, 6607, 6603, 6775, 6624, 6618, 7363, 9280, 7370, 7364, 7007, 6853, 9253, 9285], "count": 17, "title": "Voyages suggérés", "wrapper": "custom_html-13", "inner": "tourmaster-tour-widget-2"}"#, "custom_html-13"],
     )?;
     tx.execute(
         crate::sql!("widgets__upsert_schema_v"),

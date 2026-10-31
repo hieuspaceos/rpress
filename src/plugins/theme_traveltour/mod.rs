@@ -89,6 +89,7 @@ impl PluginAdapter for ThemeTraveltour {
         use crate::plugins::ThemeDef;
         static DEF: ThemeDef = ThemeDef {
             matches_stylesheet: matches_traveltour,
+            stylesheet: "traveltour",
             template_dir: "traveltour",
             body_suffix: "wp-theme-traveltour wp-child-theme-traveltour-child gdlr-core-body tourmaster-body metaslider-plugin traveltour-body traveltour-body-front traveltour-full  traveltour-with-sticky-navigation gdlr-core-link-to-lightbox",
             page_title_wrap: traveltour_page_title,
@@ -97,6 +98,10 @@ impl PluginAdapter for ThemeTraveltour {
             taxonomy_map_json: TAXONOMY_MAP_JSON,
             tag_base: "etiquette",
             widget_class: "traveltour-widget",
+            general_option: "traveltour_general",
+            general_settings_key: "plugin:theme-traveltour:general",
+            widget_title_block: traveltour_widget_title,
+            shortcode_static: traveltour_shortcode_static,
             sidebar_wrap_class: "traveltour-content-container traveltour-container",
             css_link_id: "traveltour-style-core-css",
             js_extra_id: "traveltour-script-core-js-extra",
@@ -159,6 +164,33 @@ fn traveltour_page_title(_t: &super::ThemeDef, bg: &str, caption: Option<&str>, 
         .map(|c| format!("<h3 class=\"traveltour-page-caption\"  >{c}</h3>"))
         .unwrap_or_default();
     format!("<div class=\"traveltour-page-title-wrap  traveltour-style-large traveltour-center-align\"{bg} ><div class=\"traveltour-header-transparent-substitute\" ></div><div class=\"traveltour-page-title-overlay\"  ></div><div class=\"traveltour-page-title-container traveltour-container\" ><div class=\"traveltour-page-title-content traveltour-item-pdlr\"  >{cap}<h1 class=\"traveltour-page-title\"  >{title}</h1></div></div></div>")
+}
+
+/// Byte-parity widget title block — the exact `before_widget` markup
+/// WP/traveltour emits for a non-empty instance title (texturize
+/// ` - ` → ` &#8211; ` + `'` → `&#039;` over the escaped title, matching
+/// the wpcategorieswidget captures). Moved verbatim from the old
+/// `import::traveltour_title_block`.
+fn traveltour_widget_title(_t: &super::ThemeDef, title: &str) -> String {
+    if title.is_empty() {
+        return String::new();
+    }
+    let esc = crate::render_archive::esc(title)
+        .replace(" - ", " &#8211; ")
+        .replace('\'', "&#039;");
+    format!(
+        "<h3 class=\"traveltour-widget-title\"><span class=\"traveltour-widget-head-text\">{esc}</span></h3><span class=\"clear\"></span>"
+    )
+}
+
+/// Theme-owned frozen shortcode captures — `[site_reviews]` expands to
+/// the static markup the theme's glsr integration emitted at capture
+/// time (`{{ site_url }}` placeholders are rewritten by the expander).
+fn traveltour_shortcode_static(_t: &super::ThemeDef, tag: &str) -> Option<&'static str> {
+    match tag {
+        "site_reviews" => Some(include_str!("../../../templates/theme/traveltour/site_reviews_static.html")),
+        _ => None,
+    }
 }
 
 // ---------- runtime readers -------------------------------------------------

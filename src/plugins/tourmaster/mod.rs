@@ -128,6 +128,9 @@ impl PluginAdapter for Tourmaster {
         fn post_noop(_c: &Connection, _id: i64) -> Result<()> {
             Ok(())
         }
+        fn post_seen_noop(_c: &Connection, _id: i64, _t: &str, _content: &str) -> Result<()> {
+            Ok(())
+        }
         /// post_meta → `tours` denormalize over the committed import.
         fn after(c: &Connection) -> Result<()> {
             promote(c)?;
@@ -137,6 +140,7 @@ impl PluginAdapter for Tourmaster {
             claim_type: claim,
             option_prefixes: &["tourmaster_"],
             post_imported: post_noop,
+            post_seen: post_seen_noop,
             after_import: after,
         };
         Some(&HOOKS)

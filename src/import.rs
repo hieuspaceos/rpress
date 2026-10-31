@@ -124,6 +124,12 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path, force: bool) -> Resu
     let mut comments: Vec<(i64, i64, i64, String, String, String, String, String, String, String)> = Vec::new();
     let mut comment_meta: Vec<(i64, String, String)> = Vec::new();
     let mut options: HashMap<String, String> = HashMap::new();
+    /* Theme general-settings options (`{theme}_general`) are collected
+       off the allowlist path: which one matters depends on the dump's
+       theme — unknown until `stylesheet` parses. Staged aside, then the
+       resolved theme's own key is adopted into `options` (all other
+       `*_general` rows stay dump data, never settings). */
+    let mut general_opts: HashMap<String, String> = HashMap::new();
     let mut redirs: Vec<(String, String)> = Vec::new();
     let mut ratings: HashMap<i64, i64> = HashMap::new(); // rating_id -> review post_id
     let mut assigned: Vec<(i64, i64)> = Vec::new(); // rating_id -> assigned post_id
@@ -268,8 +274,15 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path, force: bool) -> Resu
                         .filter_map(|a| a.import_hooks())
                         .flat_map(|h| h.option_prefixes.iter())
                         .any(|p| k.starts_with(p));
-                    if plugin_opt || matches!(
-                        k.as_str(),
+                    if k.ends_with("_general") && !k.starts_with("widget_") && !plugin_opt {
+                        // Theme general-settings blob — adopted below iff
+                        // it is the resolved theme's `general_option`.
+                        // Plugin-owned *_general keys (option_prefixes
+                        // match) carry on as ordinary options.
+                        general_opts.insert(k, mv);
+                    } else if plugin_opt
+                        || matches!(
+                            k.as_str(),
                         "page_on_front" | "show_on_front" | "siteurl"
                             | "stylesheet" | "template" | "active_plugins"
                             | "blogname" | "rss_use_excerpt"
@@ -284,7 +297,7 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path, force: bool) -> Resu
                             | "medium_size_w" | "medium_size_h"
                             | "medium_large_size_w" | "medium_large_size_h"
                             | "gdlr-core-page-builder-view-mode" | "polylang"
-                            | "blogdescription" | "traveltour_general"
+                            | "blogdescription"
                             | "ssb_buttons" | "ssb_settings" | "site_icon" | "auhfc_settings_sitewide"
                             | "sidebars_widgets"
                     ) || k.starts_with("theme_mods_")
@@ -364,6 +377,47 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path, force: bool) -> Resu
             rep.log(format!("WARN no import arm for `{t}` — rows skipped"));
             eprintln!("import: no import arm for `{t}` — rows skipped");
         }
+    }
+
+    /* Resolve the dump's theme once — everything downstream (widget
+       wrapper classes, title markup, the general-settings fold, the
+       seed migrate) reads it. `stylesheet` is the child name; `template`
+       the parent fallback when the dump omits stylesheet. Dumps missing
+       both still identify their theme through the staged `<theme>_general`
+       option — check those before DEFAULT_THEME. */
+    let theme: &'static crate::plugins::ThemeDef = {
+        let stylesheet = options.get("stylesheet").cloned().unwrap_or_default();
+        let template = options.get("template").cloned().unwrap_or_default();
+        crate::plugins::theme_for_stylesheet(&stylesheet)
+            .or_else(|| crate::plugins::themes::theme_for_stylesheet(&stylesheet))
+            .or_else(|| crate::plugins::theme_for_stylesheet(&template))
+            .or_else(|| crate::plugins::themes::theme_for_stylesheet(&template))
+            .or_else(|| {
+                // Sorted for determinism when a dump stages more than one
+                // *_general blob — first key wins regardless of HashMap
+                // iteration order.
+                let mut keys: Vec<&String> = general_opts.keys().collect();
+                keys.sort();
+                keys.into_iter()
+                    .find_map(|k| crate::plugins::theme_for_general_option(k))
+            })
+            .unwrap_or(&crate::plugins::DEFAULT_THEME)
+    };
+    /* Adopt the theme's general-settings option into `options` so it
+       persists under its WP name like every other carried option;
+       non-theme `*_general` rows stay unstaged. */
+    if !theme.general_option.is_empty() {
+        if let Some(v) = general_opts.remove(theme.general_option) {
+            options.insert(theme.general_option.to_string(), v);
+        }
+    }
+    /* Theme identified only via its `*_general` blob (dump omitted
+       stylesheet/template): persist the canonical stylesheet so runtime
+       `theme_for_site` resolves the same theme import resolved. */
+    if !theme.stylesheet.is_empty()
+        && options.get("stylesheet").map(|s| s.is_empty()).unwrap_or(true)
+    {
+        options.insert("stylesheet".to_string(), theme.stylesheet.to_string());
     }
 
     // Some dumps contain duplicate wp_posts ids (stale rows after a failed
@@ -605,6 +659,14 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path, force: bool) -> Resu
 
     // posts pass
     for p in &posts {
+        // Adapter `post_seen` taps run BEFORE the kind match — storage
+        // CPTs (pp_video_block) reach the hook that harvests their
+        // content even though no posts row is ever inserted.
+        for a in crate::plugins::adapters() {
+            if let Some(h) = a.import_hooks() {
+                (h.post_seen)(&tx, p.id, &p.post_type, &p.content)?;
+            }
+        }
         match kind_for_post_type(&p.post_type) {
             None => {
                 if p.post_type == "attachment" {
@@ -1026,6 +1088,17 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path, force: bool) -> Resu
     stmt_set.execute(params!["languages", langs])?;
     stmt_set.execute(params!["primary_lang", primary.clone()])?;
 
+    /* `stylesheet`/`template` must be in settings before widgets build:
+       shortcode expansion inside `widget_settings` resolves the site
+       theme via `theme_for_site(conn)` (e.g. `[site_reviews]` → the
+       theme's frozen capture). The generic options write below repeats
+       these two rows verbatim. */
+    for k in ["stylesheet", "template"] {
+        if let Some(v) = options.get(k) {
+            stmt_set.execute(params![k, v])?;
+        }
+    }
+
     /* WP widget instances → `widgets` rows. `sidebars_widgets` gives each WP
        sidebar's ordered instance ids; `widget_{id_base}` holds the instance
        payload (title/text/filter/…). Rows are built before `import_expect`
@@ -1034,7 +1107,7 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path, force: bool) -> Resu
        dumps that authored them (INSERT OR REPLACE below). */
     let site_langs: Vec<String> = languages.iter().cloned().collect();
     let widget_rows = build_widget_rows(
-        &tx, &options, &site_langs, &primary, &term_parents, &mut rep)?;
+        &tx, &options, theme, &site_langs, &primary, &term_parents, &mut rep)?;
 
     {
         let mut stmt_w = tx.prepare(
@@ -1219,22 +1292,25 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path, force: bool) -> Resu
        raw by site_data. */
     {
         let mut st = tx.prepare("INSERT OR REPLACE INTO settings(key, value) VALUES(?1, ?2)")?;
-        // traveltour_general → `plugin:theme-traveltour:general` flat JSON + a
-        // few flat settings keys the chrome reads directly.
-        if let Some(raw) = options.get("traveltour_general") {
-            if let Ok(serde_json::Value::Object(m)) =
-                crate::php_serialize::unserialize(raw.as_bytes())
-            {
-                let mut flat = serde_json::Map::new();
-                for (k, v) in &m {
-                    if let Some(s) = v.as_str() {
-                        flat.insert(k.clone(), serde_json::Value::String(s.to_string()));
+        // `{theme}general` → the theme's namespaced `general` flat JSON +
+        // a few flat settings keys the chrome reads directly. Both keys
+        // are `ThemeDef` data — a theme without a general blob declares
+        // the pair empty and this block is inert.
+        if !theme.general_option.is_empty() && !theme.general_settings_key.is_empty() {
+            if let Some(raw) = options.get(theme.general_option) {
+                if let Ok(serde_json::Value::Object(m)) =
+                    crate::php_serialize::unserialize(raw.as_bytes())
+                {
+                    let mut flat = serde_json::Map::new();
+                    for (k, v) in &m {
+                        if let Some(s) = v.as_str() {
+                            flat.insert(k.clone(), serde_json::Value::String(s.to_string()));
+                        }
                     }
-                }
-                st.execute(params![
-                    "plugin:theme-traveltour:general",
-                    serde_json::to_string(&serde_json::Value::Object(flat))?
-                ])?;
+                    st.execute(params![
+                        theme.general_settings_key,
+                        serde_json::to_string(&serde_json::Value::Object(flat))?
+                    ])?;
                 for (opt_key, set_key) in [
                     ("top-bar-left-text", "topbar_left_html"),
                     ("top-bar-right-text", "topbar_right_html"),
@@ -1246,6 +1322,7 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path, force: bool) -> Resu
                     }
                 }
             }
+        }
         }
         /* auhfc_settings_sitewide → `site_head_html`: arbitrary sitewide
            head markup (analytics, preconnect, custom meta) applied on every
@@ -1421,13 +1498,21 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path, force: bool) -> Resu
         }
     }
 
-    // Theme seed: `taxonomy_map` is a Data-backend setting the theme
-    // adapter owns — migrate() is idempotent (`INSERT OR IGNORE`), so a
-    // previously seeded or imported row wins.
-    crate::plugins::PluginAdapter::migrate(
-        &crate::plugins::theme_traveltour::ADAPTER,
-        &stage,
-    )?;
+    // Theme seed: `taxonomy_map` is a Data-backend setting the resolved
+    // theme's adapter owns — migrate() is idempotent (`INSERT OR IGNORE`),
+    // so a previously seeded or imported row wins. TOML-spec and
+    // adapter-less themes own no migrate — nothing to run.
+    let stylesheet = options.get("stylesheet").cloned().unwrap_or_default();
+    let template = options.get("template").cloned().unwrap_or_default();
+    if let Some(adapter) = crate::plugins::adapter_for_stylesheet(&stylesheet)
+        .or_else(|| crate::plugins::adapter_for_stylesheet(&template))
+        /* Resolved theme may own an adapter even when the dump named no
+           stylesheet (theme identified via its `*_general` blob —
+           `theme.stylesheet` holds the canonical value). */
+        .or_else(|| crate::plugins::adapter_for_stylesheet(theme.stylesheet))
+    {
+        adapter.migrate(&stage)?;
+    }
 
     if dropped_meta > 0 {
         rep.log(format!(
@@ -1576,7 +1661,7 @@ enum SidebarTarget {
 /// language (`-{lang}` suffix — the renderer resolves `footer-N` per page
 /// language); `Fixed` keeps a literal region id. The blog-family sidebars
 /// (`blog`, `blog-left`, `blog-right`, `gdlr-core-sidebar-preset`) import
-/// verbatim under their own WP ids: the theme option (`traveltour_general`)
+/// verbatim under their own WP ids: the theme's general-settings option
 /// then picks which of them feed the `sidebar-post-*` / `sidebar-archive-*`
 /// render regions — see `synthesize_theme_regions`. Everything not listed
 /// is a dump-internal region (`wp_inactive_widgets`, `itsec_cron`,
@@ -1612,6 +1697,7 @@ fn sidebar_target(wp_sidebar: &str) -> Option<SidebarTarget> {
 fn build_widget_rows(
     tx: &rusqlite::Transaction,
     options: &HashMap<String, String>,
+    theme: &crate::plugins::ThemeDef,
     site_langs: &[String],
     primary: &str,
     term_parents: &HashMap<i64, i64>,
@@ -1710,8 +1796,8 @@ fn build_widget_rows(
                 .unwrap_or("");
 
             // Blog-family instance: stash for the theme-region synthesis;
-            // its render sidebar comes from traveltour_general, not the
-            // dump's own list.
+            // its render sidebar comes from the theme's general option,
+            // not the dump's own list.
             if blog_ids.contains(&wp_sidebar.as_str()) {
                 staged
                     .entry(wp_sidebar.clone())
@@ -1743,7 +1829,7 @@ fn build_widget_rows(
                 };
                 let row_id = free_id(&mut used_ids, inst_id, lang);
                 let Some((typ, settings)) = widget_settings(
-                    tx, base, inst_id, inst, lang, primary, &origin, term_parents,
+                    tx, base, inst_id, inst, lang, primary, &origin, theme, term_parents,
                 ) else {
                     continue;
                 };
@@ -1769,11 +1855,11 @@ fn build_widget_rows(
         }
     }
 
-    /* Traveltour assigns blog-family WP sidebars to the post / archive
-       sidebar positions in `traveltour_general`. Redistribute the staged
-       instances onto `sidebar-{post,archive}-{lang}` accordingly —
-       verbatim `blog*` rows are only kept for sidebars no position
-       selected. */
+    /* Goodlayers-family themes assign blog-family WP sidebars to the
+       post / archive sidebar positions in the theme's general option.
+       Redistribute the staged instances onto `sidebar-{post,archive}-{lang}`
+       accordingly — verbatim `blog*` rows are only kept for sidebars no
+       position selected. */
     synthesize_theme_regions(
         tx,
         &mut out,
@@ -1781,6 +1867,7 @@ fn build_widget_rows(
         &mut used_ids,
         &ordered,
         options,
+        theme,
         primary,
         &origin,
         term_parents,
@@ -1797,11 +1884,11 @@ fn build_widget_rows(
     Ok(out)
 }
 
-/// Traveltour assigns WP blog-family sidebars to the post / archive
-/// positions in `traveltour_general`: `{pos}-sidebar` picks the
-/// position(s) (right|left|both|none), `{pos}-sidebar-{left,right}` name
-/// the WP sidebar feeding each slot (`pos` = "blog" for the post sidebar,
-/// "archive-blog" for the archive sidebar). The chosen instances are
+/// Goodlayers-family themes assign WP blog-family sidebars to the post /
+/// archive positions in the theme's general option: `{pos}-sidebar` picks
+/// the position(s) (right|left|both|none), `{pos}-sidebar-{left,right}`
+/// name the WP sidebar feeding each slot (`pos` = "blog" for the post
+/// sidebar, "archive-blog" for the archive sidebar). The chosen instances are
 /// copied onto `sidebar-{region}-{lang}` per site language — pll_lang
 /// tagged instances join only their own lang, untagged ones every lang.
 /// `widgets.id` is the PK: the first copy keeps the wp id, later copies
@@ -1816,6 +1903,7 @@ fn synthesize_theme_regions(
     used_ids: &mut HashSet<String>,
     langs: &[String],
     options: &HashMap<String, String>,
+    theme: &crate::plugins::ThemeDef,
     primary: &str,
     origin: &str,
     term_parents: &HashMap<i64, i64>,
@@ -1823,7 +1911,7 @@ fn synthesize_theme_regions(
 ) -> Result<()> {
     let mut used: HashSet<String> = HashSet::new();
     for (region, pos) in [("sidebar-post", "blog"), ("sidebar-archive", "archive-blog")] {
-        let Some(sources) = theme_sidebar_sources(options, pos, rep) else {
+        let Some(sources) = theme_sidebar_sources(options, theme, pos, rep) else {
             continue;
         };
         used.extend(sources.iter().cloned());
@@ -1838,7 +1926,7 @@ fn synthesize_theme_regions(
                         continue;
                     }
                     let Some((typ, settings)) = widget_settings(
-                        tx, base, inst_id, inst, lang, primary, origin, term_parents,
+                        tx, base, inst_id, inst, lang, primary, origin, theme, term_parents,
                     ) else {
                         continue;
                     };
@@ -1874,7 +1962,7 @@ fn synthesize_theme_regions(
                 inst_pll.as_str()
             };
             let Some((typ, settings)) = widget_settings(
-                tx, base, inst_id, inst, lang, primary, origin, term_parents,
+                tx, base, inst_id, inst, lang, primary, origin, theme, term_parents,
             ) else {
                 continue;
             };
@@ -1894,16 +1982,21 @@ fn synthesize_theme_regions(
     Ok(())
 }
 
-/// traveltour_general → the WP sidebar ids one position selects. `None`
-/// when the option is absent, unparseable, or never mentions this
-/// position — the verbatim blog rows are then kept as imported.
+/// The theme's general option → the WP sidebar ids one position selects.
+/// `None` when the theme declares no general option, the option is
+/// absent, unparseable, or never mentions this position — the verbatim
+/// blog rows are then kept as imported.
 /// A missing/empty position flag defaults to the theme's "right".
 fn theme_sidebar_sources(
     options: &HashMap<String, String>,
+    theme: &crate::plugins::ThemeDef,
     pos: &str,
     rep: &mut Report,
 ) -> Option<Vec<String>> {
-    let raw = options.get("traveltour_general")?;
+    if theme.general_option.is_empty() {
+        return None;
+    }
+    let raw = options.get(theme.general_option)?;
     let flat: HashMap<String, String> = match unserialize(raw.as_bytes()) {
         Ok(Value::Object(m)) => m
             .into_iter()
@@ -1961,7 +2054,7 @@ fn free_id(used: &mut HashSet<String>, inst: &str, lang: &str) -> String {
 
 /// Widget title: every WP widget uses `title` except wpcategorieswidget
 /// which keys it `wcw_title`. Stored raw — renderers apply their own
-/// title transform (frozen rows embed `widget_title_esc` output instead).
+/// title transform (frozen rows embed the theme's title-block output instead).
 fn widget_title_text(inst: &Map<String, Value>) -> String {
     inst.get("title")
         .or_else(|| inst.get("wcw_title"))
@@ -1981,6 +2074,7 @@ fn widget_settings(
     lang: &str,
     primary: &str,
     origin: &str,
+    theme: &crate::plugins::ThemeDef,
     term_parents: &HashMap<i64, i64>,
 ) -> Option<(String, String)> {
     let gs = |k: &str| inst.get(k).and_then(|v| v.as_str()).unwrap_or("");
@@ -1996,6 +2090,10 @@ fn widget_settings(
         let b = expand_widget_shortcodes(&b);
         crate::render::shortcode::expand_shortcodes(&b, "{{ site_url }}", Some(&**tx), None)
     };
+
+    // Frozen wrapper chrome comes from the resolved theme — the wrapper
+    // class suffix plus its before_widget title markup.
+    let wc = theme.widget_class;
 
     match base {
         // Frozen-HTML types: the fragment is a minijinja template —
@@ -2017,8 +2115,8 @@ fn widget_settings(
             Some((
                 "text".into(),
                 json!({ "html": format!(
-                    "<div id=\"{inst_id}\" class=\"widget widget_text traveltour-widget\">{tb}<div class=\"textwidget\">{b}</div></div>",
-                    tb = traveltour_title_block(&title),
+                    "<div id=\"{inst_id}\" class=\"widget widget_text {wc}\">{tb}<div class=\"textwidget\">{b}</div></div>",
+                    tb = (theme.widget_title_block)(theme, &title),
                 )})
                 .to_string(),
             ))
@@ -2030,8 +2128,8 @@ fn widget_settings(
             Some((
                 "custom_html".into(),
                 json!({ "html": format!(
-                    "<div id=\"{inst_id}\" class=\"widget_text widget widget_custom_html traveltour-widget\">{tb}<div class=\"textwidget custom-html-widget\">{b}</div></div>",
-                    tb = traveltour_title_block(&title),
+                    "<div id=\"{inst_id}\" class=\"widget_text widget widget_custom_html {wc}\">{tb}<div class=\"textwidget custom-html-widget\">{b}</div></div>",
+                    tb = (theme.widget_title_block)(theme, &title),
                     b = render_body(body),
                 )})
                 .to_string(),
@@ -2045,8 +2143,8 @@ fn widget_settings(
             Some((
                 "block".into(),
                 json!({ "html": format!(
-                    "<div id=\"{inst_id}\" class=\"widget widget_block traveltour-widget\">{tb}<div class=\"textwidget\">{b}</div></div>",
-                    tb = traveltour_title_block(&title),
+                    "<div id=\"{inst_id}\" class=\"widget widget_block {wc}\">{tb}<div class=\"textwidget\">{b}</div></div>",
+                    tb = (theme.widget_title_block)(theme, &title),
                     b = render_body(&b),
                 )})
                 .to_string(),
@@ -2069,14 +2167,14 @@ fn widget_settings(
             Some((
                 "search".into(),
                 json!({ "html": format!(
-                    "<div id=\"{inst_id}\" class=\"widget widget_search traveltour-widget\">{tb}<form role=\"search\" method=\"get\" class=\"search-form\" action=\"{action}\">\n\t\t\t\t<label>\n\t\t\t\t\t<span class=\"screen-reader-text\">{label}</span>\n\t\t\t\t\t<input type=\"search\" class=\"search-field\" placeholder=\"{ph}\" value=\"\" name=\"s\" />\n\t\t\t\t</label>\n\t\t\t\t<input type=\"submit\" class=\"search-submit\" value=\"{submit}\" />\n\t\t\t</form></div>",
-                    tb = traveltour_title_block(&title),
+                    "<div id=\"{inst_id}\" class=\"widget widget_search {wc}\">{tb}<form role=\"search\" method=\"get\" class=\"search-form\" action=\"{action}\">\n\t\t\t\t<label>\n\t\t\t\t\t<span class=\"screen-reader-text\">{label}</span>\n\t\t\t\t\t<input type=\"search\" class=\"search-field\" placeholder=\"{ph}\" value=\"\" name=\"s\" />\n\t\t\t\t</label>\n\t\t\t\t<input type=\"submit\" class=\"search-submit\" value=\"{submit}\" />\n\t\t\t</form></div>",
+                    tb = (theme.widget_title_block)(theme, &title),
                 )})
                 .to_string(),
             ))
         }
         "media_image" => {
-            let inner = media_image_html(tx, inst_id, inst, &title, origin)?;
+            let inner = media_image_html(tx, inst_id, inst, &title, origin, theme)?;
             Some(("media_image".into(), json!({ "html": inner }).to_string()))
         }
         "wpcategorieswidget" => {
@@ -2169,8 +2267,8 @@ fn widget_settings(
             Some((
                 "tour_category".into(),
                 json!({ "html": format!(
-                    "<div id=\"{inst_id}\" class=\"widget widget_tourmaster-widget-tour-category traveltour-widget\">{tb}</div>",
-                    tb = traveltour_title_block(&title),
+                    "<div id=\"{inst_id}\" class=\"widget widget_tourmaster-widget-tour-category {wc}\">{tb}</div>",
+                    tb = (theme.widget_title_block)(theme, &title),
                 )})
                 .to_string(),
             ))
@@ -2184,7 +2282,7 @@ fn widget_settings(
         }
         _ => {
             /* Unknown plugin widget: keep whatever markup it authored
-               (text/content) in the generic traveltour wrapper, else
+               (text/content) in the theme's generic widget wrapper, else
                drop — nothing faithful to store. */
             if body.is_empty() {
                 return None;
@@ -2192,8 +2290,8 @@ fn widget_settings(
             Some((
                 base.to_string(),
                 json!({ "html": format!(
-                    "<div id=\"{inst_id}\" class=\"widget widget_{base} traveltour-widget\">{tb}<div class=\"textwidget\">{b}</div></div>",
-                    tb = traveltour_title_block(&title),
+                    "<div id=\"{inst_id}\" class=\"widget widget_{base} {wc}\">{tb}<div class=\"textwidget\">{b}</div></div>",
+                    tb = (theme.widget_title_block)(theme, &title),
                     b = render_body(body),
                 )})
                 .to_string(),
@@ -2247,28 +2345,6 @@ fn truthy(v: Option<&Value>) -> bool {
     }
 }
 
-/// The traveltour `before_widget` title markup — emitted only when the
-/// instance title is non-empty, with the capture's texturize+escape
-/// (` - ` → ` &#8211; `, `'` → `&#039;`, `&<>` escaped).
-fn traveltour_title_block(title: &str) -> String {
-    if title.is_empty() {
-        return String::new();
-    }
-    format!(
-        "<h3 class=\"traveltour-widget-title\"><span class=\"traveltour-widget-head-text\">{}</span></h3><span class=\"clear\"></span>",
-        widget_title_esc(title)
-    )
-}
-
-/// WP `widget_title` filter chain reduced to what the captures show:
-/// esc_html + the two texturize transforms the wpcategorieswidget
-/// renderer already mirrors for term names.
-fn widget_title_esc(raw: &str) -> String {
-    crate::render_archive::esc(raw)
-        .replace(" - ", " &#8211; ")
-        .replace('\'', "&#039;")
-}
-
 /// The `filter=1` paragraph pass: blank lines become paragraph breaks —
 /// double newline → `</p><p>`, single newlines kept (WP leaves them; the
 /// authored `<br>`s carry the visual breaks).
@@ -2320,6 +2396,7 @@ fn media_image_html(
     inst: &Map<String, Value>,
     title: &str,
     origin: &str,
+    theme: &crate::plugins::ThemeDef,
 ) -> Option<String> {
     let gs = |k: &str| inst.get(k).and_then(|v| v.as_str()).unwrap_or("");
     let gi = |k: &str| {
@@ -2458,8 +2535,9 @@ fn media_image_html(
     }
 
     Some(format!(
-        "<div id=\"{inst_id}\" class=\"widget widget_media_image traveltour-widget\">{tb}{inner}</div>",
-        tb = traveltour_title_block(title),
+        "<div id=\"{inst_id}\" class=\"widget widget_media_image {wc}\">{tb}{inner}</div>",
+        wc = theme.widget_class,
+        tb = (theme.widget_title_block)(theme, title),
     ))
 }
 

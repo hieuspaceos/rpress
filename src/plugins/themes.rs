@@ -83,6 +83,13 @@ static THEMES: LazyLock<Vec<(Vec<String>, &'static ThemeDef)>> = LazyLock::new(|
             let patterns: Vec<String> = spec.stylesheet_patterns.clone();
             let def: &'static ThemeDef = Box::leak(Box::new(ThemeDef {
                 matches_stylesheet: |_| false, // unused — patterns decide below
+                /* First declared pattern (sans wildcard) is the canonical
+                   stylesheet — same convention theme_for_stylesheet
+                   matches against. */
+                stylesheet: patterns
+                    .first()
+                    .map(|s| leak(&s.trim_end_matches('*').to_string()))
+                    .unwrap_or(""),
                 template_dir: leak(&spec.template_dir),
                 body_suffix: leak(&spec.body_suffix),
                 page_title_wrap: super::default_page_title,
@@ -99,6 +106,13 @@ static THEMES: LazyLock<Vec<(Vec<String>, &'static ThemeDef)>> = LazyLock::new(|
                 } else {
                     leak(&spec.widget_class)
                 },
+                /* TOML themes declare no general-option blob (the sidebar
+                   position pick is a goodlayers-family WP convention);
+                   empty pair = import skips the fold. */
+                general_option: "",
+                general_settings_key: "",
+                widget_title_block: super::default_widget_title,
+                shortcode_static: super::no_shortcode_static,
                 sidebar_wrap_class: if spec.sidebar_wrap_class.is_empty() {
                     "content-container sidebar-wrap"
                 } else {
@@ -161,6 +175,14 @@ pub(crate) fn theme_for_stylesheet(stylesheet: &str) -> Option<&'static ThemeDef
         .iter()
         .find(|(pats, _)| pats.iter().any(|p| pattern_match(p, stylesheet)))
         .map(|(_, d)| *d)
+}
+/// TOML theme owning `opt` as its general-settings option, if any.
+/// Second tier behind adapters — same ordering as `theme_for_stylesheet`.
+pub(crate) fn theme_for_general_option(opt: &str) -> Option<&'static ThemeDef> {
+    THEMES
+        .iter()
+        .map(|(_, d)| *d)
+        .find(|d| !d.general_option.is_empty() && d.general_option == opt)
 }
 
 /// Collision check — a TOML theme must not claim a stylesheet a Rust

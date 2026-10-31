@@ -38,6 +38,8 @@ pub(crate) mod goodlayers;
 pub(crate) mod index;
 pub(crate) mod chaty;
 pub(crate) mod misc;
+pub(crate) mod presto_player;
+pub(crate) mod readmore;
 /// Everything a kind editor needs — the four hooks the old `EditorPlugin`
 /// carried, verbatim. `KindDef.editor` is `None` for kinds with no plugin
 /// editor (core post/page use the classic editor).
@@ -178,6 +180,11 @@ pub(crate) struct ImportHooks {
     /// `wp_options` name prefixes this plugin owns (e.g. `"tourmaster_"`)
     /// — core whitelists them into `settings` under the plugin namespace.
     pub(crate) option_prefixes: &'static [&'static str],
+    /// Raw access to every wp_posts row — claimed, ignored and skipped
+    /// alike — before `kind_for_post_type` runs. Args: `(tx, id,
+    /// post_type, post_content)`. For adapters whose data lives in
+    /// storage CPTs the core never imports (presto video records).
+    pub(crate) post_seen: fn(&Connection, i64, &str, &str) -> Result<()>,
     /// After the posts row is imported: write plugin tables/meta.
     /// Runs inside the import transaction.
     pub(crate) post_imported: fn(&Connection, i64) -> Result<()>,
@@ -424,6 +431,8 @@ static ADAPTERS: &[&'static dyn PluginAdapter] = &[
     &theme_traveltour::ADAPTER, // gate-allow: registry entry
     // tevily: themes/specs/tevily.toml — TOML spec, no Rust adapter.
     &goodlayers::ADAPTER,
+    &presto_player::ADAPTER,
+    &readmore::ADAPTER,
     &chaty::ADAPTER,
     &misc::WPDISCUZ,
     &misc::CF7,
@@ -510,6 +519,12 @@ pub struct ThemeDef {
     /// `settings.stylesheet` may be a child theme name
     /// (`traveltour-child`, `tevily_child`) — the adapter decides.
     pub matches_stylesheet: fn(&str) -> bool,
+    /// Canonical WP `stylesheet` option value this theme claims —
+    /// import writes it into `settings.stylesheet` when the dump omits
+    /// the row but a `*_general` option identified the theme, so runtime
+    /// `theme_for_site` resolves the same theme import did. Empty = the
+    /// theme never claims a stylesheet (DEFAULT_THEME).
+    pub stylesheet: &'static str,
     /// Templates dir under `templates/theme/` probed before the shared
     /// `templates/` root by `load_env`/`template_name`.
     pub template_dir: &'static str,
@@ -532,8 +547,29 @@ pub struct ThemeDef {
     /// post_tag archive base when the map doesn't supply one (`etiquette`,
     /// `tag`). Empty = fall through to map / "tag".
     pub tag_base: &'static str,
-    /// Widget chrome class prefix (`traveltour-widget` → `widget`).
+    /// Widget chrome class prefix (`traveltour-widget` → `widget`) —
+    /// appended to the frozen widget wrapper (`widget widget_{base}
+    /// {widget_class}`) both at import (`import::widget_settings`) and in
+    /// live renderers.
     pub widget_class: &'static str,
+    /// Theme option row carrying the theme's general-settings blob —
+    /// WP goodlayers-family themes persist it as `{prefix}general`
+    /// (`traveltour_general`). Import reads sidebar-position picks and
+    /// the chrome strings from it. Empty = the theme has no such option.
+    pub general_option: &'static str,
+    /// Settings key the import writes the flattened `{general_option}`
+    /// payload under (`plugin:theme-traveltour:general`). Paired with
+    /// `general_option` — both empty or both set.
+    pub general_settings_key: &'static str,
+    /// `before_widget` title markup frozen into widget settings_json at
+    /// import — the theme's own emit (empty title → empty string);
+    /// `default_widget_title` for data/default themes. Arg: raw title
+    /// (the impl owns its escape flavor).
+    pub widget_title_block: fn(&ThemeDef, &str) -> String,
+    /// Static HTML a theme owns for one shortcode tag (`[site_reviews]`
+    /// ships a frozen capture). `None` → the expander leaves the tag
+    /// verbatim, same as WP on a site without the plugin hook.
+    pub shortcode_static: fn(&ThemeDef, &str) -> Option<&'static str>,
     /// Sidebar wrapper classes around page bodies with sidebars.
     pub sidebar_wrap_class: &'static str,
     /// Live-edit builder body class suffix (goodlayers Live Mode).
@@ -593,6 +629,21 @@ pub(crate) fn default_page_sidebar(theme: &ThemeDef, body: &str, sidebar_html: &
 pub(crate) fn default_page_title(_t: &ThemeDef, bg: &str, caption: Option<&str>, title: &str) -> String {
     let cap = caption.map(|c| format!("<h3 class=\"page-caption\">{c}</h3>")).unwrap_or_default();
     format!("<div class=\"page-title-wrap\"{bg}><div class=\"page-title-container\"><div class=\"page-title-content\">{cap}<h1 class=\"page-title\">{title}</h1></div></div></div>")
+}
+
+/// Neutral widget title markup for data/default themes — the plain
+/// escape (no brand classes); empty title → empty string.
+pub(crate) fn default_widget_title(_t: &ThemeDef, title: &str) -> String {
+    if title.is_empty() {
+        return String::new();
+    }
+    format!("<h3 class=\"widget-title\">{}</h3>", crate::html_decode::esc(title))
+}
+
+/// A theme with no frozen shortcode captures — the expander leaves the
+/// tag verbatim.
+pub(crate) fn no_shortcode_static(_t: &ThemeDef, _tag: &str) -> Option<&'static str> {
+    None
 }
 
 /// Shared taxonomy-map readers — themes with a `taxonomy_map_key` get
@@ -802,12 +853,35 @@ pub(crate) fn theme_for_stylesheet(stylesheet: &str) -> Option<&'static ThemeDef
         .find(|t| (t.matches_stylesheet)(stylesheet))
 }
 
+/// The theme owning `opt` as its general-settings option — adapters
+/// first, then TOML themes. Dumps that omit `stylesheet`/`template`
+/// still name their theme through `<theme>_general`; import resolves
+/// the theme this way before falling back to DEFAULT_THEME.
+pub(crate) fn theme_for_general_option(opt: &str) -> Option<&'static ThemeDef> {
+    ADAPTERS
+        .iter()
+        .filter_map(|a| a.theme())
+        .find(|t| !t.general_option.is_empty() && t.general_option == opt)
+        .or_else(|| themes::theme_for_general_option(opt))
+}
+
+/// The adapter carrying this stylesheet's theme — needed where the
+/// caller must reach the adapter itself (import runs its `migrate()` on
+/// the staged DB), not just its `ThemeDef`.
+pub(crate) fn adapter_for_stylesheet(stylesheet: &str) -> Option<&'static dyn PluginAdapter> {
+    ADAPTERS
+        .iter()
+        .find(|a| a.theme().is_some_and(|t| (t.matches_stylesheet)(stylesheet)))
+        .copied()
+}
+
 /// Neutral fallback when no adapter (Rust or TOML) claims the site's
 /// stylesheet — generic flat archives, no brand classes. Sites on a
 /// vendored theme we haven't ported still render legibly instead of
 /// leaking another theme's chrome.
 pub(crate) static DEFAULT_THEME: ThemeDef = ThemeDef {
     matches_stylesheet: |_| true,
+    stylesheet: "",
     template_dir: "default",
     body_suffix: "rp-theme-default",
     page_title_wrap: default_page_title,
@@ -816,6 +890,10 @@ pub(crate) static DEFAULT_THEME: ThemeDef = ThemeDef {
     taxonomy_map_json: "",
     tag_base: "",
     widget_class: "widget",
+    general_option: "",
+    general_settings_key: "",
+    widget_title_block: default_widget_title,
+    shortcode_static: no_shortcode_static,
     sidebar_wrap_class: "content-container sidebar-wrap",
     body_class: "rp-body",
     settings_key_prefix: "",
