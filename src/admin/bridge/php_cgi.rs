@@ -355,6 +355,7 @@ pub(crate) fn spawn(
     plugin_file: &str,
     templates: &Path,
 ) -> Result<BridgeState> {
+    let _t0 = Instant::now();
     let php = php_bin().ok_or_else(|| anyhow::anyhow!("php not on PATH — install php-cli or keep RuntimeKind::Playground"))?;
     let wp_core = templates.join("wp-core");
     anyhow::ensure!(wp_core.join("wp-load.php").is_file(), "templates/wp-core missing — vendor WP core first");
@@ -378,9 +379,27 @@ pub(crate) fn spawn(
     let docroot = dir.join("docroot");
     let wp_content = www.join("wp-content");
 
-    // WP core copy (excludes wp-config.php — we render our own).
-    cp_r(&wp_core, &docroot)?;
-
+    // WP core projection: `wp-includes` is symlinked (require'd via the
+    // ABSPATH path string — cheap, ~1.8s saved vs cp_r). `wp-admin` must
+    // stay a REAL dir of hardlinked files: PHP resolves __FILE__ through
+    // symlinks, so a symlinked wp-admin makes ABSPATH point at
+    // templates/wp-core — wp-config.php disappears and every request
+    // redirects to setup-config.php.
+    std::fs::create_dir_all(&docroot)?;
+    for e in std::fs::read_dir(&wp_core)?.flatten() {
+        let name = e.file_name();
+        if name == "wp-config.php" || name == "wp-config-sample.php" || name == "wp-content" {
+            continue; // rendered by us / projected below
+        }
+        let (s, d) = (e.path(), docroot.join(&name));
+        if name == "wp-includes" {
+            symlink_dir(&s, &d)?;
+        } else if e.file_type()?.is_dir() {
+            cp_r(&s, &d)?;
+        } else if std::fs::hard_link(&s, &d).is_err() {
+            std::fs::copy(&s, &d)?;
+        }
+    }
     let content = docroot.join("wp-content");
     std::fs::create_dir_all(&content)?;
     // `templates/wp-core/wp-content` ships empty placeholder dirs —
@@ -535,6 +554,7 @@ pub(crate) fn spawn(
         "-d".to_string(), "display_errors=0".to_string(),
         "-S".to_string(), format!("127.0.0.1:{port}"), "-t".to_string(), docroot.display().to_string(),
     ];
+    let _t0 = Instant::now();
     let child = match sandboxed(&php, &docroot, www, templates, &db_dir) {
         Some(mut c) => {
             let log = std::fs::File::create(dir.join("php.log")).with_context(|| "create bridge php.log")?;
@@ -652,20 +672,36 @@ pub(crate) fn spawn(
         theme = php_str(theme.as_deref().unwrap_or("")),
         plugin = php_str(plugin_file),
     );
-    let install_args = [
-        "-d".to_string(), "opcache.enable_cli=1".to_string(),
-        "-d".to_string(), "opcache.jit=tracing".to_string(),
-        "-d".to_string(), "opcache.jit_buffer_size=32M".to_string(),
-        "-d".to_string(), "opcache.validate_timestamps=0".to_string(),
-        "-d".to_string(), "realpath_cache_size=2M".to_string(),
-        "-d".to_string(), "realpath_cache_ttl=600".to_string(),
-        "-r".to_string(), install_php,
-    ];
-    match sandboxed(&php, &docroot, www, templates, &db_dir) {
-        Some(mut c) => { let o = c.args(&install_args).output().context("WP install")?; anyhow::ensure!(o.status.success(), "WP install exit {}", o.status); }
-        // Only reachable under RPRESS_BRIDGE_UNSAFE=1 (spawn above refuses
-        // otherwise) — same bare-php allowance, already warned about.
-        None => { let o = Command::new(&php).args(&install_args).output().context("WP install")?; anyhow::ensure!(o.status.success(), "WP install exit {}", o.status); }
+    // Skeleton wp.db: run the install once ever, cache the result OUTSIDE
+    // the per-spawn dir (`.skel-<slug>.db` survives the wipe) and copy it
+    // on later spawns — `wp_install()` cost ~2.4s, the copy is ~10ms.
+    // Port-bearing options (siteurl/home) are overridden by the WP_HOME
+    // constants in wp-config, so a stale port inside the skeleton is
+    // harmless; rpress_post_seeded is reset per-spawn so the CURRENT
+    // post_id re-seeds even when the skeleton carries an older post.
+    let skel = www.join("bridge").join(format!(".skel-{slug}.db"));
+    if skel.is_file() {
+        std::fs::copy(&skel, db_dir.join("wp.db")).context("copy wp.db skeleton")?;
+        if let Ok(c) = crate::db::conn(&db_dir.join("wp.db")) {
+            let _ = c.execute(sql!("bridge_php_cgi__delete_seed_options"), []);
+        }
+    } else {
+        let install_args = [
+            "-d".to_string(), "opcache.enable_cli=1".to_string(),
+            "-d".to_string(), "opcache.jit=tracing".to_string(),
+            "-d".to_string(), "opcache.jit_buffer_size=32M".to_string(),
+            "-d".to_string(), "opcache.validate_timestamps=0".to_string(),
+            "-d".to_string(), "realpath_cache_size=2M".to_string(),
+            "-d".to_string(), "realpath_cache_ttl=600".to_string(),
+            "-r".to_string(), install_php,
+        ];
+        match sandboxed(&php, &docroot, www, templates, &db_dir) {
+            Some(mut c) => { let o = c.args(&install_args).output().context("WP install")?; anyhow::ensure!(o.status.success(), "WP install exit {}", o.status); }
+            // Only reachable under RPRESS_BRIDGE_UNSAFE=1 (spawn above refuses
+            // otherwise) — same bare-php allowance, already warned about.
+            None => { let o = Command::new(&php).args(&install_args).output().context("WP install")?; anyhow::ensure!(o.status.success(), "WP install exit {}", o.status); }
+        }
+        let _ = std::fs::copy(db_dir.join("wp.db"), &skel);
     }
 
     // Warm-up: the FIRST admin-ajax after a fresh install carries
