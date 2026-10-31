@@ -314,7 +314,9 @@ Before pulling a new site, `rpress detect --dump work/<site>/dump.sql
   `Backend`, or NO adapter. A `--www` marker scan flags tier-3
   builders (`Widget_Base`, `page_builder_element`, `WPBakeryShortCode`,
   `et_pb_module`); `· registers <cpt>` notes the post types each
-  plugin owns (real `register_post_type` scan, not name guessing).
+  plugin owns — a real `register_post_type` scan over plugin AND
+  theme dirs (`theme:<dir>` label), resolving literal slugs plus
+  `self::$var`/`Class::CONST`/`$var` declarations in the same file.
   Plugins present on disk but inactive list separately.
 - **post types** — claimed (and by whom) vs UNCLAIMED with row counts
 - **shortcodes** — tags actually used in `post_content` (CF7 form

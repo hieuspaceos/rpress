@@ -196,6 +196,23 @@ registered in `settings.languages`, `ThemeDef::tax_lang`, or the blob.
   `tevily` is the TOML demo; `theme_traveltour` stays a Rust adapter
   because it seeds sidebars/widgets/custom-css and owns the byte-parity
   `wrap_page_sidebar`.
+- **Site onboarding is scouted by `rpress detect` before adapters are
+  written.** `src/detect.rs` maps a pulled dump (+ `wp-content` when
+  present) onto the backend tiers: theme stylesheet → `ThemeDef`
+  (same Rust→TOML→default chain as `theme_for_site`), each
+  `active_plugins` entry → registered adapter + `Backend` or NO
+  adapter with a builder-marker scan (`Widget_Base`,
+  `page_builder_element`, `WPBakeryShortCode`, `et_pb_module` —
+  tier-3/PhpBridge signal), every `post_type` → claimed by an
+  adapter `claim_type` or UNCLAIMED with `register_post_type`
+  attribution (literal slugs plus `self::$var`/`Class::CONST`/`$var`
+  resolved in-file; theme dirs attribute as `theme:<dir>`; a shared
+  CPT resolves deterministically via sorted `read_dir`), shortcodes
+  used in `post_content` (CF7 field notation excluded), and
+  `wp_options` first-segment prefixes → whitelisted by an adapter's
+  `option_prefixes` or not (WP core/transients fold to
+  `wp-core/misc`). Output is advisory — the `Backend` choice stays a
+  human decision; detect never writes specs or env files.
 - **Builder Live Mode loads scoped frontend CSS.** `templates/front-css/*.scoped.css`
   are the theme/plugin stylesheets fetched once from the live site, prefixed to
   `.gdlr-core-pb-livemode` by `scripts/scope-css.py` (re-run it after refreshing
