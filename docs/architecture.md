@@ -207,19 +207,27 @@ registered in `settings.languages`, `ThemeDef::tax_lang`, or the blob.
   TinyMCE saves store `&lt;h1&gt;`; WP decodes entities on output, so we mirror
   it for the static build and the live-mode preview.
 - **Plugin bridge runs native `php -S`, not WASM, when php-cli is installed.**
-  `bridge::RuntimeKind::PhpCgi` (`src/admin/bridge/php_cgi.rs`) builds a symlink-
-  farm docroot under `www/bridge/<slug>/` (hardlinked WP core, site plugins/
-  themes/uploads linked per-child, vendored sqlite drop-in), renders
-  `wp-config.php` with the token/theme/plugin constants, then spawns
+  `bridge::RuntimeKind::PhpCgi` (`src/admin/bridge/php_cgi.rs`) builds a
+  symlink-farm docroot under `www/bridge/<slug>/`, renders `wp-config.php`
+  with the token/theme/plugin constants, then spawns
   `php -S 127.0.0.1:<port>` wrapped in `sandbox-exec` (macOS Seatbelt,
   deny-default: read only docroot/www/templates/system dirs, write only
   `db/` + `uploads/` + site `mu-plugins`, loopback-only network — proven
-  denies on `~/.ssh`, `rpress.db`, outbound HTTP). ~86MB RSS vs ~1.2GB for
-  `@wp-playground/cli`; warm request ~100ms. WP installs once via a CLI
-  `wp_install()` call (not the HTTP wizard — its `wp_remote_get` retries
-  cost ~14s inside the sandbox); `wp.db` is disposable per spawn and
-  whitelisted writes pull back to `rpress.db`. On hosts without `php`,
-  `bridge_for` falls back to `RuntimeKind::Playground` automatically.
+  denies on `~/.ssh`, `rpress.db`, outbound HTTP). ~88MB RSS vs ~1.2GB for
+  `@wp-playground/cli`; warm request ~100ms, cold respawn ~2.6s.
+  Projection rule: `wp-includes` is symlinked (only required via the
+  ABSPATH string); `wp-admin` stays a REAL dir of hardlinked files —
+  PHP resolves `__FILE__` through symlinks, so a symlinked wp-admin
+  re-anchors ABSPATH into `templates/wp-core`, hides wp-config.php and
+  redirects everything to setup-config.php. `wp.db` comes from a
+  skeleton `.skel-<slug>.db` outside the wiped dir — `wp_install()` runs
+  once ever (~2.4s saved); `rpress_post_seeded`/`rpress_seed_done` are
+  deleted per-spawn so the current post re-seeds. The post-spawn warmup
+  request stays — it absorbs install transients that otherwise answer a
+  user's first element click with a 302/400 "An error occurs". `wp.db`
+  is disposable per spawn; whitelisted writes pull back to `rpress.db`.
+  On hosts without `php`, `bridge_for` falls back to
+  `RuntimeKind::Playground` automatically.
 - **Bridged wp-admin POSTs rely on `SameSite=Lax`, not the rpress CSRF token.**
   `/admin/plugins/<slug>/*` enforces `check_csrf` on adapter `ScreenDef`
   posts (accepts `csrf` or `security` — tourmaster JS names the field
