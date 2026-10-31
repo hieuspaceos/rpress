@@ -307,14 +307,25 @@ gate new site/theme literals in `src/`.
 
 Before pulling a new site, `rpress detect --dump work/<site>/dump.sql
 --www work/<site>/www` maps its WP surface onto rpress's backend tiers:
-`stylesheet` → `ThemeDef` match, each `active_plugins` file → registered
-adapter (with `Backend`) or "NO adapter" (a `--www` marker scan flags
-tier-3 builders: elementor `Widget_Base`, goodlayers
-`page_builder_element`, wpbakery, divi), and every wp `post_type` →
-claimed by an adapter/spec or UNCLAIMED (with a guessed spec-file
-target). Output ends with the concrete `PLUGINS_PHP=` line and
-`claim_types` drafts. Claims are structural guesses — the `Backend`
-choice itself (Rust port vs Data vs PhpBridge) stays a human decision.
+
+- **theme** — `stylesheet`/`template` → ThemeDef (Rust → TOML spec →
+  default fallback), plus every theme dir on disk
+- **active plugins** — each `dir/file.php` → registered adapter +
+  `Backend`, or NO adapter. A `--www` marker scan flags tier-3
+  builders (`Widget_Base`, `page_builder_element`, `WPBakeryShortCode`,
+  `et_pb_module`); `· registers <cpt>` notes the post types each
+  plugin owns (real `register_post_type` scan, not name guessing).
+  Plugins present on disk but inactive list separately.
+- **post types** — claimed (and by whom) vs UNCLAIMED with row counts
+- **shortcodes** — tags actually used in `post_content` (CF7 form
+  notation excluded) — the rendering surface adapters must cover
+- **wp_options** — first-segment prefix groups → whitelisted under an
+  adapter's `option_prefixes` or not; WP core/transients fold into
+  `wp-core/misc`
+
+Output ends with the `PLUGINS_PHP=` line and `claim_types` draft
+hints. Attribution is structural (register_post_type/option prefixes);
+the `Backend` choice stays a human decision.
 
 
 ### Revolution Slider fragments — `harvested_fragments`
