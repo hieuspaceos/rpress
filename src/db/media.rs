@@ -98,6 +98,17 @@ pub fn save_upload(db: &Path, uploads: &Path, filename: &str, bytes: &[u8], alt:
     if !upload_ext_ok(filename) {
         anyhow::bail!("file type not allowed");
     }
+    // Magic-byte gate (phase 5): the extension allowlist alone lets a PNG
+    // ride in as `x.jpg`. When `mime_from_bytes` recognizes the payload,
+    // it must equal the extension's mime. Unrecognized bytes (avif/ico/
+    // mp4/pdf have no sniffer coverage) pass through — this gate kills
+    // mislabeled known types, not unknown ones.
+    let ext_mime = mime_of(&sanitize_filename(filename));
+    if let Some(sniffed) = mime_from_bytes(bytes) {
+        if sniffed != ext_mime {
+            anyhow::bail!("file content does not match its extension");
+        }
+    }
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
     let (tm, tmd) = (time_ym(now), time_ymd(now));
     let dir = uploads.join(&tm);

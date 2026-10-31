@@ -435,7 +435,7 @@ fn b64_decode(s: &str) -> Option<Vec<u8>> {
 /// `Sess` is returned — it is NOT inserted into `app.sessions`, so its csrf
 /// can't be a stored value: it's HMAC(server_key, user_id:app_pass_hash),
 /// deterministic per credential and stable across requests (M20).
-pub(crate) fn app_pass_sess(sc: &SiteCtx, headers: &HeaderMap) -> Option<Sess> {
+pub(crate) fn app_pass_sess(sc: &SiteCtx, headers: &HeaderMap, peer: Option<SocketAddr>) -> Option<Sess> {
     let hv = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
     let blob = hv.strip_prefix("Basic ")?;
     let raw = b64_decode(blob)?;
@@ -447,7 +447,7 @@ pub(crate) fn app_pass_sess(sc: &SiteCtx, headers: &HeaderMap) -> Option<Sess> {
     let pass_hash = sha256_hex(&compact);
     let (ap_id, user_id, uemail, role) =
         udb::app_pass_lookup(&sc.db, &pass_hash, &email).ok().flatten()?;
-    let _ = udb::app_pass_touch(&sc.db, ap_id, &client_ip(headers, None));
+    let _ = udb::app_pass_touch(&sc.db, ap_id, &client_ip(headers, peer));
     let csrf = hmac_sha256_hex(&server_key(&sc.db), &format!("{user_id}:{pass_hash}"));
     Some(Sess {
         site: sc.slug.clone(),

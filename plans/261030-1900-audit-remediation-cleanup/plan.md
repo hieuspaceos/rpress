@@ -1,7 +1,7 @@
 ---
 title: "Audit remediation + layering cleanup"
 description: "Fix every verified audit finding (security, correctness, dead code) then restore the documented layering: plugin registry out of admin/, serve path out of mod.rs, SQL back into db/. Every fix lands with a regression gate."
-status: pending
+status: completed
 priority: P0
 effort: 16h
 branch: main

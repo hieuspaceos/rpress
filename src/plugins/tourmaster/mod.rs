@@ -6,8 +6,8 @@ use crate::admin::esc;
 use crate::sql;
 
 pub(crate) mod elements;
-pub(crate) mod render;
-pub(crate) mod save;
+pub mod render; // gate-allow: pub fns for audit_remediation tests
+pub mod save;   // gate-allow: pub fns for audit_remediation tests
 pub(crate) mod schema;
 pub(crate) mod screens;
 pub(crate) mod widgets;
@@ -54,7 +54,7 @@ static KINDS: &[KindDef] = &[KindDef {
         // data contract, not site literals.
         "duree", "duracion", "region", "region-es", "style", "estilo", // gate-allow: WP taxonomy names
         "profil", "perfil", "activites", "Activites", "pays", "Pays", // gate-allow: same
-        "tour-activity", "tour-age", "viet",
+        "tour-activity", "tour-age", "viet", // gate-allow: WP taxonomy names
     ],
     menu_icon: "dashicons-palmtree",
     editor: Some(&EDITOR),

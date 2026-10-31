@@ -25,7 +25,13 @@ pub fn run_backup_db(work: &Path, db: &Path, env_file: &Path, keep: usize) -> Re
     std::fs::create_dir_all(&dir)?;
 
     // Consistent snapshot via VACUUM INTO (WAL-safe, no live-file copy).
+    // VACUUM INTO refuses an existing target, so a .snapshot.db left behind
+    // by a crashed run would brick every later backup — remove it first.
     let snap = dir.join(".snapshot.db");
+    if snap.exists() {
+        std::fs::remove_file(&snap)
+            .with_context(|| format!("remove stale snapshot {}", snap.display()))?;
+    }
     {
         let c = rusqlite::Connection::open(&db)?;
         c.execute("VACUUM INTO ?1", [snap.to_string_lossy().as_ref()])?;

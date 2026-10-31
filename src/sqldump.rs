@@ -66,11 +66,27 @@ where
     let mut total = 0u64;
     let mut line: Vec<u8> = Vec::with_capacity(8 * 1024 * 1024);
     let mut schemas: HashMap<String, Vec<String>> = HashMap::new();
+    /* Dumps produced with `SET NAMES latin1` / `character_set_client
+       latin1` carry cp1252 bytes in unintroduced strings — remember the
+       declaration so every plain '…' literal transcodes (php-serialized
+       s:N lengths count bytes, and U+FFFD would shift them). Only header
+       lines are scanned; latin1 stops mattering once set. */
+    let mut dump_latin1 = false;
+    let mut header_lines = 0usize;
 
     loop {
         line.clear();
         if rdr.read_until(b'\n', &mut line)? == 0 {
             break;
+        }
+        if !dump_latin1 && header_lines < 200 && line.len() < 4096 {
+            let l = String::from_utf8_lossy(&line).to_ascii_lowercase();
+            if l.contains("set names latin1")
+                || (l.contains("character_set_client") && l.contains("latin1"))
+            {
+                dump_latin1 = true;
+            }
+            header_lines += 1;
         }
         if let Some(table) = insert_table(&line) {
             if !wanted.contains(&table.as_str()) {
@@ -90,7 +106,7 @@ where
             let (cols, vals_off) = insert_header(&stmt)
                 .with_context(|| format!("bad INSERT into {table}"))?;
             let remap = remap_for(&table, cols.as_deref(), &schemas)?;
-            parse_rows(&stmt[vals_off..], &table, remap.as_ref(), &mut f, &mut total)?;
+            parse_rows(&stmt[vals_off..], &table, remap.as_ref(), dump_latin1, &mut f, &mut total)?;
         } else if starts_word(&line, b"CREATE") {
             // Buffer the DDL (needed to decode column-list INSERTs below).
             let mut stmt = line.clone();
@@ -125,6 +141,31 @@ where
         }
     }
     Ok(total)
+}
+
+/// Every table name appearing in an `INSERT INTO` statement of the dump —
+/// cheap header scan used by import to warn about wanted-data drops.
+pub fn insert_tables(path: &Path) -> Result<std::collections::HashSet<String>> {
+    let file = File::open(path).with_context(|| format!("open {}", path.display()))?;
+    let mut peek = BufReader::with_capacity(1024 * 1024, file);
+    let gz = peek
+        .fill_buf()
+        .map(|b| b.starts_with(&[0x1f, 0x8b]))
+        .unwrap_or(false);
+    let mut rdr: Box<dyn BufRead> = if gz {
+        Box::new(BufReader::new(flate2::read::MultiGzDecoder::new(peek)))
+    } else {
+        Box::new(peek)
+    };
+    let mut out = std::collections::HashSet::new();
+    let mut line = Vec::with_capacity(1024 * 1024);
+    while rdr.read_until(b'\n', &mut line)? > 0 {
+        if let Some(t) = insert_table(&line) {
+            out.insert(t);
+        }
+        line.clear();
+    }
+    Ok(out)
 }
 
 /// `s[i..]` starts with `w` followed by a non-identifier char, case-insensitive.
@@ -243,7 +284,7 @@ fn insert_into_like(line: &[u8]) -> bool {
 /// Strict INSERT header on the buffered statement:
 /// `INSERT [IGNORE] INTO ident [(col,…)] VALUES` → (col list, values offset).
 fn insert_header(stmt: &[u8]) -> Result<(Option<Vec<String>>, usize)> {
-    let mut i = skip_ws(stmt, 0);
+    let mut i = skip_ws_comments(stmt, 0);
     if !word(stmt, i, b"INSERT") {
         bail!("not an INSERT");
     }
@@ -416,7 +457,8 @@ fn add_col_def(def: &[u8], cols: &mut Vec<String>) {
 }
 
 /// Statement ends with `;` at top level — no unclosed `'…'` string.
-/// `\'`, `\\` and `''` escapes are honored.
+/// `\'`, `\\` and `''` escapes are honored; trailing `-- …` / `/* … */`
+/// comments after the `;` count as complete (phpMyAdmin emits them).
 fn is_complete(stmt: &[u8]) -> bool {
     let mut in_str = false;
     let mut in_tick = false;
@@ -438,7 +480,7 @@ fn is_complete(stmt: &[u8]) -> bool {
         }
         i += 1;
     }
-    end > 0 && !in_str && !in_tick && stmt[end..].iter().all(|c| c.is_ascii_whitespace())
+    end > 0 && !in_str && !in_tick && skip_ws_comments(&stmt[end..], 0) == stmt.len() - end
 }
 
 /// Skip a `'…'` or `"…"` literal (escapes: backslash + doubled quote).
@@ -461,7 +503,20 @@ fn skip_string(s: &[u8], mut i: usize) -> Option<usize> {
     None
 }
 
-fn parse_quoted(s: &[u8], i: &mut usize, latin1: bool) -> Result<Val> {
+/// Text bytes a `'…'` literal carries. `Utf8` is the modern default —
+/// invalid sequences bail loudly instead of decaying to U+FFFD later
+/// (php-serialized `s:N` lengths are byte counts; mojibake rewrites
+/// them). `Cp1252` is the `SET NAMES latin1`/latin1-introducer case:
+/// mysqldump encodes smart quotes etc. as Windows-1252. `Raw` is
+/// `_binary` — never validated nor transcoded.
+#[derive(Clone, Copy)]
+enum Enc {
+    Utf8,
+    Cp1252,
+    Raw,
+}
+
+fn parse_quoted(s: &[u8], i: &mut usize, enc: Enc) -> Result<Val> {
     *i += 1; // opening '
     let mut out: Vec<u8> = Vec::new();
     let mut chunk = *i;
@@ -492,7 +547,23 @@ fn parse_quoted(s: &[u8], i: &mut usize, latin1: bool) -> Result<Val> {
                     *i += 1;
                     chunk = *i;
                 } else {
-                    return Ok(Val::Str(if latin1 { latin1_to_utf8(&out) } else { out }));
+                    let out = match enc {
+                        Enc::Raw => out,
+                        Enc::Cp1252 => cp1252_to_utf8(&out),
+                        Enc::Utf8 => {
+                            if out.iter().any(|&b| b >= 0x80)
+                                && std::str::from_utf8(&out).is_err()
+                            {
+                                bail!(
+                                    "invalid UTF-8 in dump string (non-utf8 source? \
+                                     re-export with `SET NAMES utf8mb4`, or as latin1 \
+                                     to trigger cp1252 transcoding)"
+                                );
+                            }
+                            out
+                        }
+                    };
+                    return Ok(Val::Str(out));
                 }
             }
             _ => *i += 1,
@@ -500,26 +571,44 @@ fn parse_quoted(s: &[u8], i: &mut usize, latin1: bool) -> Result<Val> {
     }
 }
 
-fn latin1_to_utf8(b: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(b.len() * 2);
+/// cp1252 → UTF-8. The 0x80–0x9F band differs from Latin-1 (smart
+/// quotes, dashes, € live there — exactly what WP content uses); every
+/// other byte maps like Latin-1.
+fn cp1252_to_utf8(b: &[u8]) -> Vec<u8> {
+    const MAP: [u16; 32] = [
+        0x20AC, 0x81, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021,
+        0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0x8D, 0x017D, 0x8F,
+        0x90, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
+        0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0x9D, 0x017E, 0x0178,
+    ];
+    let mut out = Vec::with_capacity(b.len() + b.len() / 2);
     for &c in b {
-        if c < 0x80 {
-            out.push(c);
+        let ch = match c {
+            0x00..=0x7F => c as u16,
+            0x80..=0x9F => MAP[(c - 0x80) as usize],
+            _ => c as u16,
+        };
+        if ch < 0x80 {
+            out.push(ch as u8);
+        } else if ch < 0x800 {
+            out.push(0xC0 | (ch >> 6) as u8);
+            out.push(0x80 | (ch & 0x3F) as u8);
         } else {
-            out.push(0xC0 | (c >> 6));
-            out.push(0x80 | (c & 0x3F));
+            out.push(0xE0 | (ch >> 12) as u8);
+            out.push(0x80 | ((ch >> 6) & 0x3F) as u8);
+            out.push(0x80 | (ch & 0x3F) as u8);
         }
     }
     out
 }
 
 /// One value at s[*i]: `'…'`, `_charset'…'`, `N'…'`, NULL or a bare token.
-fn parse_value(s: &[u8], i: &mut usize) -> Result<Val> {
+fn parse_value(s: &[u8], i: &mut usize, dump_latin1: bool) -> Result<Val> {
     while *i < s.len() && s[*i].is_ascii_whitespace() {
         *i += 1;
     }
     match s.get(*i).copied().context("EOF inside row")? {
-        b'\'' => parse_quoted(s, i, false),
+        b'\'' => parse_quoted(s, i, if dump_latin1 { Enc::Cp1252 } else { Enc::Utf8 }),
         b'_' => {
             // `_charset'string'` introducer.
             let mut e = *i + 1;
@@ -528,9 +617,15 @@ fn parse_value(s: &[u8], i: &mut usize) -> Result<Val> {
             }
             if s.get(e) == Some(&b'\'') {
                 let cs = s.get(*i + 1..e).unwrap_or(b"");
-                let latin1 = cs.eq_ignore_ascii_case(b"latin1");
+                let enc = if cs.eq_ignore_ascii_case(b"latin1") {
+                    Enc::Cp1252
+                } else if cs.eq_ignore_ascii_case(b"binary") {
+                    Enc::Raw
+                } else {
+                    Enc::Utf8
+                };
                 *i = e;
-                parse_quoted(s, i, latin1)
+                parse_quoted(s, i, enc)
             } else {
                 bail!(
                     "expected string after '_{}' introducer",
@@ -541,7 +636,7 @@ fn parse_value(s: &[u8], i: &mut usize) -> Result<Val> {
         b'N' | b'n' => {
             if s.get(*i + 1) == Some(&b'\'') {
                 *i += 1;
-                parse_quoted(s, i, false)
+                parse_quoted(s, i, Enc::Utf8)
             } else {
                 let ok = s
                     .get(*i + 1..*i + 4)
@@ -570,7 +665,7 @@ fn parse_value(s: &[u8], i: &mut usize) -> Result<Val> {
 }
 
 /// Parse `(...),(...);` — single pass.
-fn parse_rows<F>(s: &[u8], table: &str, remap: Option<&Remap>, f: &mut F, total: &mut u64) -> Result<()>
+fn parse_rows<F>(s: &[u8], table: &str, remap: Option<&Remap>, dump_latin1: bool, f: &mut F, total: &mut u64) -> Result<()>
 where
     F: FnMut(&str, Vec<Val>) -> Result<()>,
 {
@@ -581,7 +676,7 @@ where
                 i += 1;
                 let mut vals = Vec::with_capacity(24);
                 loop {
-                    vals.push(parse_value(s, &mut i)?);
+                    vals.push(parse_value(s, &mut i, dump_latin1)?);
                     // consume , or )
                     while i < s.len() && s[i].is_ascii_whitespace() {
                         i += 1;

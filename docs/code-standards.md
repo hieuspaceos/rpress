@@ -18,6 +18,12 @@
 3. **HTML is `format!` + `r#""#`/`r##"..."##` raw strings**, escaped via
    `esc()` for every interpolated user/DB value. A literal `"#` inside the
    template (e.g. `href="#..."`) kills `r#` — use `r##`.
+   `esc()` is the single shared helper `crate::html_decode::esc` (re-exported
+   as `crate::admin::esc`, `crate::render::esc`): it escapes `& < > "` —
+   safe for text and double-quoted attributes. `esc_attr()` adds `'→&#039;`
+   for single/mixed-quoted attributes. Never define a local `esc`/`esc_attr`;
+   variants that need extra escapes (e.g. newlines in attribute bodies)
+   build on the shared helper.
 4. **Forms never nest.** Controls in table rows bind via `form="form-id"`;
    the `<form>` element sits outside the table. This is why Quick Edit works.
 5. **Repeated keys need unique names.** `Form<HashMap<String,String>>`

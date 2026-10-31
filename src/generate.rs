@@ -476,6 +476,29 @@ pub fn invalidate_dependents(
             del(out.join(&v));
         }
     }
+    // Translation siblings: a slug/status/edit on post A stales every
+    // post_translation_members sibling too (their hreflang/permalink
+    // blocks name A's URL), so each sibling's full file-variant set is
+    // deleted alongside the post's own (phase 5).
+    {
+        let sibs: Vec<i64> = conn
+            .prepare(sql!("generate__select_translation_siblings"))
+            .and_then(|mut s| {
+                s.query_map([post_id], |r| r.get::<_, i64>(0))
+                    .and_then(|rows| rows.collect::<rusqlite::Result<Vec<_>>>())
+            })
+            .unwrap_or_default();
+        for sib in sibs {
+            if let Ok(rel) = post_out_rel(conn, sib, &kind_bases) {
+                let sib_lang: String = conn
+                    .query_row(sql!("generate__select_post_lang"), [sib], |r| r.get(0))
+                    .unwrap_or_default();
+                for v in post_file_variants(&lang_cfg, &rel, &sib_lang) {
+                    del(out.join(&v));
+                }
+            }
+        }
+    }
     // Term archives for every term the post carries now + carried before.
     let mut terms: Vec<(String, String)> = extra_terms.to_vec();
     if let Ok(mut s) = conn.prepare(
@@ -484,7 +507,9 @@ pub fn invalidate_dependents(
         if let Ok(rows) = s.query_map([post_id], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
         }) {
-            terms.extend(rows.flatten());
+            terms.extend(rows.filter_map(|r| {
+                r.map_err(|e| eprintln!("post term row skipped: {e}")).ok()
+            }));
         }
     }
     terms.sort();

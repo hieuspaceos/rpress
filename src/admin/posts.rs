@@ -214,21 +214,17 @@ pub(crate) fn render_list(
         counts.trash,
         lang_links = lang_links,
     );
-    let pages = ((total + per_page - 1) / per_page).max(1);
-    let pager = format!(
-        r#"<div class="tablenav-pages"><span class="displaying-num">{total} items</span>
-<span class="pagination-links">
-<a class="first-page button" href="{}"><span>«</span></a>
-<a class="prev-page button" href="{}"><span>‹</span></a>
-<span class="paging-input">{page} of {pages}</span>
-<a class="next-page button" href="{}"><span>›</span></a>
-<a class="last-page button" href="{}"><span>»</span></a>
-</span></div>"#,
-        qs(status, lang, tax, 1),
-        qs(status, lang, tax, (page - 1).max(1)),
-        qs(status, lang, tax, (page + 1).min(pages)),
-        qs(status, lang, tax, pages),
-    );
+    // Shared pager — carries every active filter so paging doesn't drop
+    // status/lang/tax/cat/search context.
+    let pager = {
+        let mut extra = HashMap::new();
+        for (k, v) in [("status", status), ("lang", lang), ("tax", tax), ("cat", cat), ("s", search)] {
+            if !v.is_empty() {
+                extra.insert(k.to_string(), v.to_string());
+            }
+        }
+        list::Pager::at(page, total, per_page).nav("", &extra)
+    };
     let head = spec_for_section(section).map(|k| k.head).unwrap_or("");
     let mut body = String::new();
     for r in rows {
@@ -281,7 +277,7 @@ pub(crate) fn render_list(
         ));
     }
     if body.is_empty() {
-        body.push_str(r#"<tr class="no-items"><td class="colspanchange" colspan="8">No items found.</td></tr>"#);
+        body.push_str(&list::empty_row(8, "No items found."));
     }
     // Category filter only applies to posts; pages/tours get just the
     // (cosmetic) All dates select like WP's page list.
@@ -1262,6 +1258,14 @@ return false">Add</button>
     // "YYYY-MM-DD HH:MM:SS" fills a datetime-local (needs "T", and the
     // browser widget can't carry seconds).
     let pub_date = {
+        // Stored `published_at` is UTC (see save_post_on's convention
+        // note); the publish box speaks site-local wall time, so convert
+        // through `settings.timezone` for display — the same value the
+        // datetime-local input round-trips back on save.
+        let tz = crate::db::misc::setting_value(&sc.db, "timezone", "UTC");
+        let local = |d: &str| {
+            crate::db::misc::utc_to_local(d, &tz).unwrap_or_else(|| d.to_string())
+        };
         let d = if !f.published_at.is_empty() {
             f.published_at.clone()
         } else {
@@ -1269,13 +1273,16 @@ return false">Add</button>
                 .and_then(|id| crud::published_at(&sc.db, id).ok().flatten())
                 .unwrap_or_default()
         };
-        if d.is_empty() { "immediately".to_string() } else { esc(&d) }
+        if d.is_empty() { "immediately".to_string() } else { esc(&local(&d)) }
     };
-    let pub_date_val = f
-        .published_at
-        .get(..16)
-        .unwrap_or("")
-        .replace(' ', "T");
+    let pub_date_val = {
+        let tz = crate::db::misc::setting_value(&sc.db, "timezone", "UTC");
+        crate::db::misc::utc_to_local(&f.published_at, &tz)
+            .unwrap_or_else(|| f.published_at.clone())
+            .get(..16)
+            .unwrap_or("")
+            .replace(' ', "T")
+    };
 
     // Revisions metabox — WP shows it only when the post actually has
     // snapshots; restore/compare screens live under /admin/revisions.

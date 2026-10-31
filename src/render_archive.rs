@@ -51,7 +51,7 @@ pub(crate) fn is_taxonomy(conn: &Connection, t: &str) -> bool {
         "wp_template_part", "wp_navigation", "wp_font_family", "wp_font_face",
         "wpcode_location", "wpcode_tags", "wpcode_type",
         "rank_math_redirection_category", "flamingo_inbound_channel",
-        "taxonomies_list", "viet",
+        "taxonomies_list", "viet", // gate-allow: upstream WP taxonomy slugs observed in imported dumps — data contract, not site literals
     ];
     let tl = t.to_lowercase();
     if tl == "category" || tl == "post_tag" || INTERNAL.iter().any(|x| *x == tl) {
@@ -678,14 +678,7 @@ pub(crate) fn page(
 }
 
 
-fn esc_attr(s: &str) -> String {
-    esc_attr_pub(s)
-}
-
-/// pub(crate) view for the widget renderers (tour_list alt/style attrs).
-pub(crate) fn esc_attr_pub(s: &str) -> String {
-    esc(s).replace('"', "&quot;")
-}
+use crate::html_decode::esc_attr;
 
 
 /// Add WP nav current classes for `term_path` (site-relative like
@@ -862,7 +855,7 @@ fn rgba(hex: &str, alpha: f64) -> String {
 /// pub(crate) view for the widget renderers (tour_list ribbon corner).
 pub(crate) fn rgba_pub(hex: &str, alpha: f64) -> String {
     let h = hex.trim_start_matches('#');
-    if h.len() != 6 {
+    if h.len() != 6 || !h.is_ascii() {
         return String::new();
     }
     let (Ok(r), Ok(g), Ok(b)) = (
@@ -875,9 +868,7 @@ pub(crate) fn rgba_pub(hex: &str, alpha: f64) -> String {
     format!("rgba({r}, {g}, {b}, {alpha})")
 }
 
-pub(crate) fn esc(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
-}
+pub(crate) use crate::html_decode::esc;
 
 /// WP `the_title` texturize subset for tour-card titles: ampersands then
 /// typographic punctuation → the entities WP prints.

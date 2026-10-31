@@ -36,6 +36,23 @@ pub(crate) fn html_decode(s: &str) -> String {
     out
 }
 
+/// Escape `& < > "` — the single project-wide text/attribute escaping
+/// contract (previously five local copies with divergent sets; the
+/// attribute-safe superset won). Safe in text nodes and in
+/// double-quoted attribute values; use `esc_attr` for mixed quotes.
+pub(crate) fn esc(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// `esc` + single-quote — for values inside '…' or mixed-quoted attrs.
+pub(crate) fn esc_attr(s: &str) -> String {
+    esc(s).replace('\'', "&#039;")
+}
+
+
 #[cfg(test)]
 mod tests {
     #[test]

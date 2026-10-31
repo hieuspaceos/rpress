@@ -543,12 +543,7 @@ fn embed_html(url: &str, _site_url: &str) -> String {
     u.to_string()
 }
 
-pub(crate) fn esc(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
-}
-pub(crate) fn esc_attr(s: &str) -> String {
-    esc(s).replace('"', "&quot;")
-}
+use crate::html_decode::{esc, esc_attr};
 
 /// Latest published posts in `lang`, optionally narrowed to the element's
 /// category/tag slugs (WP `tax_query field=slug`); empty match → latest posts.

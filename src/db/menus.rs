@@ -410,7 +410,7 @@ pub fn location_menu(db: &Path, location: &str, lang: &str) -> Option<i64> {
         |r| r.get::<_, Option<i64>>(0),
     )
     .ok()
-    .flatten()
+    .unwrap_or_default()
 }
 
 /// Persist the Manage Locations table: (location, lang, menu_id) rows —
@@ -522,7 +522,9 @@ pub(crate) fn posts_by_wp_ids(
             if let Ok(rows) = st.query_map(rusqlite::params_from_iter(chunk.iter()), |r| {
                 Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?, r.get::<_, String>(4)?, r.get::<_, String>(5)?))
             }) {
-                for row in rows.flatten() {
+                for row in rows.filter_map(|r| {
+                    r.map_err(|e| eprintln!("posts_by_wp_ids row skipped: {e}")).ok()
+                }) {
                     out.insert(row.0, (row.1, row.2, row.3, row.4, row.5));
                 }
             }
@@ -545,7 +547,9 @@ pub(crate) fn terms_by_ids(
             if let Ok(rows) = st.query_map(rusqlite::params_from_iter(chunk.iter()), |r| {
                 Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
             }) {
-                for row in rows.flatten() {
+                for row in rows.filter_map(|r| {
+                    r.map_err(|e| eprintln!("terms_by_ids row skipped: {e}")).ok()
+                }) {
                     out.insert(row.0, (row.1, row.2));
                 }
             }

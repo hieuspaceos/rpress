@@ -7,7 +7,7 @@ flowchart LR
     CLI[main.rs CLI] --> SRV[admin/ axum server]
     CLI --> IMP[import.rs WP dump → SQLite]
     CLI --> GEN[generate.rs → cache/ warm]
-    CLI --> MIG[migrate.rs WP → running site]
+    CLI --> MIG["migrate cmd (main.rs): import → user → generate → running site"]
     SRV --> DB[(db/ rusqlite → rpress.db)]
     SRV --> TPL[templates/ minijinja]
     SRV --> STATIC[cache/ + www/]
@@ -142,7 +142,14 @@ Language model: `posts.lang` ∈ `settings.languages` (N-language, e.g.
 backfills pairs into members and drops the table. Secondary-language
 taxonomies use suffixed slugs or separate taxonomies (`duracion`,
 `region-es`, `estilo`, `perfil`) — imported that way from WP/Polylang;
-preserved, not normalized.
+preserved, not normalized. Category-archive lang resolution is N-language:
+the taxonomy-map blob declares per-lang category roots under
+`lang_roots` (`{lang: [root…]}` — `theme_cat_lang` walks the `cat_edges`
+parent chain to a root and returns that lang); the legacy `es_roots`/
+`es_roots_lang` pair still reads as a 2-lang blob when `lang_roots` is
+absent, and `lang_roots` wins when both exist. With no roots declared,
+a `-{lang}` slug suffix lands the term in that lang's tree for any lang
+registered in `settings.languages`, `ThemeDef::tax_lang`, or the blob.
 
 ## Decisions worth knowing
 
@@ -181,8 +188,8 @@ preserved, not normalized.
   `templates/theme/foo/base_<lang>.html` — zero `src/`
   edits. Render/admin call `theme_for_site(conn)` (Rust adapter → TOML
   spec → `DEFAULT_THEME`), never `theme_traveltour::*` directly;
-  taxonomy-map reads (`cat_path`, `tag_base`, `cat_children`, es-root
-  lang) are the shared `theme_*` API keyed on
+  taxonomy-map reads (`cat_path`, `tag_base`, `cat_children`, per-lang
+  roots) are the shared `theme_*` API keyed on
   `ThemeDef::taxonomy_map_key` (with `taxonomy_map_json` as the
   compile-time fallback). Sites whose stylesheet matches nothing render
   through `templates/theme/default/` (neutral base, no brand chrome).
@@ -213,6 +220,27 @@ preserved, not normalized.
   cost ~14s inside the sandbox); `wp.db` is disposable per spawn and
   whitelisted writes pull back to `rpress.db`. On hosts without `php`,
   `bridge_for` falls back to `RuntimeKind::Playground` automatically.
+- **Bridged wp-admin POSTs rely on `SameSite=Lax`, not the rpress CSRF token.**
+  `/admin/plugins/<slug>/*` enforces `check_csrf` on adapter `ScreenDef`
+  posts, but bridged wp-admin traffic carries WP's own nonces and can't
+  know our token; the fences are the session cookie's `SameSite=Lax` (a
+  cross-site POST never reaches the handler) plus the per-spawn bridge
+  bearer inside the proxy hop. Do not weaken the cookie's SameSite.
+- **Bridge egress can't be netns-isolated without root (residual risk).**
+  `bwrap --unshare-net` would cut the host→child loopback the proxy needs,
+  and slirp4netns/pasta *add* outbound NAT. So the bwrap profile keeps
+  `--share-net` and the deploy unit hardens egress service-wide:
+  `IPAddressAllow=localhost`/`IPAddressDeny=any` in the generated systemd
+  unit (install.sh; rpress itself needs no outbound — pull.rs is
+  local-file). A host where the bridge runs outside that unit (bare
+  `rpress serve`) has no egress fence. When neither sandbox tool exists,
+  spawn fails closed unless `RPRESS_BRIDGE_UNSAFE=1` is set explicitly.
+- **`RPRESS_TRUSTED_PROXY` must name the reverse proxy's IP.** Behind
+  nginx/caddy the peer addr is 127.0.0.1; without the env var
+  `X-Forwarded-For` is ignored and rate limits, session stamps and
+  app-pass `last_ip` all record the proxy's loopback. Startup warns once
+  when bind is loopback, the var is unset, and `site_url` is a
+  non-localhost production URL.
 
 ## What this is NOT
 

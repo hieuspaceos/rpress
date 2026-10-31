@@ -231,9 +231,8 @@ const SANDBOX_PROFILE: &str = r#"(version 1)
 "#;
 
 /// Wrap a Command in `sandbox-exec` when available; returns `None` where
-/// the tool is absent (Linux — the child then runs UNCONFINED: full fs +
-/// network of the rpress user; systemd unit hardening is the confinement
-/// layer there, see deploy runbook).
+/// neither Seatbelt nor bwrap exists. Callers fail CLOSED on `None` —
+/// a bare `php -S` needs the explicit `RPRESS_BRIDGE_UNSAFE=1` opt-in.
 fn sandboxed(php: &Path, docroot: &Path, www: &Path, templates: &Path, db_dir: &Path) -> Option<Command> {
     let se = PathBuf::from("/usr/bin/sandbox-exec");
     if se.is_file() {
@@ -272,10 +271,14 @@ fn which_bwrap() -> Option<PathBuf> {
 /// Everything the child needs is ro-bound; only wp.db and uploads are
 /// writable — mu-plugins is read-only (host-written at spawn, audit M1b).
 /// `--share-net` keeps host loopback so the
-/// rpress proxy can reach `php -S 127.0.0.1:<port>` — same boundary as the
-/// macOS profile (which also allows localhost). Outbound stays open on
-/// both; the real fence is the fs mount table + per-spawn token + pull
-/// whitelist.
+/// rpress proxy can reach `php -S 127.0.0.1:<port>`. True loopback-only
+/// isolation is NOT achievable here without root: `--unshare-net` would
+/// kill host→child reachability entirely (rpress proxies into the child's
+/// netns), while slirp4netns/pasta ADD outbound NAT — the opposite of
+/// egress restriction. Egress is confined at the service level instead:
+/// the generated systemd unit carries `IPAddressAllow=localhost
+/// IPAddressDeny=any` (install.sh). The in-namespace fence is the fs
+/// mount table + per-spawn token + pull whitelist.
 fn sandboxed_bwrap(bw: &Path, php: &Path, docroot: &Path, www: &Path, templates: &Path, db_dir: &Path) -> Command {
     let uploads = www.join("wp-content/uploads");
     let mut c = Command::new(bw);
@@ -535,18 +538,31 @@ pub(crate) fn spawn(
             c.args(&php_args).stdout(Stdio::null()).stderr(Stdio::from(log)).spawn().context("spawn sandboxed php -S")?
         }
         None => {
-            // No Seatbelt on this host (Linux): the child runs with the
-            // full rpress user's filesystem + network. Say so loudly per
-            // spawn — on systemd deployments ProtectHome/ProtectSystem in
-            // the unit is what actually confines it (see deploy runbook).
+            // No Seatbelt and no bwrap on this host — a bare `php -S` runs
+            // with the rpress user's full fs + network. Fail CLOSED: refuse
+            // unless the operator opted in explicitly. On Linux the deploy
+            // unit (ProtectHome/ProtectSystem/IPAddressAllow=localhost in
+            // install.sh) is the intended confinement; set
+            // RPRESS_BRIDGE_UNSAFE=1 to run without any sandbox anyway.
+            anyhow::ensure!(
+                std::env::var_os("RPRESS_BRIDGE_UNSAFE").is_some_and(|v| v == "1"),
+                "bridge: no sandbox tool (sandbox-exec/bwrap) on this host — \
+                 refusing unsandboxed `php -S`; set RPRESS_BRIDGE_UNSAFE=1 to override"
+            );
             eprintln!(
-                "bridge: WARNING — sandbox-exec absent; php -S for {slug} is UNSANDBOXED \
-                 (full fs + network). On Linux use systemd ProtectHome/ProtectSystem or bwrap."
+                "bridge: WARNING — RPRESS_BRIDGE_UNSAFE=1; php -S for {slug} is UNSANDBOXED \
+                 (full fs + network of the rpress user)."
             );
             let log = std::fs::File::create(dir.join("php.log")).with_context(|| "create bridge php.log")?;
             Command::new(&php).args(&php_args).stdout(Stdio::null()).stderr(Stdio::from(log)).spawn().context("spawn php -S")?
         }
     };
+    // Pidfile BEFORE the probe loop + wp_install: a mid-spawn crash leaves
+    // a tracked child `reap_stale_pidfile` can kill (format `pid:port`).
+    {
+        let pf = pidfile_path(www, slug);
+        let _ = std::fs::write(&pf, format!("{}:{port}\n", child.id()));
+    }
 
     // php -S boots near-instantly vs the WASM cold start; still probe with
     // the same deadline pattern.
@@ -645,6 +661,8 @@ pub(crate) fn spawn(
     ];
     match sandboxed(&php, &docroot, www, templates, &db_dir) {
         Some(mut c) => { let o = c.args(&install_args).output().context("WP install")?; anyhow::ensure!(o.status.success(), "WP install exit {}", o.status); }
+        // Only reachable under RPRESS_BRIDGE_UNSAFE=1 (spawn above refuses
+        // otherwise) — same bare-php allowance, already warned about.
         None => { let o = Command::new(&php).args(&install_args).output().context("WP install")?; anyhow::ensure!(o.status.success(), "WP install exit {}", o.status); }
     }
 

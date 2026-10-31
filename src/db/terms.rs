@@ -40,7 +40,7 @@ fn old_parent(db: &Path, id: i64) -> Option<i64> {
         .query_row(sql!("terms__select_parent_id"), [id], |r| r.get(0))
         .optional()
         .ok()
-        .flatten()
+        .unwrap_or_default()
 }
 
 pub fn save_term(db: &Path, tax: &str, id: Option<i64>, name: &str, slug: &str, desc: &str, parent: Option<i64>) -> Result<i64> {
@@ -57,35 +57,42 @@ pub fn save_term(db: &Path, tax: &str, id: Option<i64>, name: &str, slug: &str, 
         (Some(id), None) => old_parent(db, id).unwrap_or(0),
         (None, p) => p.unwrap_or(0),
     };
-    let c = crate::db::conn(db)?;
+    let mut c = crate::db::conn(db)?;
+    // One transaction for the terms UPDATE + the post_terms rename
+    // cascade: a failure between them would orphan every assignment under
+    // the old slug (audit — non-transactional term rename).
+    let tx = c.transaction()?;
     if let Some(id) = id {
-        let old_slug: Option<String> = c
+        let old_slug: Option<String> = tx
             .query_row(sql!("terms__select_slug_from"), [id], |r| r.get(0))
             .optional()?;
-        c.execute(
+        tx.execute(
             sql!("terms__update_terms_set"),
             params![name.trim(), slug.trim(), desc.trim(), parent, id],
         )?;
         if let Some(old) = old_slug {
             if old != slug.trim() {
-                c.execute(
+                tx.execute(
                     sql!("terms__update_post_terms_set"),
                     params![slug.trim(), name.trim(), tax, old],
                 )?;
             } else {
-                c.execute(
+                tx.execute(
                     sql!("terms__update_post_terms_set_5"),
                     params![name.trim(), tax, slug.trim()],
                 )?;
             }
         }
+        tx.commit()?;
         Ok(id)
     } else {
-        c.execute(
+        tx.execute(
             sql!("terms__insert_into_terms"),
             params![tax, slug.trim(), name.trim(), desc.trim(), parent],
         )?;
-        Ok(c.last_insert_rowid())
+        let id = tx.last_insert_rowid();
+        tx.commit()?;
+        Ok(id)
     }
 }
 

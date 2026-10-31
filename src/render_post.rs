@@ -739,12 +739,7 @@ fn urlenc(s: &str) -> String {
     crate::admin::urlenc(s)
 }
 
-fn esc(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
-}
-fn esc_attr(s: &str) -> String {
-    esc(s).replace('"', "&quot;").replace('\'', "&#039;")
-}
+use crate::html_decode::{esc, esc_attr};
 
 fn translation_urls(conn: &Connection, id: i64, site: &str, tour_base: &str) -> Vec<(String, String)> {
     let cfg = crate::lang::config(conn);

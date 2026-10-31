@@ -687,11 +687,28 @@ async fn not_found(sc: &SiteCtx) -> Response {
 }
 
 /// Request Host header, normalized to a bare lowercase hostname.
-pub(crate) fn request_host(headers: &HeaderMap) -> Option<String> {
+/// Handles `host`, `host:port`, `[v6]`, `[v6]:port`: a bracketed literal
+/// yields everything up to `]`; otherwise a trailing `:port` is stripped
+/// only when the suffix parses as u16 (bare v6 with colons stays whole).
+#[doc(hidden)]
+pub fn request_host(headers: &HeaderMap) -> Option<String> {
     headers
         .get(header::HOST)
         .and_then(|v| v.to_str().ok())
-        .map(|h| h.split(':').next().unwrap_or(h).to_lowercase())
+        .map(|h| {
+            if let Some(rest) = h.strip_prefix('[') {
+                return rest.split(']').next().unwrap_or(rest).to_lowercase();
+            }
+            /* `host:port` strips a u16 port; a bare v6 literal also ends in
+               `:<digits>` — when the head still contains ':' the suffix is
+               part of the address, not a port. */
+            match h.rsplit_once(':') {
+                Some((host, port)) if !host.contains(':') && port.parse::<u16>().is_ok() => {
+                    host.to_lowercase()
+                }
+                _ => h.to_lowercase(),
+            }
+        })
 }
 
 /// Multi-site gate: with more than one site configured there is no safe

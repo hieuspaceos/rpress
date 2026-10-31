@@ -66,8 +66,10 @@ const WEEKDAYS: [&str; 7] = [
     "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
 ];
 
-fn weekday_of(year: i64, month: u32, day: u32) -> u32 {
-    // Sakamoto's algorithm; 0 = Sunday .. 6 = Saturday
+#[doc(hidden)] // pub for tests/audit_remediation.rs — not crate API.
+pub fn weekday_of(year: i64, month: u32, day: u32) -> u32 {
+    // Sakamoto's algorithm; 0 = Sunday .. 6 = Saturday. `month` must be
+    // 1..=12 — callers filter at parse, so this indexes `T` safely.
     const T: [i64; 12] = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
     let y = if month < 3 { year - 1 } else { year };
     ((y + y / 4 - y / 100 + y / 400 + T[(month - 1) as usize] + day as i64) % 7) as u32
@@ -104,7 +106,8 @@ fn valid_date(s: &str) -> bool {
 }
 
 /// Port of `tourmaster_get_tour_dates` for one `date-price` entry.
-fn expand_entry(entry: &Map<String, Value>, timing: &str, out: &mut Vec<String>) {
+#[doc(hidden)] // pub for tests/audit_remediation.rs — not crate API.
+pub fn expand_entry(entry: &Map<String, Value>, timing: &str, out: &mut Vec<String>) {
     if timing == "single" {
         if let Some(d) = entry.get("date").and_then(|v| v.as_str()) {
             if !d.is_empty() {
@@ -121,7 +124,12 @@ fn expand_entry(entry: &Map<String, Value>, timing: &str, out: &mut Vec<String>)
     let months: Vec<u32> = entry
         .get("month")
         .and_then(|v| v.as_array())
-        .map(|a| a.iter().filter_map(|x| x.as_str()?.parse().ok()).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str()?.parse::<u32>().ok())
+                .filter(|m| (1..=12).contains(m)) // out-of-range months skip, never index weekday_of OOB
+                .collect()
+        })
         .unwrap_or_default();
     let years: Vec<i64> = entry
         .get("year")
@@ -237,7 +245,7 @@ pub(crate) fn save(c: &Connection, id: i64, f: &PostForm) -> Result<()> {
             .context("tourmaster-tour-option JSON")?
             .as_object()
             .cloned()
-            .unwrap_or_default();
+            .context("tourmaster-tour-option JSON is not an object")?;
         // split singles out of the blob — payload keys are field slugs
         for (slug, meta) in SINGLE_METAS {
             if let Some(v) = d.remove(*slug) {

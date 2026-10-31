@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# Requires bash process substitution: under `sh` (POSIX-mode bash on
+# macOS sets BASH_VERSION but disables `< <(…)`) probe for the feature
+# and re-exec real bash so `sh scripts/check-layers.sh` works instead of
+# dying mid-file with a syntax error.
+if ! ( eval 'true < <(true)' ) 2>/dev/null; then exec bash "$0" "$@"; fi
 # Layering gate — run in CI or pre-commit. Fails when new code violates the
 # architecture contract in docs/architecture.md:
 #   1. No SQL literal outside src/db/ (exceptions: src/plugins/, import.rs,

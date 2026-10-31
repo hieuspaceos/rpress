@@ -122,7 +122,7 @@ pub(crate) fn opt_in(env_list: &str, slug: &str) -> bool {
 /// runtime binary is missing — caller renders the degrade screen.
 /// `<www>/bridge/<slug>.pid` — the runtime dir itself is wiped on respawn,
 /// so the pidfile sits one level up, out of the wipe path.
-fn pidfile_path(www: &std::path::Path, slug: &str) -> PathBuf {
+pub(crate) fn pidfile_path(www: &std::path::Path, slug: &str) -> PathBuf {
     www.join("bridge").join(format!("{slug}.pid"))
 }
 
@@ -166,22 +166,40 @@ fn spawn(
 ) -> Result<BridgeState> {
     reap_stale_pidfile(www, slug);
     let pidfile = pidfile_path(www, slug);
-    let mut st = match kind {
-        RuntimeKind::Playground => playground::spawn(site, slug, www, rpress_db, post_id, plugin_file, templates)?,
-        RuntimeKind::PhpCgi => php_cgi::spawn(site, slug, www, rpress_db, post_id, plugin_file, templates)?,
-    };
-    // Post-spawn identity check: the port must answer OUR token, not just
-    // reply — a recycled port behind a foreign listener fails here and the
-    // half-built runtime is killed rather than adopted.
-    let mut rt = std::mem::replace(&mut st.rt, Box::new(DeadRuntime));
-    if !rt.healthy(&st.token) {
-        rt.kill();
-        anyhow::bail!("bridge {slug}: identity probe failed after spawn");
+    // The port picked by free_port() can be stolen between the probe
+    // close and `php -S`/cli's bind; the identity probe catches it
+    // (foreign listener can't answer our token), so retry the spawn
+    // once with a fresh port instead of surfacing a flaky failure.
+    let mut last_err: Option<anyhow::Error> = None;
+    for attempt in 0..2 {
+        let st = match kind {
+            RuntimeKind::Playground => playground::spawn(site, slug, www, rpress_db, post_id, plugin_file, templates),
+            RuntimeKind::PhpCgi => php_cgi::spawn(site, slug, www, rpress_db, post_id, plugin_file, templates),
+        };
+        let mut st = match st {
+            Ok(st) => st,
+            // Setup errors (missing binary, template failure) aren't
+            // port races — fail fast, no retry.
+            Err(e) => return Err(e),
+        };
+        // Post-spawn identity check: the port must answer OUR token, not just
+        // reply — a recycled port behind a foreign listener fails here and the
+        // half-built runtime is killed rather than adopted.
+        let mut rt = std::mem::replace(&mut st.rt, Box::new(DeadRuntime));
+        if !rt.healthy(&st.token) {
+            rt.kill();
+            if attempt == 1 {
+                anyhow::bail!("bridge {slug}: identity probe failed after spawn");
+            }
+            eprintln!("bridge {slug}: identity probe failed (stolen port?) — retrying spawn");
+            last_err = Some(anyhow::anyhow!("identity probe failed"));
+            continue;
+        }
+        st.rt = rt;
+        st.pidfile = pidfile.clone();
+        return Ok(st);
     }
-    st.rt = rt;
-    st.pidfile = pidfile.clone();
-    let _ = std::fs::write(&pidfile, format!("{}\n", st.rt.pid()));
-    Ok(st)
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("bridge {slug}: spawn failed")))
 }
 
 /// Placeholder runtime swapped in while `healthy()` verifies a spawn —
@@ -255,7 +273,15 @@ pub(crate) fn bridge_for(
         drop(map);
         let mut loser = st;
         let _ = loser.rt.kill();
-        let _ = std::fs::remove_file(&loser.pidfile);
+        // Read-compare-remove: the winner's spawn already wrote ITS pid to
+        // this path — a live winner's pidfile must never be deleted.
+        let loser_pid = loser.rt.pid().to_string();
+        if std::fs::read_to_string(&loser.pidfile)
+            .ok()
+            .is_some_and(|c| c.split(':').next().map(str::trim) == Some(loser_pid.as_str()))
+        {
+            let _ = std::fs::remove_file(&loser.pidfile);
+        }
         out.lock().last_used = Instant::now();
         return Ok(out);
     }
@@ -291,9 +317,10 @@ pub(crate) fn reap(bridges: &Bridges, ttl: Duration) -> Vec<String> {
                 out.push(k);
             }
             // Race with the eligibility pass — a request arrived between
-            // drain and now. Drop the map handle only; the bridge's Drop
-            // still kills the child, so the idle kill stays effective.
-            None => out.push(k),
+            // drain and now. No kill happened here: defer instead of
+            // claiming one. (The entry was dropped from the map; the
+            // bridge's own Drop kills the child when the handle dies.)
+            None => eprintln!("bridge: reap deferred (in-flight request) {k}"),
         }
     }
     out

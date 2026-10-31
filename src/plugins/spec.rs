@@ -175,6 +175,19 @@ static SPECS: LazyLock<Vec<Spec>> = LazyLock::new(|| {
                         "{slug}.toml: metabox on {} has an unknown field kind",
                         k.kind
                     );
+                    // Metabox keys are form field names — a key that
+                    // collides with a PostForm field or a reserved prefix
+                    // never reaches `f.extra` / corrupts a core write.
+                    for f in &mb.fields {
+                        assert!(
+                            !matches!(f.key.as_str(), "title" | "status" | "slug" | "kind")
+                                && !f.key.starts_with("trans_")
+                                && !f.key.starts_with("rank_math"),
+                            "{slug}.toml: metabox key {:?} on {} collides with a PostForm field or reserved prefix",
+                            f.key,
+                            k.kind
+                        );
+                    }
                 }
             }
             spec
@@ -593,7 +606,7 @@ fn spec_metabox(sc: &crate::admin::SiteCtx, _s: &crate::admin::Sess, f: &crate::
         }
     }
     let _ = sc;
-    format!("<div class=\"postbox\"><h2>{title}</h2><div class=\"inside\">{rows}</div></div>")
+    format!("<div class=\"postbox\"><h2>{title}</h2><div class=\"inside\"><input type=\"hidden\" name=\"__present\" value=\"1\">{rows}</div></div>")
 }
 
 fn spec_assets() -> &'static str {
@@ -608,9 +621,11 @@ fn spec_editor_save(c: &Connection, id: i64, f: &crate::db::posts::PostForm) -> 
     let Some(fields) = metabox_fields_for(&f.kind) else {
         return Ok(());
     };
-    let box_present = fields
-        .iter()
-        .any(|fs| f.extra.contains_key(fs.key));
+    // `__present` proves the metabox was on the form even when every
+    // field is an unchecked checkbox (checkboxes post nothing when off);
+    // the legacy per-field probe stays for pre-marker callers.
+    let box_present = f.extra.contains_key("__present")
+        || fields.iter().any(|fs| f.extra.contains_key(fs.key));
     if !box_present {
         return Ok(());
     }

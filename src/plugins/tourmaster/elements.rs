@@ -478,7 +478,7 @@ fn combobox(f: &Field, value: &Value) -> String {
             "<option value=\"{}\" {} >{}</option>",
             esc(&k),
             sel,
-            label
+            esc(&label)
         ));
     }
     ret.push_str("</select></div>");
@@ -501,7 +501,7 @@ fn multi_combobox(f: &Field, value: &Value) -> String {
             "<option value=\"{}\" {} >{}</option>",
             esc(&k),
             s,
-            label
+            esc(&label)
         ));
     }
     ret.push_str("</select>");

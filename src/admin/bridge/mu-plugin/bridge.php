@@ -21,10 +21,10 @@
  * Keep this file dependency-free: it runs before plugins load.
  */
 
-/* Fence 1: bearer token. */
+/* Fence 1: bearer token — a missing constant means 403, never uid-1 admin. */
 $tok = defined('RPRESS_BRIDGE_TOKEN') ? RPRESS_BRIDGE_TOKEN : '';
 $got = isset($_SERVER['HTTP_X_RPRESS_BRIDGE']) ? $_SERVER['HTTP_X_RPRESS_BRIDGE'] : '';
-if ($tok !== '' && !hash_equals($tok, $got)) {
+if ($tok === '' || !hash_equals($tok, $got)) {
     http_response_code(403);
     header('Content-Type: text/plain');
     echo 'bridge token mismatch';

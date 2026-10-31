@@ -159,7 +159,7 @@ fn tour_card(conn: &Connection, post_id: i64, site_url: &str, lang: &str, kind_b
         }
     };
     let display = super::render::display_slug(conn, post_id, &slug, &title);
-    let prefix = if lang == "es" { "/es" } else { "" };
+    let prefix = crate::lang::url_prefix(&crate::lang::config(conn), lang);
     let url = format!("{site_url}{prefix}/{kind_base}/{display}/");
 
     // Thumbnail: media sizes_json 'thumbnail' → the 150x150 file rendered
@@ -197,7 +197,7 @@ fn tour_card(conn: &Connection, post_id: i64, site_url: &str, lang: &str, kind_b
     } else {
         format!(
             "<img src=\"{site_url}/wp-content/uploads/{img_path}\" alt=\"{}\" width=\"{iw}\" height=\"{ih}\">",
-            crate::render_archive::esc_attr_pub(&alt),
+            crate::html_decode::esc_attr(&alt),
         )
     };
 
@@ -208,8 +208,8 @@ fn tour_card(conn: &Connection, post_id: i64, site_url: &str, lang: &str, kind_b
     } else {
         format!(
             "<div class=\"tourmaster-thumbnail-ribbon gdlr-core-outer-frame-element\" style=\"color: {};background-color: {};\"><div class=\"tourmaster-thumbnail-ribbon-cornor\" style=\"border-right-color: {};\"></div>{}</div>",
-            if promo_color.is_empty() { "#ffffff".to_string() } else { crate::render_archive::esc_attr_pub(&promo_color) },
-            crate::render_archive::esc_attr_pub(&promo_bg),
+            if promo_color.is_empty() { "#ffffff".to_string() } else { crate::html_decode::esc_attr(&promo_color) },
+            crate::html_decode::esc_attr(&promo_bg),
             crate::render_archive::rgba_pub(&promo_bg, 0.5),
             crate::render_archive::esc(&promo_text),
         )
@@ -220,7 +220,7 @@ fn tour_card(conn: &Connection, post_id: i64, site_url: &str, lang: &str, kind_b
     } else {
         format!(
             "<div class=\"tourmaster-tour-price-wrap \"><span class=\"tourmaster-tour-price\"><span class=\"tourmaster-head\">{}</span><span class=\"tourmaster-tail\">{}</span></span></div>",
-            if lang == "es" { "Desde" } else { "De" },
+            crate::lang::t(lang, "from"),
             price,
         )
     };
@@ -231,7 +231,7 @@ fn tour_card(conn: &Connection, post_id: i64, site_url: &str, lang: &str, kind_b
     };
     Ok(Some(format!(
         "<div class=\"tourmaster-item-list tourmaster-tour-widget tourmaster-item-pdlr\"><div class=\"tourmaster-tour-widget-inner clearfix\"><div class=\"tourmaster-tour-thumbnail tourmaster-media-image \"><a href=\"{url}\">{img}</a></div><div class=\"tourmaster-tour-content-wrap\"><h3 class=\"tourmaster-tour-title gdlr-core-skin-title\"><a href=\"{url}\">{}</a></h3><div class=\"{info_class}\">{ribbon}{price_html}</div></div></div></div>",
-        crate::render_archive::wp_title_pub(&title.replace('<', "&lt;").replace('>', "&gt;")),
+        crate::render_archive::wp_title_pub(&crate::admin::esc(&title)),
     )))
 }
 
@@ -311,7 +311,7 @@ fn render_tour_list(
         });
     Ok(format!(
         "<div id=\"{wrapper}\" class=\"widget_text widget widget_custom_html traveltour-widget\"><div class=\"textwidget custom-html-widget\"><div id=\"{inner}\" class=\"widget widget_tourmaster-tour-widget traveltour-widget\">{heading}<div class=\"tourmaster-recent-tour-widget tourmaster-tour-item\">{cards}</div></div></div></div>", // gate-allow: verbatim WP widget wrapper
-        wrapper = crate::render_archive::esc_attr_pub(wrapper),
-        inner = crate::render_archive::esc_attr_pub(&inner),
+        wrapper = crate::html_decode::esc_attr(wrapper),
+        inner = crate::html_decode::esc_attr(&inner),
     ))
 }

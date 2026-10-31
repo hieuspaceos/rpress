@@ -74,6 +74,11 @@ impl Pager {
         let page = q.get("paged").and_then(|s| s.parse().ok()).unwrap_or(1).max(1);
         Pager { page, total, per_page: PER_PAGE }.clamp()
     }
+    /// Pager when the page number arrives already parsed (posts list takes
+    /// `page`/`per_page` as args rather than the raw query map).
+    pub(crate) fn at(page: i64, total: i64, per_page: i64) -> Self {
+        Pager { page, total, per_page: per_page.max(1) }.clamp()
+    }
     /// Screen Options override: `per_page` comes from user prefs.
     pub fn with_per_page(mut self, per: i64) -> Self {
         self.per_page = per.max(1);

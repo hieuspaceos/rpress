@@ -32,7 +32,7 @@ use std::sync::LazyLock;
 pub(crate) mod spec;
 // theme_tevily lives in themes/specs/tevily.toml — the declarative-demo spec.
 pub(crate) mod theme_traveltour; // gate-allow: adapter module registration is the contract
-pub(crate) mod tourmaster;
+pub mod tourmaster; // gate-allow: audit_remediation tests reach save/render helpers
 pub(crate) mod goodlayers;
 /// `/admin/plugins` index + shared settings-screen helpers.
 pub(crate) mod index;
@@ -494,7 +494,7 @@ pub(crate) fn adapters() -> &'static [&'static dyn PluginAdapter] {
 #[allow(dead_code)] // TOML themes can't carry the fn-pointer fields
                     // (page_title_wrap/wrap_page_sidebar are data-theme
                     // generic) — keep the allow for future spec fields.
-pub(crate) struct ThemeDef {
+pub struct ThemeDef {
     /// `settings.stylesheet` may be a child theme name
     /// (`traveltour-child`, `tevily_child`) — the adapter decides.
     pub matches_stylesheet: fn(&str) -> bool,
@@ -559,7 +559,7 @@ pub(crate) struct ThemeDef {
 
 /// Menu markup family a theme's base template expects.
 #[derive(Clone, Copy)]
-pub(crate) enum MenuRenderer {
+pub enum MenuRenderer {
     /// WP/superfish: `<li class><a href>{title}</a><ul class="sub-menu">`.
     Wp,
     /// Elementor/tevily: `<a><span class="menu-title">{t}</span>{caret}</a>`
@@ -660,20 +660,36 @@ pub(crate) fn theme_taxonomy_base(conn: &rusqlite::Connection, theme: &ThemeDef,
 }
 
 /// Whether `slug`'s category chain resolves inside a non-primary root
-/// set — the theme declares `es_roots` (map) or `tax_lang` pairs;
-/// generic: slug ends in `-es` and the theme maps "es" via tax_lang.
-pub(crate) fn theme_cat_lang(conn: &rusqlite::Connection, theme: &ThemeDef, slug: &str, primary: &str) -> Option<String> {
+/// set — the map declares `lang_roots` (`{lang: [root…]}`, N-lang form)
+/// or the legacy `es_roots`/`es_roots_lang` pair (kept readable so
+/// existing 2-lang sites keep working; `lang_roots` wins when present).
+/// No roots → a `-{lang}` slug suffix means that lang's tree when the
+/// lang is registered for the site or the theme (`lang()`); primary
+/// otherwise.
+pub fn theme_cat_lang(conn: &rusqlite::Connection, theme: &ThemeDef, slug: &str, primary: &str) -> Option<String> {
     let map = tax_map(conn, theme);
-    if let Some(roots) = map["es_roots"].as_array() {
-        let roots: Vec<String> = roots.iter().filter_map(|v| v.as_str().map(str::to_string)).collect();
+    // {lang → roots} from the blob, `lang_roots` first, legacy keys as
+    // fallback. Missing blob → empty map (the suffix heuristic still runs).
+    let mut root_sets: Vec<(String, Vec<String>)> = Vec::new();
+    if let Some(obj) = map["lang_roots"].as_object() {
+        for (lang, roots) in obj {
+            root_sets.push((
+                lang.clone(),
+                roots.as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default(),
+            ));
+        }
+    } else if let Some(roots) = map["es_roots"].as_array() {
+        let lang = map["es_roots_lang"].as_str().unwrap_or("es").to_string();
+        root_sets.push((lang, roots.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()));
+    }
+    if !root_sets.is_empty() {
+        // Walk the parent chain once; a hit on any root set lands in that
+        // lang's tree.
         let mut cur = slug.to_string();
         let mut guard = 0;
         loop {
-            if roots.contains(&cur) {
-                return map["es_roots_lang"]
-                    .as_str()
-                    .map(str::to_string)
-                    .or_else(|| Some("es".to_string()));
+            if let Some((lang, _)) = root_sets.iter().find(|(_, roots)| roots.contains(&cur)) {
+                return Some(lang.clone());
             }
             match map_parent(&map, &cur) {
                 Some(p) if p != cur => cur = p,
@@ -684,12 +700,43 @@ pub(crate) fn theme_cat_lang(conn: &rusqlite::Connection, theme: &ThemeDef, slug
         }
     }
     // Polylang convention the retired cat_path_is_es kept unconditional:
-    // a `-es` slug suffix means the non-primary tree even when the map
-    // has no es_roots entry (theme declares cat_edges only).
-    if slug.ends_with("-es") {
-        return map["es_roots_lang"].as_str().map(str::to_string).or_else(|| Some("es".to_string()));
+    // a `-{lang}` slug suffix means the non-primary tree even when the map
+    // has no roots entry (theme declares cat_edges only). `lang` covers
+    // the site's configured secondary langs plus every lang the theme's
+    // tax_lang/blob declarations register — N-lang, no "es" literal.
+    for lang in secondary_langs(conn, theme, &map, primary) {
+        if slug.ends_with(&format!("-{lang}")) {
+            return Some(lang);
+        }
     }
     Some(primary.to_string())
+}
+
+/// Secondary langs the taxonomy-map readers recognize: configured site
+/// languages (minus primary), theme `tax_lang` values, and the legacy
+/// `es_roots_lang` blob key. De-duped, insertion order.
+fn secondary_langs(conn: &rusqlite::Connection, theme: &ThemeDef, map: &serde_json::Value, primary: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut push = |l: &str| {
+        if !l.is_empty() && l != primary && !out.iter().any(|x| x == l) {
+            out.push(l.to_string());
+        }
+    };
+    for l in &crate::lang::config(conn).langs {
+        push(l);
+    }
+    for (_, l) in theme.tax_lang {
+        push(l);
+    }
+    if let Some(l) = map["es_roots_lang"].as_str() {
+        push(l);
+    }
+    if let Some(obj) = map["lang_roots"].as_object() {
+        for l in obj.keys() {
+            push(l);
+        }
+    }
+    out
 }
 
 /// Taxonomy → lang for archive paths with no post-lang signal — the
@@ -708,14 +755,16 @@ pub(crate) fn theme_tax_lang<'a>(theme: &'a ThemeDef, tax: &str, primary: &'a st
 /// ("duree","duracion"). `lang` resolves the twin through `tax_lang`,
 /// so callers pass the primary name + lang and get the right taxonomy —
 /// no per-lang taxonomy literals outside theme data. `lang == primary`
-/// (or an unmapped lang) returns `name`.
-pub(crate) fn localized_taxonomy<'a>(theme: &'a ThemeDef, name: &'a str, lang: &str, primary: &str) -> &'a str {
+/// (or an unmapped lang) returns `name`. A pair whose twin maps to a
+/// different lang is skipped, not returned — later pairs can still
+/// satisfy N-lang themes.
+pub fn localized_taxonomy<'a>(theme: &'a ThemeDef, name: &'a str, lang: &str, primary: &str) -> &'a str {
     if lang == primary {
         return name;
     }
     for (a, b) in theme.tax_pairs {
-        if *a == name {
-            return if theme_tax_lang(theme, b, primary) == lang { b } else { name };
+        if *a == name && theme_tax_lang(theme, b, primary) == lang {
+            return b;
         }
     }
     name
@@ -772,7 +821,7 @@ pub(crate) static DEFAULT_THEME: ThemeDef = ThemeDef {
 /// The resolved theme for a site — adapter/TOML match first, DEFAULT_THEME
 /// otherwise. Callers that rendered "traveltour-or-bust" markup go
 /// through this so a new theme onboards as data.
-pub(crate) fn theme_for_site(conn: &rusqlite::Connection) -> &'static ThemeDef {
+pub fn theme_for_site(conn: &rusqlite::Connection) -> &'static ThemeDef {
     let stylesheet = conn
         .query_row(sql!("render__select_stylesheet"), [], |r| r.get::<_, String>(0))
         .unwrap_or_default();

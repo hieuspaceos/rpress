@@ -375,7 +375,7 @@ pub fn totp_get(db: &Path, user_id: i64) -> Option<(String, bool, i64, String)> 
         )
         .optional()
         .ok()
-        .flatten()
+        .unwrap_or_default()
     })
 }
 

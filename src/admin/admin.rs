@@ -91,8 +91,8 @@ pub(crate) fn regen_site(sc: &SiteCtx) -> bool {
     true
 }
 
-pub(crate) async fn generate_status(State(app): State<App>, headers: HeaderMap) -> Response {
-    let Ok((_s, sc)) = need_auth(&app, &headers) else {
+pub(crate) async fn generate_status(State(app): State<App>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap) -> Response {
+    let Ok((_s, sc)) = need_auth_peer(&app, &headers, Some(peer)) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
     let running = sc.generating.load(Ordering::SeqCst);
@@ -103,8 +103,8 @@ pub(crate) async fn generate_status(State(app): State<App>, headers: HeaderMap) 
         .into_response()
 }
 
-pub(crate) async fn api_posts(State(app): State<App>, headers: HeaderMap) -> Response {
-    let Ok((_s, sc)) = need_auth(&app, &headers) else {
+pub(crate) async fn api_posts(State(app): State<App>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap) -> Response {
+    let Ok((_s, sc)) = need_auth_peer(&app, &headers, Some(peer)) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
     let conn = match crate::db::conn(&sc.db) {
@@ -1118,9 +1118,13 @@ pub(crate) async fn intake_review(State(app): State<App>, ConnectInfo(peer): Con
 /// Only same-site paths may become the post-POST redirect target: an
 /// attacker-supplied `_page` like `https://evil/` must not bounce users.
 /// Empty → "/" (the form still lands somewhere sane).
-fn safe_back(page: Option<&str>) -> String {
+/// Deliberately NOT a charset allowlist: legit `_page` values carry
+/// `?query`/`#frag`. `\` is rejected so `/\evil.com` (which some stacks
+/// normalize to `//evil.com`) can't become a protocol-relative bounce.
+#[doc(hidden)]
+pub fn safe_back(page: Option<&str>) -> String {
     match page {
-        Some(p) if p.starts_with('/') && !p.starts_with("//") => p.to_string(),
+        Some(p) if p.starts_with('/') && !p.starts_with("//") && !p.contains('\\') => p.to_string(),
         _ => "/".to_string(),
     }
 }

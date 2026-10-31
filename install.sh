@@ -123,6 +123,12 @@ PrivateTmp=yes
 NoNewPrivileges=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes
+# Loopback-only egress: the PHP bridge runs inside this unit and can't be
+# netns-isolated without root (bwrap --unshare-net would cut the host's
+# proxy path to the child). rpress itself needs no outbound traffic —
+# pull.rs is local-file based — so deny everything but localhost.
+IPAddressAllow=localhost
+IPAddressDeny=any
 
 [Install]
 WantedBy=multi-user.target

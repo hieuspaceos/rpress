@@ -164,12 +164,7 @@ pub(crate) fn page(conn: &Connection, templates: &Path, ctx: &RenderCtx) -> Resu
     Ok(crate::render::apply_navx(&html, &ctx.site_url, &navx, conn, &ctx.lang))
 }
 
-fn esc(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
-}
-fn esc_attr(s: &str) -> String {
-    esc(s).replace('"', "&quot;")
-}
+use crate::html_decode::{esc, esc_attr};
 
 fn url_prefix(conn: &Connection, lang: &str) -> String {
     crate::lang::url_prefix(&crate::lang::config(conn), lang)
@@ -573,34 +568,11 @@ pub(crate) fn site_data_feeds(
 
     // 'month' combobox: N months starting this month (PHP
     // search-month-amount + date_i18n('F Y')); days→civil arithmetic, no chrono.
-    let month_names = crate::lang::month_names(lang);
     let month_amount: i64 = gen_opt("search-month-amount")
         .and_then(|s| s.parse().ok())
         .unwrap_or(12)
         .clamp(0, 36);
-    let months: Vec<Value> = {
-        let days = (std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() / 86400)
-            .unwrap_or(0)) as i64;
-        let z = days + 719_468;
-        let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-        let doe = z - era * 146_097;
-        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-        let y = yoe + era * 400;
-        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-        let mp = (5 * doy + 2) / 153;
-        let (mut y, m) = (if mp >= 10 { y + 1 } else { y }, mp + 3 - (if mp >= 10 { 12 } else { 0 }));
-        (0..month_amount)
-            .map(|i| {
-                let mi = m + i;
-                y += (mi - 1) / 12;
-                let mm = (mi - 1) % 12 + 1;
-                json!({"slug": format!("{y:04}-{mm:02}"),
-                       "name": format!("{} {}", month_names[(mm - 1) as usize], y)})
-            })
-            .collect()
-    };
+    let months = search_months(month_amount, crate::lang::month_names(lang));
 
     vec![
         ("tours".to_string(), Value::Array(tours)),
@@ -608,10 +580,42 @@ pub(crate) fn site_data_feeds(
         ("search_months".to_string(), Value::Array(months)),
     ]
 }
+/// 'month' combobox entries: N months starting this month
+/// (PHP search-month-amount + date_i18n('F Y')); days→civil arithmetic,
+/// no chrono. Absolute month index per slot — the old `y += (mi-1)/12`
+/// accumulator compounded the year once per rollover, not per year.
+#[doc(hidden)] // pub for tests/audit_remediation.rs — not crate API.
+pub fn search_months(month_amount: i64, month_names: &[&str; 12]) -> Vec<Value> {
+    let days = (std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() / 86400)
+        .unwrap_or(0)) as i64;
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let (y, m) = (if mp >= 10 { y + 1 } else { y }, mp + 3 - (if mp >= 10 { 12 } else { 0 }));
+    let start = y * 12 + (m - 1); // absolute month index
+    (0..month_amount)
+        .map(|i| {
+            let t = start + i;
+            let (y, mm) = (t / 12, t % 12 + 1);
+            json!({"slug": format!("{y:04}-{mm:02}"),
+                   "name": format!("{} {}", month_names[(mm - 1) as usize], y)})
+        })
+        .collect()
+}
+
 /// "#10873b" + alpha -> "rgba(16, 135, 59, 0.5)" for the ribbon corner.
-fn hex_rgba(hex: &str, alpha: f64) -> String {
+/// `is_ascii` gate: a multi-byte stored color has byte-len 6 but
+/// `h[i..i+2]` would slice mid-char — return empty, never panic.
+#[doc(hidden)] // pub for tests/audit_remediation.rs — not crate API.
+pub fn hex_rgba(hex: &str, alpha: f64) -> String {
     let h = hex.trim_start_matches('#');
-    if h.len() != 6 {
+    if h.len() != 6 || !h.is_ascii() {
         return String::new();
     }
     let byte = |i: usize| -> Option<u8> { u8::from_str_radix(&h[i..i + 2], 16).ok() };

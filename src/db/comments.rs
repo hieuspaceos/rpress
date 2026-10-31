@@ -239,7 +239,7 @@ pub fn user_display_name(db: &Path, user_id: i64, fallback: &str) -> String {
                 r.get::<_, Option<String>>(0)
             })
             .ok()
-            .flatten()
+            .unwrap_or_default()
         })
         .unwrap_or_else(|| fallback.to_string())
 }

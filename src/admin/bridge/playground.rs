@@ -79,16 +79,29 @@ pub(crate) fn spawn(
     // installer forever. `plugins`/`themes` children mount individually;
     // `database` is reserved for the dedicated db_dir below.
     let wp_content = www.join("wp-content");
-    std::fs::create_dir_all(wp_content.join("mu-plugins"))?;
-    std::fs::write(wp_content.join("mu-plugins/rpress-bridge.php"), MU_PLUGIN)?;
+    // rpress-bridge.php belongs only inside the bridge docroot — never the
+    // persistent site tree `www/wp-content/mu-plugins/` (a stray copy there
+    // would carry the token fence + uid-1 auto-login into the real site).
     let mut mounts: Vec<(PathBuf, String)> = Vec::new();
+    // rpress-bridge.php mounts per-file from the disposable bridge dir —
+    // site mu-plugins stay visible alongside it.
+    let mu_dir = dir.join("mu-plugins");
+    std::fs::create_dir_all(&mu_dir)?;
+    let mu_file = mu_dir.join("rpress-bridge.php");
+    std::fs::write(&mu_file, MU_PLUGIN)?;
+    mounts.push((mu_file, "/wordpress/wp-content/mu-plugins/rpress-bridge.php".into()));
     if let Ok(entries) = std::fs::read_dir(&wp_content) {
         for e in entries.flatten() {
             let name = e.file_name().to_string_lossy().to_string();
-            if matches!(name.as_str(), "plugins" | "themes") {
+            if matches!(name.as_str(), "plugins" | "themes" | "mu-plugins") {
                 if let Ok(kids) = std::fs::read_dir(e.path()) {
                     for k in kids.flatten() {
                         let kname = k.file_name().to_string_lossy().to_string();
+                        // Skip a stray rpress-bridge.php the old code left in
+                        // the site tree — ours is already mounted above.
+                        if name == "mu-plugins" && kname == "rpress-bridge.php" {
+                            continue;
+                        }
                         mounts.push((
                             k.path(),
                             format!("/wordpress/wp-content/{name}/{kname}"),
@@ -222,6 +235,12 @@ pub(crate) fn spawn(
         .stderr(Stdio::null())
         .spawn()
         .context("spawn @wp-playground/cli — is Node installed?")?;
+    // Pidfile BEFORE the probe loop: a mid-spawn crash leaves a tracked
+    // child `reap_stale_pidfile` can kill (format `pid:port`).
+    {
+        let pf = super::pidfile_path(www, slug);
+        let _ = std::fs::write(&pf, format!("{}:{port}\n", child.id()));
+    }
 
     // Wait for the HTTP surface (cold WASM boot ~1-3s; allow 30s).
     let deadline = Instant::now() + std::time::Duration::from_secs(30);

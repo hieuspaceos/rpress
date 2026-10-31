@@ -448,8 +448,12 @@ fn element_preview_html(conn: &Connection, typ: &str, value: &Value) -> String {
 }
 // Site tour_base for element previews — set alongside PB_DEFS by callers
 // that hold a SiteCtx (deep canvas recursion can't carry it otherwise).
+// TRAP: the default is a readable placeholder, not a sentinel — any read
+// before a SiteCtx-holding caller seeds it silently yields "voyage"
+// (a site literal) instead of failing. Reads only happen during canvas
+// render, which `boot()` always precedes, so keep the plain default.
 thread_local! {
-    static PB_TOUR_BASE: std::cell::RefCell<String> = std::cell::RefCell::new(String::from("voyage"));
+    static PB_TOUR_BASE: std::cell::RefCell<String> = std::cell::RefCell::new(String::from("voyage")); // gate-allow: pre-boot placeholder, see comment above
 }
 
 /// gdlr_core_page_builder_wrapper::get_template — dispatch per type,
@@ -769,8 +773,9 @@ fn column_template(conn: &Connection, n: &Map<String, Value>) -> String {
     }
     column += "</div></div></div></div>";
     column += &custom_style;
+    let pid = rnd_id(); // one id per element: script id == jQuery selector
     column += &format!("<script id=\"gdlr-core-preview-column-background-{}\" >\njQuery(document).ready(function(){{\n\tvar parallax_bg_script = jQuery('#gdlr-core-preview-column-background-{}');\n\n\tparallax_bg_script.parent().gdlr_core_parallax_background().gdlr_core_fluid_video();\n\tparallax_bg_script.parent().gdlr_core_ux();\n\t{}\n\tjQuery(window).trigger('scroll');\n}});\n</script>",
-        rnd_id(), rnd_id(),
+        pid, pid,
         if !s(&value, "sync-height").is_empty() { "new gdlr_core_sync_height(parallax_bg_script.closest('.gdlr-core-page-builder-body'));" } else { "" });
     column += "</div>";
     column
@@ -1111,8 +1116,8 @@ fn background_template(conn: &Connection, n: &Map<String, Value>) -> String {
         wrapper += &pb_items_scoped(conn, items);
     }
     wrapper += "</div></div></div></div></div>";
-    wrapper += &format!("<script id=\"gdlr-core-preview-background-{}\" >\njQuery(document).ready(function(){{\n\tvar background_wrap = jQuery('#gdlr-core-preview-background-{}').parent();\n\tbackground_wrap.gdlr_core_parallax_background().gdlr_core_particle_background().gdlr_core_marquee().gdlr_core_fluid_video().gdlr_core_ux();\n\tjQuery(window).trigger('scroll');\n}});\n</script>", rnd_id(), rnd_id());
-    wrapper += "</div>";
+    let pid = rnd_id();
+    wrapper += &format!("<script id=\"gdlr-core-preview-background-{pid}\" >\njQuery(document).ready(function(){{\n\tvar background_wrap = jQuery('#gdlr-core-preview-background-{pid}').parent();\n\tbackground_wrap.gdlr_core_parallax_background().gdlr_core_particle_background().gdlr_core_marquee().gdlr_core_fluid_video().gdlr_core_ux();\n\tjQuery(window).trigger('scroll');\n}});\n</script>");
     wrapper
 }
 
@@ -1178,8 +1183,8 @@ fn sidebar_template(conn: &Connection, n: &Map<String, Value>) -> String {
         }
     }
     wrapper += "</div></div>";
-    wrapper += &format!("<script id=\"gdlr-core-preview-sidebar-background-{}\" >\njQuery(document).ready(function(){{\n\tvar background_wrap = jQuery('#gdlr-core-preview-sidebar-background-{}').parent();\n\tnew gdlr_core_sidebar_wrapper( background_wrap );\n\tbackground_wrap.gdlr_core_parallax_background().gdlr_core_ux();\n\tjQuery(window).trigger('scroll');\n}});\n</script>", rnd_id(), rnd_id());
-    wrapper += "</div>";
+    let pid = rnd_id();
+    wrapper += &format!("<script id=\"gdlr-core-preview-sidebar-background-{pid}\" >\njQuery(document).ready(function(){{\n\tvar background_wrap = jQuery('#gdlr-core-preview-sidebar-background-{pid}').parent();\n\tnew gdlr_core_sidebar_wrapper( background_wrap );\n\tbackground_wrap.gdlr_core_parallax_background().gdlr_core_ux();\n\tjQuery(window).trigger('scroll');\n}});\n</script>");
     wrapper
 }
 

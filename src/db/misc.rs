@@ -20,12 +20,6 @@ pub fn setting_put(db: &Path, key: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn setting_json_value_conn(conn: &rusqlite::Connection, key: &str) -> serde_json::Value {
-    conn.query_row("SELECT value FROM settings WHERE key=?1", [key], |r| r.get::<_, String>(0))
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or(serde_json::Value::Null)
-}
 
 pub fn setting_json_put_conn(conn: &rusqlite::Connection, key: &str, value: &serde_json::Value) -> Result<()> {
     conn.execute(
@@ -196,20 +190,6 @@ mod tests {
     }
 }
 
-pub fn setting_json_map(db: &Path, key: &str) -> std::collections::BTreeMap<String, String> {
-    crate::db::conn(db)
-        .ok()
-        .and_then(|c| {
-            c.query_row("SELECT value FROM settings WHERE key=?1", [key], |r| r.get::<_, String>(0))
-                .ok()
-        })
-        .and_then(|v| serde_json::from_str(&v).ok())
-        .unwrap_or_default()
-}
-
-pub fn setting_json_put_map(db: &Path, key: &str, value: &std::collections::BTreeMap<String, String>) -> Result<()> {
-    setting_put(db, key, &serde_json::to_string(value)?)
-}
 
 pub fn widget_next_ord(conn: &rusqlite::Connection, sidebar: &str) -> i64 {
     conn.query_row("SELECT COALESCE(MAX(ord)+1, 0) FROM widgets WHERE sidebar_id=?1", [sidebar], |r| r.get(0))
@@ -251,9 +231,11 @@ pub fn widget_ids_in_sidebar(conn: &rusqlite::Connection, sidebar: &str) -> Vec<
     let mut ids = Vec::new();
     if let Ok(mut st) = conn.prepare("SELECT id FROM widgets WHERE sidebar_id=?1 ORDER BY ord") {
         if let Ok(rows) = st.query_map([sidebar], |r| r.get::<_, String>(0)) {
-            // best-effort sidebar list: the flatten intentionally skips row
-            // decode errors (no Result channel to propagate through).
-            ids.extend(rows.flatten());
+            // best-effort sidebar list (no Result channel): undecodable
+            // rows are skipped but logged so a corrupt widget id surfaces.
+            ids.extend(rows.filter_map(|r| {
+                r.map_err(|e| eprintln!("widget id row skipped: {e}")).ok()
+            }));
         }
     }
     ids
@@ -333,6 +315,94 @@ pub fn now_sql() -> String {
     format!("{y:04}-{m:02}-{d:02} {:02}:{:02}:{:02}", s / 3600, (s % 3600) / 60, s % 60)
 }
 
+/// Inverse of `civil`: unix epoch for a UTC "YYYY-MM-DD HH:MM:SS" wall
+/// time (Howard Hinnant's days_from_civil). Returns None on malformed
+/// input — callers already normalize via `norm_datetime`.
+pub fn unix_from_civil(s: &str) -> Option<i64> {
+    let n = |a: usize, b: usize| s.get(a..b).and_then(|v| v.parse::<i64>().ok());
+    let (y, m, d) = (n(0, 4)?, n(5, 7)?, n(8, 10)?);
+    if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return None;
+    }
+    let (hh, mm, ss) = (
+        n(11, 13).unwrap_or(0),
+        n(14, 16).unwrap_or(0),
+        n(17, 19).unwrap_or(0),
+    );
+    // Hinnant's March-epoch calendar: Jan/Feb count as months 13/14 of
+    // the previous year, so leap-day math lives at the era boundary.
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = (m + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146097 + doe - 719468;
+    Some(days * 86400 + hh * 3600 + mm * 60 + ss)
+}
+
+/// Civil "YYYY-MM-DD HH:MM:SS" that `zone` shows at unix `epoch`, via the
+/// host `date` binary (the project's chrono-free convention — backup.rs
+/// timestamps the same way). `zone` is an IANA name from
+/// `settings.timezone`; anything but `[A-Za-z0-9_+/-]` rejects so a
+/// tampered setting can't reach the TZ env as a shell string.
+fn zoned_civil(epoch: i64, zone: &str) -> Option<String> {
+    if zone.is_empty()
+        || !zone
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'/' || b == b'+' || b == b'-')
+    {
+        return None;
+    }
+    let run = |args: &[String]| {
+        std::process::Command::new("date")
+            .env("TZ", zone)
+            .args(args)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.trim().to_string())
+    };
+    // BSD date (macOS): -r epoch; GNU date: -d @epoch.
+    run(&["-r".into(), epoch.to_string(), "+%Y-%m-%d %H:%M:%S".into()])
+        .or_else(|| run(&["-d".into(), format!("@{epoch}"), "+%Y-%m-%d %H:%M:%S".into()]))
+        .filter(|s| s.len() >= 19 && s.as_bytes()[4] == b'-')
+}
+
+/// UTC wall time for a site-local "YYYY-MM-DD HH:MM:SS" in IANA `zone`.
+/// Fixed-point offset solve: treating `local` as UTC gives epoch E0;
+/// `date` renders E0 in `zone` as W = local + offset, so the correction
+/// is E - (W - local). A second pass covers DST boundaries where the
+/// offset differs on the other side of the first estimate.
+pub fn local_to_utc(local: &str, zone: &str) -> Option<String> {
+    let guess = unix_from_civil(local)?;
+    let epoch = zoned_civil(guess, zone)
+        .and_then(|w| unix_from_civil(&w))
+        .map(|w| guess - (w - guess))?;
+    let epoch = zoned_civil(epoch, zone)
+        .and_then(|w| unix_from_civil(&w))
+        .map(|w| epoch - (w - guess))?;
+    if epoch < 0 {
+        return None;
+    }
+    let (y, m, d) = civil(epoch as u64);
+    let s = epoch % 86400;
+    Some(format!(
+        "{y:04}-{m:02}-{d:02} {:02}:{:02}:{:02}",
+        s / 3600,
+        (s % 3600) / 60,
+        s % 60
+    ))
+}
+
+/// Site-local wall time for a stored UTC "YYYY-MM-DD HH:MM:SS" — the
+/// display-side inverse of `local_to_utc`.
+pub fn utc_to_local(utc: &str, zone: &str) -> Option<String> {
+    let epoch = unix_from_civil(utc)?;
+    zoned_civil(epoch, zone)
+}
+
 pub(crate) fn null_empty(s: &str) -> Option<&str> {
     if s.trim().is_empty() { None } else { Some(s) }
 }
@@ -372,20 +442,6 @@ fn gdlr_node(v: &serde_json::Value) -> bool {
     }
 }
 
-/// Save a validated body_json for a post (revision snapshot first), without
-/// touching other post fields. Used by the builder "Save PB" endpoint.
-pub fn save_body_json(db: &Path, post_id: i64, body_json: &str) -> Result<()> {
-    let v: serde_json::Value = serde_json::from_str(body_json)?;
-    let c = crate::db::conn(db)?;
-    let tx = c.unchecked_transaction()?;
-    tx.execute(sql!("posts__insert_into_revisions"), params![post_id])?;
-    tx.execute(
-        sql!("posts__update_posts_set_body_json"),
-        params![v.to_string(), post_id],
-    )?;
-    tx.commit()?;
-    Ok(())
-}
 
 fn walk_text(v: &serde_json::Value, out: &mut String) {
     match v {

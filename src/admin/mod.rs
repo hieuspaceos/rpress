@@ -45,6 +45,12 @@ pub(crate) mod serve;
 // `pub` facade: the symlink-escape hardening test in tests/hardening.rs
 // exercises `rpress::admin::safe_read_under`; the impl lives in serve.rs.
 pub use serve::safe_read_under;
+// `pub` facade for the audit-remediation regressions in
+// tests/audit_remediation.rs — same pattern as safe_read_under above.
+#[doc(hidden)]
+pub use admin::safe_back;
+#[doc(hidden)]
+pub use serve::request_host;
 
 #[derive(Clone)]
 pub(crate) struct SiteCtx {
@@ -380,6 +386,25 @@ pub async fn serve(db: PathBuf, templates: PathBuf, out: PathBuf, www: PathBuf, 
     }
     let listener = tokio::net::TcpListener::bind(bind).await?;
     eprintln!("rpress listening on http://{bind}");
+    // Trusted-proxy hygiene: when we bind loopback with no proxy configured
+    // but the site is a production URL, anything that stamps a client IP
+    // (rate limits, session IP, app-pass last_ip) will record the proxy's
+    // loopback address forever — warn once so ops notices the missing
+    // RPRESS_TRUSTED_PROXY.
+    {
+        let su = state.sites.values().next()
+            .map(|sc| crate::db::setting_value(&sc.db, "site_url", ""))
+            .unwrap_or_default();
+        let localhosty = su.is_empty() || su == "/" || su.contains("localhost") || su.contains("127.0.0.1") || su.contains("[::1]");
+        if bind.ip().is_loopback() && TRUSTED_PROXIES.is_empty() && !localhosty {
+            eprintln!(
+                "rpress: WARNING — bound to loopback and RPRESS_TRUSTED_PROXY is unset, \
+                 but site_url is {su}: X-Forwarded-For is ignored and every client IP \
+                 (rate limits, session stamps, app-pass last_ip) records the proxy's \
+                 loopback address. Set RPRESS_TRUSTED_PROXY=<proxy ip>."
+            );
+        }
+    }
     let sites_down = state.sites.clone();
     axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
         .with_graceful_shutdown(async move {
@@ -766,13 +791,19 @@ async fn clear_dead_session_cookie(
 }
 
 pub(crate) fn need_auth<'a>(app: &'a App, headers: &HeaderMap) -> Result<(Sess, &'a SiteCtx), Response> {
+    need_auth_peer(app, headers, None)
+}
+
+/// `need_auth` + the real peer socket addr — used by handlers that extract
+/// `ConnectInfo` so app-password `last_ip` records an address, not "unknown".
+pub(crate) fn need_auth_peer<'a>(app: &'a App, headers: &HeaderMap, peer: Option<SocketAddr>) -> Result<(Sess, &'a SiteCtx), Response> {
     let sc = site_for(app, headers);
     if let Some(s) = get_sess(app, sc, headers) {
         return Ok((s, sc));
     }
     // WP Application Passwords: `Authorization: Basic base64(email:app_pass)`
     // authenticates without a session — used by `/api/v1/*` clients.
-    if let Some(s) = auth::app_pass_sess(sc, headers) {
+    if let Some(s) = auth::app_pass_sess(sc, headers, peer) {
         return Ok((s, sc));
     }
     // Stale/expired cookie → clear it so the browser stops resending a dead
@@ -1068,11 +1099,12 @@ pub(crate) fn chrome_end(s: &Sess) -> String {
 /// reserved section name (no KindDef may claim it — red-team R5).
 async fn plugin_screen(
     State(app): State<App>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Path((slug, rest)): Path<(String, String)>,
     req: axum::extract::Request,
 ) -> Response {
-    let Ok((s, sc)) = need_auth(&app, &headers) else {
+    let Ok((s, sc)) = need_auth_peer(&app, &headers, Some(peer)) else {
         return Redirect::to("/admin/login").into_response();
     };
     // Role gate per screen: settings surfaces stay admin-only, in-editor
@@ -1096,13 +1128,37 @@ async fn plugin_screen(
     };
     // PhpBridge plugins proxy to their isolated WP runtime; every other
     // backend resolves a local ScreenDef. The opt-in env gate is absolute:
-    // unlisted slugs never reach spawn.
+    // unlisted slugs never reach spawn. The bridged wp-admin path itself
+    // carries no rpress CSRF token — bridged POSTs rely on the session
+    // cookie's SameSite=Lax (cross-site POSTs never reach this handler)
+    // plus the per-spawn bridge bearer inside the proxy hop.
     if adapter.backend() == plugins::Backend::PhpBridge {
         return bridge_dispatch(&app, &s, sc, adapter, headers, &rest, req).await;
     }
     let Some((_a, screen)) = plugins::screen_for(&slug, &rest) else {
         return StatusCode::NOT_FOUND.into_response();
     };
+    // POST to an adapter ScreenDef must carry the session CSRF token,
+    // same as every first-party admin POST. The bridged path is exempt —
+    // vendored wp-admin JS can't know our token (SameSite=Lax reliance
+    // documented above + docs/architecture.md). The body is buffered so
+    // the handler's own extractor still sees it.
+    let mut req = req;
+    if req.method() == axum::http::Method::POST {
+        let (parts, body) = req.into_parts();
+        let bytes = match axum::body::to_bytes(body, 8 * 1024 * 1024).await {
+            Ok(b) => b,
+            Err(_) => return StatusCode::BAD_REQUEST.into_response(),
+        };
+        let sent = serde_urlencoded::from_bytes::<HashMap<String, String>>(&bytes)
+            .ok()
+            .and_then(|f| f.get("csrf").cloned())
+            .unwrap_or_default();
+        if let Err(r) = check_csrf(&s, &sent) {
+            return r;
+        }
+        req = axum::extract::Request::from_parts(parts, Body::from(bytes));
+    }
     (screen.handle)(&app, &s, sc, headers, &rest, req).await
 }
 
@@ -1182,32 +1238,53 @@ async fn bridge_dispatch(
         fwd.push(("X-Rpress-Bridge".into(), token));
         let r = st.rt.request(&method, &path, &fwd, &body)?;
         // Pull whitelisted writes in the same task — no drift window.
-        if let Some(wp_db) = bridge::pull::locate(&st.wp_db) {
-            // Never `let _ =` this: a failed pull silently loses the edit
-            // the user just made in the bridged screen.
-            if let Err(e) = bridge::pull::pull(&wp_db, &db, &specs) {
-                eprintln!("bridge pull {site}/{slug}: {e:#}");
+        // A failed pull LOSES the edit the user just made in the bridged
+        // screen — never `let _ =` it and never answer WP's success:1;
+        // surface a 502 the editor JS can report instead.
+        match bridge::pull::locate(&st.wp_db) {
+            Some(wp_db) => {
+                if let Err(e) = bridge::pull::pull(&wp_db, &db, &specs) {
+                    eprintln!("bridge pull {site}/{slug}: {e:#}");
+                    // Client gets the summary; the anyhow chain stays in the log.
+                    return Ok(axum::response::Response::builder()
+                        .status(StatusCode::BAD_GATEWAY)
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(format!(
+                            r#"{{"success":0,"error":"rpress pull-back failed — your edit was not saved: {e}"}}"#
+                        )))
+                        .unwrap_or_else(|_| StatusCode::BAD_GATEWAY.into_response()));
+                }
+            }
+            None => {
+                // wp.db should always exist post-install; if it doesn't the
+                // edit silently went nowhere — same failure mode, same 502.
+                eprintln!("bridge pull {site}/{slug}: no pull source for {}", st.wp_db.display());
+                return Ok(axum::response::Response::builder()
+                    .status(StatusCode::BAD_GATEWAY)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        r#"{"success":0,"error":"rpress pull-back unavailable — your edit was not saved"}"#.to_string(),
+                    ))
+                    .unwrap_or_else(|_| StatusCode::BAD_GATEWAY.into_response()));
             }
         }
-        Ok::<_, anyhow::Error>(r)
+        let mut b = axum::response::Response::builder().status(
+            axum::http::StatusCode::from_u16(r.status).unwrap_or(StatusCode::OK),
+        );
+        for (k, v) in &r.headers {
+            let kl = k.to_ascii_lowercase();
+            if matches!(kl.as_str(), "transfer-encoding" | "connection" | "content-length") {
+                continue;
+            }
+            if let (Ok(n), Ok(val)) = (header::HeaderName::from_bytes(k.as_bytes()), HeaderValue::from_str(v)) {
+                b = b.header(n, val);
+            }
+        }
+        Ok::<_, anyhow::Error>(b.body(Body::from(r.body)).unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()))
     })
     .await;
     match resp {
-        Ok(Ok(r)) => {
-            let mut b = axum::response::Response::builder().status(
-                axum::http::StatusCode::from_u16(r.status).unwrap_or(StatusCode::OK),
-            );
-            for (k, v) in &r.headers {
-                let kl = k.to_ascii_lowercase();
-                if matches!(kl.as_str(), "transfer-encoding" | "connection" | "content-length") {
-                    continue;
-                }
-                if let (Ok(n), Ok(val)) = (header::HeaderName::from_bytes(k.as_bytes()), HeaderValue::from_str(v)) {
-                    b = b.header(n, val);
-                }
-            }
-            b.body(Body::from(r.body)).unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
-        }
+        Ok(Ok(r)) => r,
         Ok(Err(e)) => html_admin(
             s,
             "Plugin bridge",
@@ -1262,17 +1339,7 @@ pub(crate) fn tax_label(tax: &str) -> (String, String) {
 }
 
 
-pub(crate) fn esc(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-}
-
-/// `esc` + single-quote — for values inside '…' or mixed-quoted attrs.
-pub(crate) fn esc_attr(s: &str) -> String {
-    esc(s).replace('\'', "&#039;")
-}
+pub(crate) use crate::html_decode::{esc, esc_attr};
 
 pub(crate) fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()

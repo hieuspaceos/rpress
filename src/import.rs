@@ -22,11 +22,20 @@ const WANTED: &[&str] = &[
     "wp_commentmeta",
     "wp_termmeta",
     "wp_options",
+    "wp_users",
     "wp_rank_math_redirections",
     "wp_glsr_ratings",
     "wp_snippets",
     "wp_glsr_assigned_posts",
 ];
+
+/// Column `n` of an INSERT row, with table+row context on short rows —
+/// a malformed row bails cleanly instead of panicking on `v[n]`.
+fn need<'a>(v: &'a [crate::sqldump::Val], n: usize, table: &str) -> Result<&'a crate::sqldump::Val> {
+    v.get(n).with_context(|| {
+        format!("{table}: row too short — {n}-th column missing ({} cols)", v.len())
+    })
+}
 
 #[derive(Default)]
 struct Post {
@@ -63,6 +72,17 @@ impl Report {
 /// re-running `import` used to silently delete a live site. `force=true`
 /// is the `site build` path (fresh workdir semantics).
 pub fn run(dump: &Path, db_path: &Path, report_path: &Path, force: bool) -> Result<()> {
+    /* Import stages into `<db>.import` and renames over `db_path` at the
+       very end. A previous killed run may leave the stale file (with its
+       WAL trio) — remove it on entry so the staging check starts clean. */
+    let stage = db_path.with_file_name(format!(
+        "{}.import",
+        db_path.file_name().unwrap_or_default().to_string_lossy()
+    ));
+    let _ = std::fs::remove_file(&stage);
+    let _ = std::fs::remove_file(format!("{}-wal", stage.display()));
+    let _ = std::fs::remove_file(format!("{}-shm", stage.display()));
+
     /* Table prefix varies (`wp_`, `wp_42426_`, …) — detect it once, then
        ask `rows` for `<prefix><suffix>` but report canonical `wp_*` names
        so all downstream matching stays prefix-free. */
@@ -103,34 +123,40 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path, force: bool) -> Resu
             Some("term_relationships") => "wp_term_relationships",
             Some("comments") => "wp_comments",
             Some("commentmeta") => "wp_commentmeta",
+            Some("termmeta") => "wp_termmeta",
             Some("options") => "wp_options",
-            Some("snippets") => "wp_snippets",
             Some("users") => "wp_users",
+            Some("rank_math_redirections") => "wp_rank_math_redirections",
+            Some("glsr_ratings") => "wp_glsr_ratings",
+            Some("glsr_assigned_posts") => "wp_glsr_assigned_posts",
+            Some("snippets") => "wp_snippets",
             _ => table,
         };
         match table {
             "wp_users" => {
-                // id -> login (display_name is v[8] but login is what WP
+                // id -> login (display_name is col 8 but login is what WP
                 // renders in bylines); feeds post_meta 'author_login'.
-                if let Some(uid) = v[0].as_i64() {
-                    let login = v[1].to_string_lossy().unwrap_or_default();
-                    let dname = v[8].to_string_lossy().unwrap_or_default();
+                if let Some(uid) = need(&v, 0, table)?.as_i64() {
+                    let login = need(&v, 1, table)?.to_string_lossy().unwrap_or_default();
+                    let dname = need(&v, 8, table)?.to_string_lossy().unwrap_or_default();
                     users.insert(uid, if dname.is_empty() { login } else { dname });
                 }
             }
             "wp_terms" => {
-                if let (Some(id), Some(name), Some(slug)) =
-                    (v[0].as_i64(), v[1].to_string_lossy(), v[2].to_string_lossy())
-                {
+                if let (Some(id), Some(name), Some(slug)) = (
+                    need(&v, 0, table)?.as_i64(),
+                    need(&v, 1, table)?.to_string_lossy(),
+                    need(&v, 2, table)?.to_string_lossy(),
+                ) {
                     terms.insert(id, (name, slug));
                 }
             }
             "wp_term_taxonomy" => {
-                let tt_id = v[0].as_i64().unwrap_or(0);
-                let term_id = v[1].as_i64().unwrap_or(0);
-                let tax = v[2].to_string_lossy().unwrap_or_default();
-                let desc = v[3].to_string_lossy().unwrap_or_default();
-                if let Some(parent) = v[4].as_i64().filter(|p| *p > 0) {
+                let tt_id = need(&v, 0, table)?.as_i64().unwrap_or(0);
+                let term_id = need(&v, 1, table)?.as_i64().unwrap_or(0);
+                let tax = need(&v, 2, table)?.to_string_lossy().unwrap_or_default();
+                let desc = need(&v, 3, table)?.to_string_lossy().unwrap_or_default();
+                if let Some(parent) = need(&v, 4, table)?.as_i64().filter(|p| *p > 0) {
                     term_parents.insert(term_id, parent);
                 }
                 ttax.insert(tt_id, (term_id, tax, desc));
@@ -139,39 +165,42 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path, force: bool) -> Resu
                 // (id, name, description, code, tags, scope, priority,
                 // active, …) — active rows only; PHP blocks are filtered
                 // to their literal HTML at settings write time.
-                if let (Some(id), Some(code)) = (v[0].as_i64(), v[3].to_string_lossy()) {
-                    if v[7].as_str() == Some("1") || v[7].as_i64() == Some(1) {
+                if let (Some(id), Some(code)) = (need(&v, 0, table)?.as_i64(), need(&v, 3, table)?.to_string_lossy()) {
+                    if need(&v, 7, table)?.as_str() == Some("1") || need(&v, 7, table)?.as_i64() == Some(1) {
                         snippets.push((id, code));
                     }
                 }
             }
             "wp_term_relationships" => {
-                if let (Some(o), Some(t)) = (v[0].as_i64(), v[1].as_i64()) {
+                if let (Some(o), Some(t)) = (need(&v, 0, table)?.as_i64(), need(&v, 1, table)?.as_i64()) {
                     rels.push((o, t));
                 }
             }
             "wp_postmeta" => {
-                if let (Some(pid), Some(k), Some(mv)) =
-                    (v[1].as_i64(), v[2].to_string_lossy(), v[3].to_string_lossy())
+                if let (Some(pid), Some(k), Some(mv)) = (
+                    need(&v, 1, table)?.as_i64(),
+                    need(&v, 2, table)?.to_string_lossy(),
+                    need(&v, 3, table)?.to_string_lossy(),
+                )
                 {
                     post_meta.push((pid, k, mv));
                 }
             }
             "wp_comments" => {
-                let approved = v[10].as_str().unwrap_or("");
+                let approved = need(&v, 10, table)?.as_str().unwrap_or("");
                 if !matches!(approved, "1" | "0") {
                     return Ok(()); // spam/trash skipped
                 }
                 comments.push((
-                    v[0].as_i64().unwrap_or(0),
-                    v[1].as_i64().unwrap_or(0),
-                    v[13].as_i64().unwrap_or(0),
-                    v[2].to_string_lossy().unwrap_or_default(),
-                    v[3].to_string_lossy().unwrap_or_default(),
-                    v[4].to_string_lossy().unwrap_or_default(),
-                    v[5].to_string_lossy().unwrap_or_default(),
-                    v[8].to_string_lossy().unwrap_or_default(),
-                    v[6].to_string_lossy().unwrap_or_default(),
+                    need(&v, 0, table)?.as_i64().unwrap_or(0),
+                    need(&v, 1, table)?.as_i64().unwrap_or(0),
+                    need(&v, 13, table)?.as_i64().unwrap_or(0),
+                    need(&v, 2, table)?.to_string_lossy().unwrap_or_default(),
+                    need(&v, 3, table)?.to_string_lossy().unwrap_or_default(),
+                    need(&v, 4, table)?.to_string_lossy().unwrap_or_default(),
+                    need(&v, 5, table)?.to_string_lossy().unwrap_or_default(),
+                    need(&v, 8, table)?.to_string_lossy().unwrap_or_default(),
+                    need(&v, 6, table)?.to_string_lossy().unwrap_or_default(),
                     approved.to_string(),
                 ));
             }
@@ -180,9 +209,9 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path, force: bool) -> Resu
                    `pll_language` terms' termmeta — capture raw values;
                    harvested after stmt_set into pll_string_map. */
                 if let (Some(tid), Some(k), Some(mv)) = (
-                    v[1].as_i64(),
-                    v[2].to_string_lossy(),
-                    v[3].to_string_lossy(),
+                    need(&v, 1, table)?.as_i64(),
+                    need(&v, 2, table)?.to_string_lossy(),
+                    need(&v, 3, table)?.to_string_lossy(),
                 ) {
                     if k == "_pll_strings_translations" {
                         pll_metas.push((tid, mv));
@@ -190,15 +219,20 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path, force: bool) -> Resu
                 }
             }
             "wp_commentmeta" => {
-                if let (Some(cid), Some(k), Some(mv)) =
-                    (v[1].as_i64(), v[2].to_string_lossy(), v[3].to_string_lossy())
+                if let (Some(cid), Some(k), Some(mv)) = (
+                    need(&v, 1, table)?.as_i64(),
+                    need(&v, 2, table)?.to_string_lossy(),
+                    need(&v, 3, table)?.to_string_lossy(),
+                )
                 {
                     comment_meta.push((cid, k, mv));
                 }
             }
             "wp_options" => {
-                if let (Some(k), Some(mv)) =
-                    (v[1].to_string_lossy(), v[2].to_string_lossy())
+                if let (Some(k), Some(mv)) = (
+                    need(&v, 1, table)?.to_string_lossy(),
+                    need(&v, 2, table)?.to_string_lossy(),
+                )
                 {
                     // Carry every option the runtime reads so a migrated site
                     // keeps its source site's moderation/media/feed config
@@ -246,41 +280,42 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path, force: bool) -> Resu
                 }
             }
             "wp_rank_math_redirections" => {
-                if v[5].as_str() == Some("active") {
-                    if let (Some(src), Some(dst)) =
-                        (v[1].to_string_lossy(), v[2].to_string_lossy())
-                    {
+                if need(&v, 5, table)?.as_str() == Some("active") {
+                    if let (Some(src), Some(dst)) = (
+                        need(&v, 1, table)?.to_string_lossy(),
+                        need(&v, 2, table)?.to_string_lossy(),
+                    ) {
                         redirs.push((src, dst));
                     }
                 }
             }
             "wp_glsr_ratings" => {
-                if let (Some(rid), Some(rev)) = (v[0].as_i64(), v[1].as_i64()) {
+                if let (Some(rid), Some(rev)) = (need(&v, 0, table)?.as_i64(), need(&v, 1, table)?.as_i64()) {
                     ratings.insert(rid, rev);
                 }
             }
             "wp_glsr_assigned_posts" => {
-                if let (Some(rid), Some(pid)) = (v[0].as_i64(), v[1].as_i64()) {
+                if let (Some(rid), Some(pid)) = (need(&v, 0, table)?.as_i64(), need(&v, 1, table)?.as_i64()) {
                     assigned.push((rid, pid));
                 }
             }
             "wp_posts" => {
-                let pt = v[20].to_string_lossy().unwrap_or_default();
-                let st = v[7].to_string_lossy().unwrap_or_default();
+                let pt = need(&v, 20, table)?.to_string_lossy().unwrap_or_default();
+                let st = need(&v, 7, table)?.to_string_lossy().unwrap_or_default();
                 posts.push(Post {
-                    id: v[0].as_i64().unwrap_or(0),
-                    author: v[1].as_i64().unwrap_or(0),
+                    id: need(&v, 0, table)?.as_i64().unwrap_or(0),
+                    author: need(&v, 1, table)?.as_i64().unwrap_or(0),
                     post_type: pt,
                     status: st,
-                    slug: v[11].to_string_lossy().unwrap_or_default(),
-                    title: v[5].to_string_lossy().unwrap_or_default(),
-                    content: v[4].to_string_lossy().unwrap_or_default(),
-                    excerpt: v[6].to_string_lossy().unwrap_or_default(),
-                    parent: v[17].as_i64().unwrap_or(0),
-                    menu_order: v[19].as_i64().unwrap_or(0),
-                    date: v[2].to_string_lossy().unwrap_or_default(),
-                    modified: v[14].to_string_lossy().unwrap_or_default(),
-                    mime: v[21].to_string_lossy().unwrap_or_default(),
+                    slug: need(&v, 11, table)?.to_string_lossy().unwrap_or_default(),
+                    title: need(&v, 5, table)?.to_string_lossy().unwrap_or_default(),
+                    content: need(&v, 4, table)?.to_string_lossy().unwrap_or_default(),
+                    excerpt: need(&v, 6, table)?.to_string_lossy().unwrap_or_default(),
+                    parent: need(&v, 17, table)?.as_i64().unwrap_or(0),
+                    menu_order: need(&v, 19, table)?.as_i64().unwrap_or(0),
+                    date: need(&v, 2, table)?.to_string_lossy().unwrap_or_default(),
+                    modified: need(&v, 14, table)?.to_string_lossy().unwrap_or_default(),
+                    mime: need(&v, 21, table)?.to_string_lossy().unwrap_or_default(),
                     meta: HashMap::new(),
                 });
             }
@@ -288,6 +323,23 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path, force: bool) -> Resu
         }
         Ok(())
     })?;
+
+    /* Every INSERT'd table the dump carries that import has no arm for —
+       logged once so a future missing canonicalize arm (or a plugin table
+       we should learn) is loud instead of a silent drop. */
+    if let Ok(dump_tables) = crate::sqldump::insert_tables(dump) {
+        let wanted: std::collections::HashSet<String> =
+            phys.iter().map(|s| s.to_string()).collect();
+        let mut unhandled: Vec<String> = dump_tables
+            .difference(&wanted)
+            .cloned()
+            .collect();
+        unhandled.sort();
+        for t in &unhandled {
+            rep.log(format!("WARN no import arm for `{t}` — rows skipped"));
+            eprintln!("import: no import arm for `{t}` — rows skipped");
+        }
+    }
 
     // Some dumps contain duplicate wp_posts ids (stale rows after a failed
     // migration on the source). Keep the first occurrence — an INSERT
@@ -297,6 +349,17 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path, force: bool) -> Resu
     posts.retain(|p| seen_ids.insert(p.id));
     if posts.len() != before {
         rep.log(format!("skipped {} duplicate wp_posts id(s)", before - posts.len()));
+    }
+
+    /* Same stale-duplicate guard for comments: one repeated comment id
+       used to roll back the whole import on the comments wp_id UNIQUE.
+       Nav-menu items and media inherit the posts dedupe (their wp_id IS
+       the post id); menus dedupe by term id at insert time below. */
+    let mut seen_comments = std::collections::HashSet::new();
+    let before = comments.len();
+    comments.retain(|c| seen_comments.insert(c.0));
+    if comments.len() != before {
+        rep.log(format!("skipped {} duplicate wp_comments id(s)", before - comments.len()));
     }
 
     // fold postmeta into posts
@@ -328,13 +391,11 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path, force: bool) -> Resu
             );
         }
     }
-    // ---- Pass 2: map → SQLite ----------------------------------------------
-    // WAL files survive a copy but replay INTO the fresh file — remove the
-    // whole triple, never just the main db.
-    let _ = std::fs::remove_file(db_path);
-    let _ = std::fs::remove_file(format!("{}-wal", db_path.display()));
-    let _ = std::fs::remove_file(format!("{}-shm", db_path.display()));
-    let conn = crate::db::conn(db_path).context("open rpress.db")?;
+    // ---- Pass 2: map → SQLite (staged) ------------------------------------
+    // All writes land in `<db>.import`; `db_path` is only replaced by the
+    // atomic `rename` at the end — a killed or panicked import leaves the
+    // prior DB byte-for-byte intact.
+    let conn = crate::db::conn(&stage).context("open staged rpress.db")?;
     crate::schema::migrate_conn(&conn)?;
     conn.execute_batch(sql!("import__pragma_synchronous_off"))?;
     let tx = conn.unchecked_transaction()?;
@@ -830,10 +891,17 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path, force: bool) -> Resu
     }
     rep.log(format!("redirects imported: {}", redir_count));
 
-    // menus: nav_menu terms + nav_menu_item posts
+    // menus: nav_menu terms + nav_menu_item posts. Dedupe on term id —
+    // duplicate nav_menu rows in the dump collide on menus.id/wp_term_id
+    // the same way duplicate wp_posts ids did.
     let mut menu_wp: HashMap<i64, i64> = HashMap::new();
+    let mut seen_menu_terms = std::collections::HashSet::new();
     for (tt_id, (term_id, tax, _)) in &ttax {
         if tax != "nav_menu" {
+            continue;
+        }
+        if !seen_menu_terms.insert(*term_id) {
+            rep.log(format!("skipped duplicate nav_menu term {}", term_id));
             continue;
         }
         let (name, slug) = terms.get(term_id).cloned().unwrap_or_default();
@@ -1276,7 +1344,7 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path, force: bool) -> Resu
             if !fetched.is_empty() {
                 // Fresh connection: `conn` stays immutable (callers hold
                 // &conn for after_import hooks just above).
-                let mut conn2 = crate::db::conn(db_path)?;
+                let mut conn2 = crate::db::conn(&stage)?;
                 let tx2 = conn2.transaction()?;
                 {
                     let mut ins = tx2.prepare(
@@ -1324,7 +1392,7 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path, force: bool) -> Resu
                 }
             }
             if !frags.is_empty() {
-                let mut conn3 = crate::db::conn(db_path)?;
+                let mut conn3 = crate::db::conn(&stage)?;
                 let tx3 = conn3.transaction()?;
                 {
                     let mut ins = tx3.prepare(
@@ -1346,7 +1414,7 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path, force: bool) -> Resu
     // previously seeded or imported row wins.
     crate::plugins::PluginAdapter::migrate(
         &crate::plugins::theme_traveltour::ADAPTER,
-        db_path,
+        &stage,
     )?;
 
     if dropped_meta > 0 {
@@ -1359,6 +1427,15 @@ pub fn run(dump: &Path, db_path: &Path, report_path: &Path, force: bool) -> Resu
     rep.log(format!("skipped rows: {}", rep.skipped));
     rep.log(format!("unserialize errors: {}", rep.unser_errors));
     rep.log(format!("unparsed bodies: {}", rep.unparsed));
+
+    /* Close the staged DB (checkpoints its WAL), then publish it
+       atomically: `rename` swaps `<db>.import` over `db_path` so readers
+       and re-runs never see a half-imported database. */
+    drop(conn);
+    let _ = std::fs::remove_file(format!("{}-wal", stage.display()));
+    let _ = std::fs::remove_file(format!("{}-shm", stage.display()));
+    std::fs::rename(&stage, db_path)
+        .with_context(|| format!("publish {} → {}", stage.display(), db_path.display()))?;
 
     let mut f = File::create(report_path)?;
     for l in &rep.lines {
@@ -2313,7 +2390,7 @@ fn media_image_html(
         }
     }
 
-    let e = crate::render_archive::esc_attr_pub;
+    let e = crate::html_decode::esc_attr;
     let mut img = String::from("<img");
     if disp.0 > 0 {
         img.push_str(&format!(" width=\"{}\"", disp.0));
@@ -2539,7 +2616,7 @@ fn gdlr_title_html(attrs: &HashMap<String, String>) -> String {
             v
         }
     };
-    let esc = crate::render_archive::esc_attr_pub;
+    let esc = crate::html_decode::esc_attr;
     let align = {
         let a = g("text-align");
         if a.is_empty() { "left" } else { a }
@@ -2677,7 +2754,7 @@ fn gdlr_widget_box_open(attrs: &HashMap<String, String>) -> String {
     if !g("left-icon").is_empty() {
         out.push_str(&format!(
             "<i class=\"gdlr-core-widget-box-shortcode-icon {}\"{}></i>",
-            crate::render_archive::esc_attr_pub(g("left-icon")),
+            crate::html_decode::esc_attr(g("left-icon")),
             gdlr_style(&[("color", g("left-icon-color"))])
         ));
     }
@@ -2719,7 +2796,7 @@ fn gdlr_social_html(attrs: &HashMap<String, String>) -> String {
         let d = g("direction");
         if d.is_empty() { "horizontal" } else { d }
     };
-    let e = crate::render_archive::esc_attr_pub;
+    let e = crate::html_decode::esc_attr;
     let mut out = format!(
         "<span class=\"gdlr-core-social-network-item gdlr-core-item-pdb  gdlr-core-{align}-align gdlr-direction-{direction}\"{}>",
         gdlr_style(&[

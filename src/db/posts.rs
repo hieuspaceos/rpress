@@ -165,7 +165,9 @@ pub fn load_post(db: &Path, id: i64) -> Result<Option<PostForm>> {
          WHERE m.post_id=?1 AND m2.post_id!=?1",
     ) {
         if let Ok(rows) = st.query_map([id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))) {
-            for row in rows.flatten() {
+            for row in rows.filter_map(|r| {
+                r.map_err(|e| eprintln!("translation member row skipped: {e}")).ok()
+            }) {
                 p.translations.insert(row.0, row.1.to_string());
             }
         }
@@ -248,11 +250,17 @@ pub fn list_admin(
     )?;
     // Per-lang counts: N-language — one GROUP BY instead of a CASE per
     // hardwired language (phase 4: fr/es literal retired).
+    // Inline SQL below (lang GROUP BY, pending/future COUNTs, dynamic WHERE)
+    // is intentional: code-standards rule 1 allows narrow `src/db/` helpers to
+    // own generated/local query text; this fn's WHERE is assembled from
+    // optional filters so a static .sql file can't express it.
     if let Ok(mut st) = c.prepare(
         "SELECT lang, COUNT(*) FROM posts WHERE kind=?1 AND status!='trash' GROUP BY lang",
     ) {
         if let Ok(rows) = st.query_map([kind], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))) {
-            for row in rows.flatten() {
+            for row in rows.filter_map(|r| {
+                r.map_err(|e| eprintln!("lang count row skipped: {e}")).ok()
+            }) {
                 counts_sql.lang_counts.insert(row.0, row.1);
             }
         }
@@ -1062,7 +1070,18 @@ fn save_post_on(db: &Path, c: &Connection, f: &PostForm) -> Result<i64> {
         let cfg = crate::lang::config(c);
         if cfg.langs.iter().any(|l| l == &f.lang) { f.lang.clone() } else { cfg.primary.clone() }
     };
-    let pub_at = norm_datetime(&f.published_at);
+    // Timezone convention (documented, phase 5): `published_at` is stored
+    // in UTC — NOT WP's site-local `post_date`. The datetime-local input
+    // carries a site-local wall time; we convert it to UTC at save using
+    // the `settings.timezone` IANA name so `effective_status` and
+    // `publish_due` compare UTC-to-UTC. UTC storage + convert-at-display
+    // (admin/posts.rs edit form) keeps a single canonical clock; when the
+    // host `date` can't resolve the zone we fall back to storing the raw
+    // submitted value — the pre-fix behavior, never a failed save.
+    let pub_at = norm_datetime(&f.published_at).map(|local| {
+        let tz = crate::db::misc::setting_value(db, "timezone", "UTC");
+        crate::db::misc::local_to_utc(&local, &tz).unwrap_or(local)
+    });
     // Empty date field → the stored value still decides scheduling (WP's
     // "publish immediately" is just a past date, and saves that never
     // render the input must not silently unschedule a 'future' post).
@@ -1074,7 +1093,7 @@ fn save_post_on(db: &Path, c: &Connection, f: &PostForm) -> Result<i64> {
                 |r| r.get::<_, Option<String>>(0),
             )
             .ok()
-            .flatten()
+            .unwrap_or_default()
         })
     });
     // WP `post_status` derivation: a 'publish' save dated in the future is
@@ -1418,16 +1437,21 @@ pub fn norm_datetime(s: &str) -> Option<String> {
 
 /// WP `post_status` derivation given the (effective) publish date:
 /// 'publish' + future date → 'future'; 'future' + past/empty date →
-/// 'publish'. Every other status passes through.
-pub fn effective_status(status: &str, published_at: Option<&str>) -> String {
-    let future = published_at
-        .map(|d| d > crate::db::misc::now_sql().as_str())
-        .unwrap_or(false);
+/// 'publish'. Every other status passes through. `published_at` and
+/// `now` are both UTC "YYYY-MM-DD HH:MM:SS" (see save_post_on), so the
+/// compare is a plain lexicographic check.
+pub fn effective_status_at(status: &str, published_at: Option<&str>, now: &str) -> String {
+    let future = published_at.map(|d| d > now).unwrap_or(false);
     match (status, future) {
         ("publish", true) => "future".into(),
         ("future", false) => "publish".into(),
         (s, _) => s.to_string(),
     }
+}
+
+/// `effective_status_at` at the current wall clock — production entry.
+pub fn effective_status(status: &str, published_at: Option<&str>) -> String {
+    effective_status_at(status, published_at, &crate::db::misc::now_sql())
 }
 
 /// `check_future_posts` — flip due 'future' posts to 'publish'.
