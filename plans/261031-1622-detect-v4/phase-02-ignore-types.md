@@ -21,8 +21,7 @@ Every site lists noise suggestions:
 `itsec-dash-card`/`itsec-dashboard` (iThemes dashboard cards),
 `popup`/`popup_theme`/`aoc_popup` (Popup Maker internals),
 `pp_video_block` (Presto Player block records),
-`flamingo_contact`/`flamingo_inbound` (Flamingo mail archive —
-arguably wanted data, but definitely not a "generic page"),
+`flamingo_contact`/`flamingo_inbound` (Flamingo mail archive),
 `mc4wp-form`, `wpcode`, `language_switcher`, `polylang_mo`,
 `rank_math_schema`, `rm_content_editor`. Suggesting
 `plugins/specs/X.toml: claim_types += [...]` for these is wrong —
@@ -36,15 +35,28 @@ import must *skip* them, not claim them.
 - Modify: `src/plugins/mod.rs` — registry aggregation:
   `ignored_type(name)` checking all adapters (same probe style as
   `claim_type`).
+
 - Modify: `src/detect.rs` — `claimed()`/`run()` third bucket:
   `{t} ({n}) → ignored by spec (storage CPT — skipped at import)`.
   Excluded from the unclaimed suggestion list.
-- Modify: whichever adapter spec owns each noise type — add
-  `ignore_types`:
-  - a shared `plugins/specs/wp-internals.toml` is cleaner than one per
-    plugin for cross-cutting storage (itsec_*, wpcode, polylang_mo,
-    language_switcher…) — decide during implementation; adapter-owned
-    ones (flamingo → flamingo spec if added later) stay local.
+- Modify: `plugins/specs/wp-internals.toml` (new, adapter-less spec is
+  the cleanest owner for cross-plugin storage) OR per-plugin specs —
+  decide at implementation; `ignore_types` candidates from the
+  23-site sweep (report `detect-23site-sweep`):
+  itsec-dash-card, itsec-dashboard (12 sites), wpcode (10),
+  ml-slide, ml-slider (6), mc4wp-form (6), polylang_mo (5),
+  language_switcher (5), rm_content_editor (6), rank_math_schema (3),
+  flamingo_contact, flamingo_inbound (up to 2364 rows),
+  popup, popup_theme, popupbuilder, aoc_popup,
+  pp_video_block, et_pb_layout, nf_sub (357 rows), mailpoet_page,
+  vc_grid_item, bricks_template, elementor-hf, wpmm_theme, amn_smtp,
+  pdf_lv, pdfviewer, wpgp_youtube_gallery, wpdiscuz_form,
+  3d-flip-book, dflip, wpforms, custom-post-template, carousels,
+  sp_wp_carousel, location_weather, uwpqsf, web-story, tahefobu_footer,
+  elementskit_content.
+- Decide: `tour_coupon`, `tour_service` (tourmaster registers them;
+  adapter only claims `tour`) — claim or ignore, one line in the
+  tourmaster adapter/spec.
 
 ## Requirements
 
