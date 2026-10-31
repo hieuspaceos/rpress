@@ -234,6 +234,10 @@ registered in `settings.languages`, `ThemeDef::tax_lang`, or the blob.
   BridgeState.token is the RAW hex; `php_str(&token)` is only for the
   install-snippet PHP literal — a quoted token in BridgeState fails
   `hash_equals` in bridge.php and every spawn dies at the identity probe.
+  Redirects + bodies are rewritten back through the mount: `Location:
+  http://127.0.0.1:<port>/X` → `/admin/plugins/<slug>/X`, and text/html
+  bodies get the same replacement for both plain and JSON-escaped
+  (`\/`) URL shapes — WP emits WP_HOME absolute URLs everywhere.
 - **Bridge egress can't be netns-isolated without root (residual risk).**
   `bwrap --unshare-net` would cut the host→child loopback the proxy needs,
   and slirp4netns/pasta *add* outbound NAT. So the bwrap profile keeps

@@ -82,6 +82,9 @@ pub(crate) trait PhpRuntime: Send {
     /// Child pid (the wrapper's pid for sandboxed/npx spawns — best-effort
     /// for pidfile orphan sweep).
     fn pid(&self) -> u32;
+    /// Loopback port — needed to rewrite `Location: http://127.0.0.1:<port>`
+    /// redirects back through the proxy mount.
+    fn port(&self) -> u16;
 }
 
 #[allow(dead_code)]
@@ -221,6 +224,7 @@ impl PhpRuntime for DeadRuntime {
     fn healthy(&mut self, _t: &str) -> bool { false }
     fn kill(&mut self) {}
     fn pid(&self) -> u32 { 0 }
+    fn port(&self) -> u16 { 0 }
 }
 
 /// Per-bridge handle — the map entry. The outer `Bridges` lock guards the

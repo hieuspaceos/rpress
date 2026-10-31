@@ -40,6 +40,9 @@ impl PhpRuntime for Playground {
     fn pid(&self) -> u32 {
         self.child.id()
     }
+    fn port(&self) -> u16 {
+        self.port
+    }
 }
 
 /// If the parent exits without `kill()` (restart, crash), the child must

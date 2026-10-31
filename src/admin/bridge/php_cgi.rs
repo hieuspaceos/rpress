@@ -40,6 +40,9 @@ impl PhpRuntime for PhpCgi {
     fn pid(&self) -> u32 {
         self.child.id()
     }
+    fn port(&self) -> u16 {
+        self.port
+    }
 }
 
 impl Drop for PhpCgi {

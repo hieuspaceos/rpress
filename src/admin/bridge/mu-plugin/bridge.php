@@ -51,6 +51,17 @@ add_action('admin_init', function () {
         $_POST['security'] = $n;
         $_REQUEST['security'] = $n;
     }
+    /* `gdlr_core_save_page_option_data_<post_type>` checks the
+       `gdlr_core_page_option` nonce (page-option.php:146) — mint it for
+       both `security` and `page_option_security` so either code path
+       (check_ajax_referer or wp_verify_nonce at :199) passes. */
+    if (!empty($_POST['action']) && strpos($_POST['action'], 'gdlr_core_save_page_option_data') === 0) {
+        $n = wp_create_nonce('gdlr_core_page_option');
+        $_POST['security'] = $n;
+        $_REQUEST['security'] = $n;
+        $_POST['page_option_security'] = $n;
+        $_REQUEST['page_option_security'] = $n;
+    }
     /* html-option actions (`gdlr_get_gallery_options`, image fields inside
        element lightboxes) check the `gdlr_core_html_option` nonce — same
        mint path, different action name. */

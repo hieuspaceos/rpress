@@ -1287,16 +1287,47 @@ async fn bridge_dispatch(
         let mut b = axum::response::Response::builder().status(
             axum::http::StatusCode::from_u16(r.status).unwrap_or(StatusCode::OK),
         );
+        // WP issues redirects against WP_HOME (`http://127.0.0.1:<port>`) —
+        // pass them through verbatim and the browser hits the raw bridge
+        // port, which 403s without the bearer. Rewrite back through the
+        // proxy mount instead.
+        let mount = format!("/admin/plugins/{slug}");
+        let upstream = format!("http://127.0.0.1:{}", st.rt.port());
         for (k, v) in &r.headers {
             let kl = k.to_ascii_lowercase();
             if matches!(kl.as_str(), "transfer-encoding" | "connection" | "content-length") {
                 continue;
             }
-            if let (Ok(n), Ok(val)) = (header::HeaderName::from_bytes(k.as_bytes()), HeaderValue::from_str(v)) {
+            let v = if kl == "location" && v.starts_with(&upstream) {
+                format!("{}{}", mount, &v[upstream.len()..])
+            } else {
+                v.clone()
+            };
+            if let (Ok(n), Ok(val)) = (header::HeaderName::from_bytes(k.as_bytes()), HeaderValue::from_str(&v)) {
                 b = b.header(n, val);
             }
         }
-        Ok::<_, anyhow::Error>(b.body(Body::from(r.body)).unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()))
+        // HTML bodies carry absolute asset/link URLs built on WP_HOME
+        // (http://127.0.0.1:<port>) — rewrite through the mount so the
+        // browser never sees the raw bridge port (same `upstream` string
+        // as the Location rewrite above).
+        let body = if r
+            .headers
+            .iter()
+            .any(|(k, v)| k.eq_ignore_ascii_case("content-type") && v.contains("text/html"))
+        {
+            // WP also JSON-escapes host URLs in inline script settings
+            // (127.0.0.1\/:port/...) — rewrite both shapes.
+            let upstream_esc = upstream.replace('/', "\\/");
+            let mount_esc = mount.replace('/', "\\/");
+            String::from_utf8_lossy(&r.body)
+                .replace(&upstream, &mount)
+                .replace(&upstream_esc, &mount_esc)
+                .into_bytes()
+        } else {
+            r.body
+        };
+        Ok::<_, anyhow::Error>(b.body(Body::from(body)).unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()))
     })
     .await;
     match resp {
