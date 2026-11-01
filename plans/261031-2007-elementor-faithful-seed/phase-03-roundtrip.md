@@ -1,7 +1,7 @@
 ---
 phase: 3
 title: "Browser: edit/save/respawn round-trip"
-status: pending
+status: done
 priority: P1
 effort: "1h"
 dependencies: [2]

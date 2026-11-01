@@ -1,7 +1,7 @@
 ---
 title: "elementor-faithful-seed"
 description: "Fix mu-plugin seed meta insertion eating backslashes (wp_unslash) so Elementor pages open with their real multi-section layout instead of a collapsed text-editor stub; plus GDLR media modal (wp.media) not opening inside the bridge."
-status: pending
+status: done
 priority: P1
 effort: "0.5d"
 tags: [bridge, elementor, seed, audit-fix]
@@ -58,11 +58,11 @@ sequences to corrupt).
 
 | # | Phase | Status |
 |---|-------|--------|
-| 1 | [Mu-plugin wp_slash fix + unit verification](./phase-01-slash-fix.md) | Pending |
-| 2 | [Browser: faithful Elementor tree](./phase-02-browser-tree.md) | Pending |
-| 3 | [Browser: edit/save/respawn round-trip](./phase-03-roundtrip.md) | Pending |
-| 4 | [Aucoeur GDLR builder check](./phase-04-gdlr-check.md) | Pending |
-| 5 | [GDLR media modal fix + browser check](./phase-05-media-modal.md) | Pending |
+| 1 | [Mu-plugin wp_slash fix + unit verification](./phase-01-slash-fix.md) | Done (superseded: $wpdb-direct byte-exact seeding in installer + mu-plugin; `_elementor_data` 20,162B valid JSON, byte-identical rpress.db↔wp.db) |
+| 2 | [Browser: faithful Elementor tree](./phase-02-browser-tree.md) | Done (navigator = 82 elements = seeded tree; iframe DOM = 82 `.elementor-element` nodes; cosmetic: iframe spinner overlay persists — parent ready-event race, non-blocking) |
+| 3 | [Browser: edit/save/respawn round-trip](./phase-03-roundtrip.md) | Done (marker edit→wp.db→pull→byte-exact revert verified) |
+| 4 | [Aucoeur GDLR builder check](./phase-04-gdlr-check.md) | Done (26 items render, meta byte-exact 78,626 `a:19:`) |
+| 5 | [GDLR media modal fix + browser check](./phase-05-media-modal.md) | Done (9,619 attachments seeded; library browses + inserts) |
 
 ## Success Criteria
 

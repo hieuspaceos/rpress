@@ -646,7 +646,7 @@ pub(crate) fn spawn(
          define('WPMU_PLUGIN_DIR',WP_CONTENT_DIR.'/mu-plugins'); define('WPMU_PLUGIN_URL','x');\n\
          define('UPLOADS','wp-content/uploads');\n\
          define('RPRESS_BRIDGE_TOKEN',{token_php}); define('RPRESS_BRIDGE_PLUGIN',{plugin});\n\
-         define('RPRESS_BRIDGE_THEME',{theme});\n\
+         define('RPRESS_BRIDGE_THEME',{theme});{plugins_def}\n\
          define('WP_INSTALLING',true);\n\
          $table_prefix='wp_';\n\
          $_SERVER['HTTP_HOST']='127.0.0.1';\n\
@@ -659,13 +659,48 @@ pub(crate) fn spawn(
              wp_install('rpress bridge','admin','admin@bridge.local',false,'',RPRESS_BRIDGE_TOKEN);\n\
          }}\n\
          require_once ABSPATH . 'wp-admin/includes/plugin.php';\n\
+         /* activate_plugin() is unreliable under WP_INSTALLING — its transient\n\
+            validation can leave active_plugins empty, and a plugin whose\n\
+            activation hook grants caps (tourmaster → edit_tours) then 403s\n\
+            every edit screen. Set the option directly, then run each\n\
+            activation hook so role/cap grants land. */\n\
+         $rpress_to_activate = [];\n\
          if (RPRESS_BRIDGE_PLUGIN !== '' && file_exists(WP_PLUGIN_DIR . '/' . RPRESS_BRIDGE_PLUGIN)) {{\n\
-             activate_plugin(RPRESS_BRIDGE_PLUGIN);\n\
+             $rpress_to_activate[] = RPRESS_BRIDGE_PLUGIN;\n\
          }}\n\
          if (defined('RPRESS_BRIDGE_PLUGINS')) {{\n\
              foreach ((array) json_decode(RPRESS_BRIDGE_PLUGINS, true) as $rpress_p2) {{\n\
                  if (is_string($rpress_p2) && $rpress_p2 !== RPRESS_BRIDGE_PLUGIN && file_exists(WP_PLUGIN_DIR . '/' . $rpress_p2)) {{\n\
-                     activate_plugin($rpress_p2);\n\
+                     $rpress_to_activate[] = $rpress_p2;\n\
+                 }}\n\
+             }}\n\
+         }}\n\
+         /* wpdb->update → INSERT fallback: sqlite-db-integration emits a\n\
+            plain INSERT that violates the PK on an existing option row,\n\
+            so update_option() returns false here while the same call on\n\
+            absent keys works. delete+add keeps the write one-shot. */\n\
+         delete_option('active_plugins');\n\
+         if (!empty($rpress_to_activate)) {{\n\
+             update_option('active_plugins', $rpress_to_activate, false);\n\
+             foreach ($rpress_to_activate as $rpress_p3) {{\n\
+                 /* Register-then-fire: include the plugin file so its\n\
+                    register_activation_hook() lands before the action fires —\n\
+                    mirrors core activate_plugin() minus the WP_INSTALLING-\n\
+                    fragile transient/redirect machinery. */\n\
+                 include_once WP_PLUGIN_DIR . '/' . $rpress_p3;\n\
+                 $rpress_hook = 'activate_' . $rpress_p3;\n\
+                 if (!did_action($rpress_hook)) {{\n\
+                     do_action($rpress_hook);\n\
+                 }}\n\
+                 /* Symlinked plugin files register under their resolved\n\
+                    realpath (__FILE__ escapes WP_PLUGIN_DIR through the\n\
+                    symlink); fire the action under that basename too. */\n\
+                 $rpress_real = realpath(WP_PLUGIN_DIR . '/' . $rpress_p3);\n\
+                 if ($rpress_real) {{\n\
+                     $rpress_hook2 = 'activate_' . $rpress_real;\n\
+                     if ($rpress_hook2 !== $rpress_hook && !did_action($rpress_hook2)) {{\n\
+                         do_action($rpress_hook2);\n\
+                     }}\n\
                  }}\n\
              }}\n\
          }}\n\
@@ -677,6 +712,7 @@ pub(crate) fn spawn(
          if (file_exists($rpress_seed) && !get_option('rpress_post_seeded')) {{\n\
              $rpress_j = json_decode(file_get_contents($rpress_seed), true);\n\
              $rpress_p = is_array($rpress_j) ? ($rpress_j['post'] ?? null) : null;\n\
+             $rpress_pid = 0;\n\
              if (is_array($rpress_p) && (empty($rpress_p['ID']) || !get_post((int) $rpress_p['ID']))) {{\n\
                  $rpress_pid = wp_insert_post([\n\
                      'import_id'    => isset($rpress_p['ID']) ? (int) $rpress_p['ID'] : 0,\n\
@@ -689,9 +725,95 @@ pub(crate) fn spawn(
                  ], true);\n\
                  if (!is_wp_error($rpress_pid)) {{\n\
                      update_option('rpress_post_seeded', $rpress_pid, false);\n\
-                     if (!empty($rpress_j['meta']) && is_array($rpress_j['meta'])) {{\n\
-                         foreach ($rpress_j['meta'] as $rpress_mk => $rpress_mv) {{\n\
-                             update_post_meta($rpress_pid, $rpress_mk, $rpress_mv);\n\
+                 }}\n\
+             }} else if (is_array($rpress_p)) {{\n\
+                 /* Post row already exists (skeleton wp.db carries it across\n\
+                    spawns) — rpress.db is truth, so refresh row + meta or a\n\
+                    stale skel resurrects pre-edit content over the pull. */\n\
+                 $rpress_pid = (int) $rpress_p['ID'];\n\
+                 wp_update_post([\n\
+                     'ID'           => $rpress_pid,\n\
+                     'post_title'   => $rpress_p['post_title'] ?? '',\n\
+                     'post_content' => $rpress_p['post_content'] ?? '',\n\
+                     'post_excerpt' => $rpress_p['post_excerpt'] ?? '',\n\
+                     'post_status'  => $rpress_p['post_status'] ?? 'draft',\n\
+                     'post_name'    => $rpress_p['post_name'] ?? '',\n\
+                     'post_type'    => $rpress_p['post_type'] ?? 'page',\n\
+                 ]);\n\
+             }}\n\
+             if (!empty($rpress_pid) && !is_wp_error($rpress_pid)\n\
+                 && !empty($rpress_j['meta']) && is_array($rpress_j['meta'])) {{\n\
+                 /* Meta rows are seeded byte-exact: write them through $wpdb\n\
+                    directly. update_post_meta's maybe_serialize/wp_unslash\n\
+                    pipeline corrupts serialized GDLR blobs — observed\n\
+                    s:N:\"s:N:\"a:19:{{...}}\" double-wrapping that compounds on\n\
+                    every seed+pull cycle. */\n\
+                 foreach ($rpress_j['meta'] as $rpress_mk => $rpress_mv) {{\n\
+                     $rpress_mid = $wpdb->get_var($wpdb->prepare(\n\
+                         'SELECT meta_id FROM {{$wpdb->postmeta}} WHERE post_id=%d AND meta_key=%s',\n\
+                         $rpress_pid, $rpress_mk\n\
+                     ));\n\
+                     if ($rpress_mid) {{\n\
+                         $wpdb->update($wpdb->postmeta,\n\
+                             ['meta_value' => $rpress_mv],\n\
+                             ['meta_id' => $rpress_mid]);\n\
+                     }} else {{\n\
+                         $wpdb->insert($wpdb->postmeta,\n\
+                             ['post_id' => $rpress_pid, 'meta_key' => $rpress_mk, 'meta_value' => $rpress_mv]);\n\
+                     }}\n\
+                 }}\n\
+                 /* Corruption alarm: invalid _elementor_data makes the editor\n\
+                    silently rebuild a stub layout — log it loud. */\n\
+                 $rpress_ed = get_post_meta($rpress_pid, '_elementor_data', true);\n\
+                 if ($rpress_ed !== '' && json_decode($rpress_ed) === null) {{\n\
+                     error_log('rpress seed: _elementor_data is not valid JSON for post ' . $rpress_pid);\n\
+                 }}\n\
+             }}\n\
+             if (!empty($rpress_j['attachments']) && is_array($rpress_j['attachments'])) {{\n\
+                 /* Attachment library rows for query-attachments —\n\
+                    idempotent upsert keyed on the wp_posts ID the seed\n\
+                    carries (skel respawns re-run this block; the row is\n\
+                    already there so we UPDATE rather than duplicate). */\n\
+                 foreach ($rpress_j['attachments'] as $rpress_a) {{\n\
+                     $rpress_aid = (int) ($rpress_a['ID'] ?? 0);\n\
+                     $rpress_afields = [\n\
+                         'post_title'   => $rpress_a['post_title'] ?? '',\n\
+                         'post_content' => $rpress_a['post_content'] ?? '',\n\
+                         'post_excerpt' => $rpress_a['post_excerpt'] ?? '',\n\
+                         'post_status'  => 'inherit',\n\
+                         'post_name'    => $rpress_a['post_name'] ?? '',\n\
+                         'post_parent'  => 0,\n\
+                         'post_type'    => 'attachment',\n\
+                         'post_mime_type' => $rpress_a['post_mime_type'] ?? '',\n\
+                         'guid'         => rtrim(WP_SITEURL, '/') . '/wp-content/uploads/' . ltrim($rpress_a['guid'] ?? '', '/'),\n\
+                     ];\n\
+                     if ($rpress_aid && get_post($rpress_aid)) {{\n\
+                         $wpdb->update($wpdb->posts,\n\
+                             $rpress_afields + ['ID' => $rpress_aid],\n\
+                             ['ID' => $rpress_aid]);\n\
+                     }} elseif ($rpress_aid) {{\n\
+                         $wpdb->insert($wpdb->posts,\n\
+                             $rpress_afields + [\n\
+                                 'ID' => $rpress_aid,\n\
+                                 'post_date' => $rpress_a['post_date'] ?? '0000-00-00 00:00:00',\n\
+                                 'post_date_gmt' => $rpress_a['post_date'] ?? '0000-00-00 00:00:00',\n\
+                                 'post_modified' => $rpress_a['post_modified'] ?? '0000-00-00 00:00:00',\n\
+                                 'post_modified_gmt' => $rpress_a['post_modified'] ?? '0000-00-00 00:00:00',\n\
+                             ]);\n\
+                     }}\n\
+                     $rpress_am = $rpress_j['attachment_meta'][$rpress_aid] ?? null;\n\
+                     if ($rpress_aid && is_array($rpress_am)) {{\n\
+                         foreach ($rpress_am as $rpress_ak => $rpress_av) {{\n\
+                             $rpress_amid = $wpdb->get_var($wpdb->prepare(\n\
+                                 'SELECT meta_id FROM ' . $wpdb->postmeta . ' WHERE post_id=%d AND meta_key=%s',\n\
+                                 $rpress_aid, $rpress_ak\n\
+                             ));\n\
+                             if ($rpress_amid) {{\n\
+                                 $wpdb->update($wpdb->postmeta, ['meta_value' => $rpress_av], ['meta_id' => $rpress_amid]);\n\
+                             }} else {{\n\
+                                 $wpdb->insert($wpdb->postmeta,\n\
+                                     ['post_id' => $rpress_aid, 'meta_key' => $rpress_ak, 'meta_value' => $rpress_av]);\n\
+                             }}\n\
                          }}\n\
                      }}\n\
                  }}\n\
@@ -700,6 +822,9 @@ pub(crate) fn spawn(
          }}\n",
         theme = php_str(theme.as_deref().unwrap_or("")),
         plugin = php_str(plugin_file),
+        plugins_def = plugins_json.as_deref()
+            .map(|p| format!(" define('RPRESS_BRIDGE_PLUGINS', {});", php_str(p)))
+            .unwrap_or_default(),
     );
     let install_path = docroot.join("rpress-install.php");
     std::fs::write(&install_path, &install_php)?;

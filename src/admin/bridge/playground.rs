@@ -316,12 +316,82 @@ pub(crate) fn project_post(rpress_db: &Path, wp_content: &Path, post_id: i64) ->
         .into_iter()
         .map(|(k, v)| (k, serde_json::Value::String(v)))
         .collect();
+    // Attachment posts for the media modal: rpress.db holds every
+    // attachment row+meta imported from the site — project ALL of them so
+    // query-attachments lists the real library. guids keep the public
+    // /wp-content/uploads URLs (served by the static site, not wp.db).
+    let attachments: Vec<serde_json::Value> = {
+        let mut a_st = src.prepare(sql!("bridge_playground__select_attachment_posts"))?;
+        let rows: rusqlite::Result<Vec<serde_json::Value>> = a_st
+            .query_map([], |r| {
+                Ok(serde_json::json!({
+                    "ID": r.get::<_, i64>(0)?,
+                    "post_title": r.get::<_, String>(1)?,
+                    "post_content": r.get::<_, Option<String>>(2)?,
+                    "post_excerpt": r.get::<_, Option<String>>(3)?,
+                    "post_status": r.get::<_, Option<String>>(4)?,
+                    "post_name": r.get::<_, Option<String>>(5)?,
+                    "post_parent": r.get::<_, i64>(6)?,
+                    "menu_order": r.get::<_, i64>(7)?,
+                    "post_date": r.get::<_, String>(8)?,
+                    "post_modified": r.get::<_, String>(9)?,
+                    "guid": r.get::<_, Option<String>>(10)?,
+                    "post_mime_type": r.get::<_, Option<String>>(11)?,
+                }))
+            })?
+            .collect();
+        rows?
+    };
+    /* Per-attachment meta: _wp_attached_file (relative path) +
+       _wp_attachment_metadata (PHP-serialized file/w/h/sizes blob WP
+       core's wp_prepare_attachment_for_js decodes) + alt. `sizes_json`
+       in rpress.db is already the WP shape ({size:{file,width,height}}). */
+    let mut attachment_meta: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+    if !attachments.is_empty() {
+        let mut m_st = src.prepare(sql!("bridge_playground__select_attachment_meta"))?;
+        for row in m_st.query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, Option<String>>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, i64>(3)?,
+                r.get::<_, Option<String>>(4)?,
+                r.get::<_, Option<String>>(5)?,
+                r.get::<_, Option<String>>(6)?,
+            ))
+        })? {
+            let (pid, path, w, h, sizes_json, alt, _caption) = row?;
+            let sizes: serde_json::Value = sizes_json
+                .as_deref()
+                .filter(|s| !s.is_empty() && *s != "{}")
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or_else(|| serde_json::json!({}));
+            let meta_blob = crate::php_serialize::serialize(&serde_json::json!({
+                "file": path.clone().unwrap_or_default(),
+                "width": w,
+                "height": h,
+                "sizes": sizes,
+            }));
+            let mut m = serde_json::Map::new();
+            m.insert("_wp_attached_file".into(), serde_json::Value::String(path.unwrap_or_default()));
+            m.insert(
+                "_wp_attachment_metadata".into(),
+                serde_json::Value::String(String::from_utf8_lossy(&meta_blob).into_owned()),
+            );
+            if let Some(a) = alt.filter(|s| !s.is_empty()) {
+                m.insert("_wp_attachment_image_alt".into(), serde_json::Value::String(a));
+            }
+            attachment_meta.insert(pid.to_string(), serde_json::Value::Object(m));
+        }
+    }
     let seed_dir = wp_content.join("rpress-seed");
     std::fs::create_dir_all(&seed_dir)?;
     std::fs::write(
         seed_dir.join("post.json"),
         serde_json::to_string(&serde_json::json!({
             "post": post, "meta": meta,
+            "attachments": attachments,
+            "attachment_meta": attachment_meta,
         }))?,
     )?;
     Ok(true)

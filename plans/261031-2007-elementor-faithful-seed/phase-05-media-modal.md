@@ -1,7 +1,7 @@
 ---
 phase: 5
 title: "GDLR media modal fix + browser check"
-status: pending
+status: done
 priority: P2
 effort: "2h"
 dependencies: [4]

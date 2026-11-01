@@ -99,6 +99,50 @@ add_filter('user_has_cap', static function ($caps) {
     return $caps;
 }, 0);
 
+/* CPT-cap grants live in role rows (wp_user_roles), which the bridge's
+   fresh wp_install seeds without plugin caps. Activation hooks are
+   unreliable under WP_INSTALLING (symlinked __FILE__ + transient races),
+   so grant the tour/room/car/coupon/service caps tourmaster gives
+   administrator directly — cheap, idempotent, request-local. */
+add_filter('user_has_cap', static function ($caps) {
+    foreach (['tour', 'room', 'car', 'coupon', 'service'] as $pt) {
+        foreach (['edit_%s', 'read_%s', 'delete_%s', 'edit_%ss',
+                  'edit_others_%ss', 'publish_%ss', 'read_private_%ss',
+                  'delete_%ss'] as $c) {
+            $caps[str_replace('%s', $pt, $c)] = true;
+        }
+    }
+    foreach (['manage_tour_category', 'manage_tour_tag', 'manage_tour_filter',
+              'manage_tour_order', 'manage_room_category', 'manage_room_tag',
+              'manage_room_filter', 'manage_room_order'] as $mc) {
+        $caps[$mc] = true;
+    }
+    return $caps;
+}, 0);
+
+/* WP 6.8 defaults every post type to the block editor: post.php mounts
+   an empty React shell whose metabox region needs REST context the
+   bridge sandbox can't answer, leaving a blank page. The bridged
+   editor IS the GDLR/tourmaster metaboxes — classic layout always. */
+add_filter('use_block_editor_for_post', '__return_false');
+add_filter('use_block_editor_for_post_type', '__return_false');
+/* The block editor's enqueued JS still runs (gutenberg screen ids),
+   flips `is-fullscreen-mode`+`block-editor-page` and collapses #wpbody —
+   0-height metaboxes, blank page. CSS can't trust class state (JS
+   toggles after load); strip the classes and force #wpbody visible. */
+add_action('admin_footer', static function () {
+    if (get_current_screen()?->base !== 'post') { return; }
+    echo '<script>document.addEventListener("DOMContentLoaded",function(){'
+        . 'document.body.classList.remove("is-fullscreen-mode","block-editor-page");'
+        . 'var w=document.getElementById("wpbody-content");'
+        . 'if(w){w.style.display="";w.style.height="";w.style.visibility="";}'
+        . 'document.querySelectorAll(".hide-if-js").forEach(function(e){e.style.display="none";});'
+        . '});</script>';
+    echo '<style>.block-editor-page #wpbody-content{display:block!important;}'
+        . '.is-fullscreen-mode #wpbody{position:static!important;margin:0!important;}'
+        . '.block-editor__container,#editor{display:none!important;}</style>';
+}, 99);
+
 add_action('template_redirect', static function () {
     if (empty($_GET['elementor-preview'])) {
         return;
@@ -206,6 +250,14 @@ add_action('admin_init', function () {
         $_POST['security'] = $n;
         $_REQUEST['security'] = $n;
     }
+    /* `upload-attachment` + `media-create-image-subsizes` check
+       check_ajax_referer('media-form') — library browsing doesn't, but
+       bridge uploads 403 without it. Mint for those two actions. */
+    if (!empty($_POST['action']) && in_array($_POST['action'], ['upload-attachment', 'media-create-image-subsizes'], true)) {
+        $n = wp_create_nonce('media-form');
+        $_POST['_wpnonce'] = $n;
+        $_REQUEST['_wpnonce'] = $n;
+    }
 }, 0);
 
 /* Self-seed once per wp.db lifetime: plugin activation + post import.
@@ -262,6 +314,7 @@ add_action('admin_init', function () {
         /* `import_id` isn't a WP dedupe key — guard on the row existing so
            re-seeds (fresh wp.db sharing post.json) can't double-insert. */
         $p = is_array($j) ? ($j['post'] ?? null) : null;
+        $pid = 0;
         if (is_array($p) && (empty($p['ID']) || !get_post((int) $p['ID']))) {
             $pid = wp_insert_post([
                 'import_id'    => isset($p['ID']) ? (int) $p['ID'] : 0,
@@ -274,9 +327,89 @@ add_action('admin_init', function () {
             ], true);
             if (!is_wp_error($pid)) {
                 update_option('rpress_post_seeded', $pid, false);
-                if (!empty($j['meta']) && is_array($j['meta'])) {
-                    foreach ($j['meta'] as $mk => $mv) {
-                        update_post_meta($pid, $mk, $mv);
+            }
+        } else if (is_array($p) && !empty($p['ID'])) {
+            /* Post row already exists (skeleton wp.db carries it across
+               spawns) — rpress.db is truth, so refresh row + meta or a
+               stale skel resurrects pre-edit content over the pull. */
+            $pid = (int) $p['ID'];
+            wp_update_post([
+                'ID'           => $pid,
+                'post_title'   => $p['post_title'] ?? '',
+                'post_content' => $p['post_content'] ?? '',
+                'post_excerpt' => $p['post_excerpt'] ?? '',
+                'post_status'  => $p['post_status'] ?? 'draft',
+                'post_name'    => $p['post_name'] ?? '',
+                'post_type'    => $p['post_type'] ?? 'page',
+            ]);
+        }
+        if (!empty($pid) && !is_wp_error($pid)
+            && !empty($j['meta']) && is_array($j['meta'])) {
+            global $wpdb;
+            /* Meta rows seeded byte-exact: write via $wpdb directly.
+               update_post_meta's maybe_serialize/wp_unslash pipeline
+               double-wraps already-serialized values (observed GDLR
+               s:N:"s:N:"a:19:..." compounding on every respawn+pull). */
+            foreach ($j['meta'] as $mk => $mv) {
+                $mid = $wpdb->get_var($wpdb->prepare(
+                    'SELECT meta_id FROM ' . $wpdb->postmeta . ' WHERE post_id=%d AND meta_key=%s',
+                    $pid, $mk
+                ));
+                if ($mid) {
+                    $wpdb->update($wpdb->postmeta, ['meta_value' => $mv], ['meta_id' => $mid]);
+                } else {
+                    $wpdb->insert($wpdb->postmeta,
+                        ['post_id' => $pid, 'meta_key' => $mk, 'meta_value' => $mv]);
+                }
+            }
+            /* Cheap corruption alarm: if _elementor_data doesn't
+               decode right after seeding, the editor would silently
+               rebuild a stub layout — make it loud in the bridge log. */
+            $ed = get_post_meta($pid, '_elementor_data', true);
+            if ($ed !== '' && json_decode($ed) === null) {
+                error_log('rpress seed: _elementor_data is not valid JSON for post ' . $pid);
+            }
+        }
+        if (!empty($j['attachments']) && is_array($j['attachments'])) {
+            /* Attachment library rows for query-attachments — idempotent
+               upsert keyed on wp_posts ID, same byte-exact $wpdb path. */
+            foreach ($j['attachments'] as $a) {
+                $aid = (int) ($a['ID'] ?? 0);
+                $afields = [
+                    'post_title'   => $a['post_title'] ?? '',
+                    'post_content' => $a['post_content'] ?? '',
+                    'post_excerpt' => $a['post_excerpt'] ?? '',
+                    'post_status'  => 'inherit',
+                    'post_name'    => $a['post_name'] ?? '',
+                    'post_parent'  => 0,
+                    'post_type'    => 'attachment',
+                    'post_mime_type' => $a['post_mime_type'] ?? '',
+                    'guid'         => rtrim(get_option('siteurl'), '/') . '/wp-content/uploads/' . ltrim($a['guid'] ?? '', '/'),
+                ];
+                if ($aid && get_post($aid)) {
+                    $wpdb->update($wpdb->posts, $afields, ['ID' => $aid]);
+                } elseif ($aid) {
+                    $wpdb->insert($wpdb->posts, $afields + [
+                        'ID' => $aid,
+                        'post_date' => $a['post_date'] ?? '0000-00-00 00:00:00',
+                        'post_date_gmt' => $a['post_date'] ?? '0000-00-00 00:00:00',
+                        'post_modified' => $a['post_modified'] ?? '0000-00-00 00:00:00',
+                        'post_modified_gmt' => $a['post_modified'] ?? '0000-00-00 00:00:00',
+                    ]);
+                }
+                $am = $j['attachment_meta'][$aid] ?? null;
+                if ($aid && is_array($am)) {
+                    foreach ($am as $ak => $av) {
+                        $amid = $wpdb->get_var($wpdb->prepare(
+                            'SELECT meta_id FROM ' . $wpdb->postmeta . ' WHERE post_id=%d AND meta_key=%s',
+                            $aid, $ak
+                        ));
+                        if ($amid) {
+                            $wpdb->update($wpdb->postmeta, ['meta_value' => $av], ['meta_id' => $amid]);
+                        } else {
+                            $wpdb->insert($wpdb->postmeta,
+                                ['post_id' => $aid, 'meta_key' => $ak, 'meta_value' => $av]);
+                        }
                     }
                 }
             }

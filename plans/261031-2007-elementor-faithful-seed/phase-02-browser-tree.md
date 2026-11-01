@@ -1,7 +1,7 @@
 ---
 phase: 2
 title: "Browser: faithful Elementor tree"
-status: pending
+status: done
 priority: P1
 effort: "1h"
 dependencies: [1]

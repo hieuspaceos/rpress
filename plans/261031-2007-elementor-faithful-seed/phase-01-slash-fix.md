@@ -1,7 +1,7 @@
 ---
 phase: 1
 title: "Mu-plugin wp_slash fix + unit verification"
-status: pending
+status: done
 priority: P1
 effort: "1h"
 dependencies: []
