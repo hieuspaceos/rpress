@@ -299,6 +299,27 @@ registered in `settings.languages`, `ThemeDef::tax_lang`, or the blob.
   Elementor's row action "Edit with Elementor" on the posts list is
   gated by `opt_in(PLUGINS_PHP)` AND at least one `_elementor_data`
   post_meta row — sites the detector never saw Elementor on don't show it.
+- **Frontend bridge (`PLUGINS_PHP` includes `frontend`) proxies live post
+  slugs through the same php -S bridge instead of the static scaffold.**
+  `serve.rs::public_root`/`public_page` route `/` (when `page_on_front`
+  is set) and any `/<slug>/` that resolves to a wp_posts row to
+  `frontend_proxy`, so pages render inside the real theme — the theme
+  builder wrapper, GVA element widgets, and the Elementor footer that
+  the static write-back scaffold cannot reproduce. Unknown slugs still
+  fall back to static files. The whole site seeds once via
+  `project_frontend` → `site.json` + `options.json`
+  (`rpress_site_seeded` flag): posts, postmeta (wp_slash'd so JSON and
+  serialized bytes survive `update_post_meta` unslashing), attachments,
+  nav menus, and the origin `wp_options` dump — unserialized before
+  `add_option` so `theme_mods_*`/`nav_menu_locations`/`trustindex-*`
+  plugin state lands usable instead of as literal serialized strings.
+  `_elementor_css` meta says `status=file` but the generated post-N.css
+  was never imported; a one-time `rpress_css_seeded` pass regenerates
+  each via `Elementor\Core\Files\CSS\Post::update()` into the shared
+  uploads dir (must run last — kit/template extra_posts aren't visible
+  to `documents->get` before they're upserted). The frontend request
+  (empty `RPRESS_BRIDGE_PLUGIN`) also hides the admin bar
+  (`show_admin_bar` filter) for parity with anonymous origin renders.
 - **Bridged wp-admin POSTs rely on `SameSite=Lax`, not the rpress CSRF token.**
   `/admin/plugins/<slug>/*` enforces `check_csrf` on adapter `ScreenDef`
   posts (accepts `csrf` or `security` — tourmaster JS names the field

@@ -505,14 +505,20 @@ pub(crate) fn spawn(
     // `seeded_post` must reflect a seed that actually landed —
     // `project_post` returns false when the post isn't in rpress.db;
     // claiming it anyway would poison the skip-reseed check.
-    let seeded_post = match post_id {
-        Some(id) => {
-            // Seed goes into the DOCROOT's wp-content — never `www/wp-content`
-            // (the site static server exposes that tree verbatim; a seed
-            // there would leak draft content + builder meta unauthenticated).
-            if project_post(rpress_db, &content, id)? { Some(id) } else { None }
+    // `frontend` slug: project the whole site instead (site.json).
+    let seeded_post = if slug == "frontend" {
+        super::playground::project_frontend(rpress_db, &content)?;
+        None
+    } else {
+        match post_id {
+            Some(id) => {
+                // Seed goes into the DOCROOT's wp-content — never `www/wp-content`
+                // (the site static server exposes that tree verbatim; a seed
+                // there would leak draft content + builder meta unauthenticated).
+                if project_post(rpress_db, &content, id)? { Some(id) } else { None }
+            }
+            None => None,
         }
-        None => None,
     };
     // Housekeeping: older builds wrote the seed into the PUBLIC
     // wp-content tree — remove any leftover so it stops being served.
@@ -543,11 +549,30 @@ pub(crate) fn spawn(
         theme = opt("stylesheet");
         if let Some(raw) = opt("active_plugins") {
             if let Ok(list) = crate::php_serialize::unserialize(raw.as_bytes()) {
-                if let serde_json::Value::Array(items) = list {
+                /* a:19:{i:0;…i:19;} with a deleted middle key deserializes
+                   to an Object — take values either way. */
+                let items: Vec<serde_json::Value> = match list {
+                    serde_json::Value::Array(a) => a,
+                    serde_json::Value::Object(m) => m.into_values().collect(),
+                    _ => Vec::new(),
+                };
+                {
                     let mut active: Vec<String> = items.iter()
                         .filter_map(|v| v.as_str().map(|s| s.to_string()))
                         .filter(|p| p.as_str() != plugin_file)
-                        .filter(|p| p.split('/').next().map(|d| dir_provides_pb_element(&wp_content.join("plugins").join(d))).unwrap_or(false))
+                        .filter(|p| {
+                            // Frontend bridge: activate every plugin that
+                            // exists on disk — theme builder widgets, CPTs,
+                            // and enqueue functions all live inside them.
+                            // Admin bridges keep the narrower pb-element check.
+                            if slug == "frontend" {
+                                p.split('/').next()
+                                    .map(|d| wp_content.join("plugins").join(d).is_dir())
+                                    .unwrap_or(false)
+                            } else {
+                                p.split('/').next().map(|d| dir_provides_pb_element(&wp_content.join("plugins").join(d))).unwrap_or(false)
+                            }
+                        })
                         .collect();
                     active.sort();
                     active.dedup();
@@ -574,6 +599,7 @@ pub(crate) fn spawn(
     )?;
 
     let php_args = [
+        "-d".to_string(), "memory_limit=512M".to_string(),
         "-d".to_string(), "opcache.enable_cli=1".to_string(),
         "-d".to_string(), "opcache.jit=tracing".to_string(),
         "-d".to_string(), "opcache.jit_buffer_size=32M".to_string(),
@@ -840,7 +866,7 @@ pub(crate) fn spawn(
     }
     let install_args = [
         "-d".to_string(), "opcache.enable_cli=1".to_string(),
-        "-d".to_string(), "display_errors=1".to_string(),
+        "-d".to_string(), "memory_limit=512M".to_string(),
         install_path.display().to_string(),
     ];
     match sandboxed(&php, &docroot, www, templates, &db_dir) {

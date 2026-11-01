@@ -217,7 +217,12 @@ pub(crate) fn spawn(
            dirs for the registration call. */
         if let Some(raw) = opt("active_plugins") {
             if let Ok(list) = crate::php_serialize::unserialize(raw.as_bytes()) {
-                if let serde_json::Value::Array(items) = list {
+                let items: Vec<serde_json::Value> = match list {
+                    serde_json::Value::Array(a) => a,
+                    serde_json::Value::Object(m) => m.into_values().collect(),
+                    _ => Vec::new(),
+                };
+                {
                     let mut active: Vec<String> = items
                         .iter()
                         .filter_map(|v| v.as_str().map(|s| s.to_string()))
@@ -395,6 +400,358 @@ pub(crate) fn project_post(rpress_db: &Path, wp_content: &Path, post_id: i64) ->
         }))?,
     )?;
     Ok(true)
+}
+
+/// Project the WHOLE site for the frontend bridge: every published post +
+/// meta + attachment rows + nav menus + theme locations, as `site.json`.
+/// Unlike `project_post` (one wp_insert_post inside WP), this runs on the
+/// frontend path where WP doesn't see an `admin_init` — the mu-plugin
+/// seeds wp.db directly on `init` (see bridge.php) using these exact
+/// field names. Returns true when at least one post projected.
+pub(crate) fn project_frontend(rpress_db: &Path, wp_content: &Path) -> Result<bool> {
+    let src = crate::db::conn(rpress_db).context("open rpress.db for frontend projection")?;
+    let mut posts: Vec<serde_json::Value> = {
+        let mut st = src.prepare(sql!("bridge_frontend__select_posts"))?;
+        let rows: rusqlite::Result<Vec<serde_json::Value>> = st
+            .query_map([], |r| {
+                Ok(serde_json::json!({
+                    "ID": r.get::<_, i64>(0)?,
+                    "post_title": r.get::<_, String>(1)?,
+                    "post_content": r.get::<_, Option<String>>(2)?,
+                    "post_excerpt": r.get::<_, Option<String>>(3)?,
+                    "post_status": r.get::<_, Option<String>>(4)?,
+                    "post_name": r.get::<_, Option<String>>(5)?,
+                    "post_type": r.get::<_, Option<String>>(6)?,
+                    "post_parent": r.get::<_, i64>(7)?,
+                    "menu_order": r.get::<_, i64>(8)?,
+                    "post_date": r.get::<_, String>(9)?,
+                    "post_modified": r.get::<_, String>(10)?,
+                    "_featured_media_id": r.get::<_, Option<i64>>(11)?,
+                }))
+            })?
+            .collect();
+        rows?
+    };
+    // Map rpress `featured_media_id` (media.id) → attachment wp_id.
+    {
+        let mut map = std::collections::HashMap::<i64, i64>::new();
+        let mut st = src.prepare("SELECT id, wp_id FROM media")?;
+        for r in st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))? {
+            let (id, wp) = r?;
+            map.insert(id, wp);
+        }
+        for p in &mut posts {
+            if let Some(fid) = p.get("_featured_media_id").and_then(|v| v.as_i64()) {
+                if let Some(wp) = map.get(&fid) {
+                    p.as_object_mut().unwrap().insert("_thumbnail_id".into(), serde_json::json!(wp));
+                }
+            }
+            if let serde_json::Value::Object(m) = p { m.remove("_featured_media_id"); }
+        }
+    }
+    let mut meta: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+    {
+        let mut st = src.prepare(sql!("bridge_frontend__select_post_meta"))?;
+        for row in st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))? {
+            let (pid, k, v) = row?;
+            meta.entry(pid.to_string())
+                .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()))
+                .as_object_mut()
+                .unwrap()
+                .insert(k, serde_json::Value::String(v));
+        }
+    }
+    let attachments: Vec<serde_json::Value> = {
+        let mut st = src.prepare(sql!("bridge_playground__select_attachment_posts"))?;
+        let rows: rusqlite::Result<Vec<serde_json::Value>> = st
+            .query_map([], |r| {
+                Ok(serde_json::json!({
+                    "ID": r.get::<_, i64>(0)?,
+                    "post_title": r.get::<_, String>(1)?,
+                    "post_content": r.get::<_, Option<String>>(2)?,
+                    "post_excerpt": r.get::<_, Option<String>>(3)?,
+                    "post_status": r.get::<_, Option<String>>(4)?,
+                    "post_name": r.get::<_, Option<String>>(5)?,
+                    "post_parent": r.get::<_, i64>(6)?,
+                    "menu_order": r.get::<_, i64>(7)?,
+                    "post_date": r.get::<_, String>(8)?,
+                    "post_modified": r.get::<_, String>(9)?,
+                    "guid": r.get::<_, Option<String>>(10)?,
+                    "post_mime_type": r.get::<_, Option<String>>(11)?,
+                }))
+            })?
+            .collect();
+        rows?
+    };
+    let mut attachment_meta: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+    {
+        let mut st = src.prepare(sql!("bridge_playground__select_attachment_meta"))?;
+        for row in st.query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, Option<String>>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, i64>(3)?,
+                r.get::<_, Option<String>>(4)?,
+                r.get::<_, Option<String>>(5)?,
+            ))
+        })? {
+            let (pid, path, w, h, sizes_json, alt) = row?;
+            let sizes: serde_json::Value = sizes_json
+                .as_deref()
+                .filter(|s| !s.is_empty() && *s != "{}")
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or_else(|| serde_json::json!({}));
+            let meta_blob = crate::php_serialize::serialize(&serde_json::json!({
+                "file": path.clone().unwrap_or_default(),
+                "width": w,
+                "height": h,
+                "sizes": sizes,
+            }));
+            let mut m = serde_json::Map::new();
+            m.insert("_wp_attached_file".into(), serde_json::Value::String(path.unwrap_or_default()));
+            m.insert(
+                "_wp_attachment_metadata".into(),
+                serde_json::Value::String(String::from_utf8_lossy(&meta_blob).into_owned()),
+            );
+            if let Some(a) = alt.filter(|s| !s.is_empty()) {
+                m.insert("_wp_attachment_image_alt".into(), serde_json::Value::String(a));
+            }
+            attachment_meta.insert(pid.to_string(), serde_json::Value::Object(m));
+        }
+    }
+    /* nav menus → wp_terms rows (term_id = wp_term_id) + nav_menu_item posts.
+       rpress `menu_items.url` stays absolute-origin; WP rewrites nothing —
+       the proxy pass in public_page strips the origin prefix the same way
+       it rewrites WP_HOME. */
+    let menus: Vec<serde_json::Value> = {
+        let mut st = src.prepare(
+            "SELECT m.wp_term_id, m.name, COALESCE(m.location,''), COALESCE(m.lang,''),
+                    COALESCE(tl.location,'')
+             FROM menus m LEFT JOIN theme_locations tl ON tl.menu_id=m.id
+             ORDER BY m.wp_term_id",
+        )?;
+        let rows: rusqlite::Result<Vec<serde_json::Value>> = st
+            .query_map([], |r| {
+                Ok(serde_json::json!({
+                    "wp_term_id": r.get::<_, i64>(0)?,
+                    "name": r.get::<_, String>(1)?,
+                    "location": r.get::<_, String>(2)?,
+                    "lang": r.get::<_, String>(3)?,
+                    "theme_location": r.get::<_, String>(4)?,
+                }))
+            })?
+            .collect();
+        rows?
+    };
+    /* gva__template + nav_menu_item posts live ONLY in the dump — rpress
+       deliberately doesn't model plugin-internal CPTs. Parse wp_posts +
+       wp_postmeta for those types straight off the dump so the theme
+       builder's layout rows (header/footer/single templates) exist. */
+    let mut extra_posts: Vec<serde_json::Value> = Vec::new();
+    let mut extra_meta: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+    // wp_content = <docroot>/wp-content → [0]=wp-content [1]=docroot
+    // [2]=<slug> [3]=bridge [4]=www [5]=work/<site> — dump sits there.
+    let site_dir = wp_content.ancestors().nth(5);
+    if let Some(dump) = site_dir
+        .map(|d| d.join("dump.sql"))
+        .filter(|p| p.is_file())
+    {
+        let mut postmap: std::collections::HashMap<i64, serde_json::Value> = std::collections::HashMap::new();
+        let res = crate::sqldump::rows(&dump, &["wp_posts", "wp_postmeta"], |table, v| {
+            if table == "wp_posts" {
+                let ptype = v.get(20).and_then(|x| x.as_str()).unwrap_or("");
+                if matches!(ptype, "gva__template" | "nav_menu_item" | "elementor_library") {
+                    let id = v.get(0).and_then(|x| x.as_i64()).unwrap_or(0);
+                    if id > 0 {
+                        postmap.insert(id, serde_json::json!({
+                            "ID": id,
+                            "post_author": v.get(1).and_then(|x| x.as_i64()).unwrap_or(1),
+                            "post_date": v.get(2).and_then(|x| x.as_str()).unwrap_or(""),
+                            "post_content": v.get(4).and_then(|x| x.as_str()).unwrap_or(""),
+                            "post_title": v.get(5).and_then(|x| x.as_str()).unwrap_or(""),
+                            "post_excerpt": v.get(6).and_then(|x| x.as_str()).unwrap_or(""),
+                            "post_status": v.get(7).and_then(|x| x.as_str()).unwrap_or("publish"),
+                            "comment_status": v.get(8).and_then(|x| x.as_str()).unwrap_or("closed"),
+                            "ping_status": v.get(9).and_then(|x| x.as_str()).unwrap_or("closed"),
+                            "post_password": v.get(10).and_then(|x| x.as_str()).unwrap_or(""),
+                            "post_name": v.get(11).and_then(|x| x.as_str()).unwrap_or(""),
+                            "post_modified": v.get(14).and_then(|x| x.as_str()).unwrap_or(""),
+                            "post_parent": v.get(17).and_then(|x| x.as_i64()).unwrap_or(0),
+                            "guid": v.get(18).and_then(|x| x.as_str()).unwrap_or(""),
+                            "menu_order": v.get(19).and_then(|x| x.as_i64()).unwrap_or(0),
+                            "post_type": ptype,
+                            "post_mime_type": v.get(21).and_then(|x| x.as_str()).unwrap_or(""),
+                        }));
+                    }
+                }
+            } else if table == "wp_postmeta" {
+                let pid = v.get(1).and_then(|x| x.as_i64()).unwrap_or(0);
+                if pid > 0 {
+                    if let (Some(k), Some(val)) = (v.get(2).and_then(|x| x.as_str()), v.get(3).and_then(|x| x.as_str())) {
+                        extra_meta
+                            .entry(pid.to_string())
+                            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()))
+                            .as_object_mut()
+                            .unwrap()
+                            .insert(k.to_string(), serde_json::Value::String(val.to_string()));
+                    }
+                }
+            }
+            Ok(())
+        }).context("parse dump.sql for gva/nav template posts")?;
+        extra_posts = postmap.into_values().collect();
+    }
+    let menu_items: Vec<serde_json::Value> = {
+        let mut st = src.prepare(
+            "SELECT mi.wp_id, mi.menu_id, m.wp_term_id, COALESCE(mi.parent_id,0),
+                    COALESCE(mi.ord,0), COALESCE(mi.label,''), COALESCE(mi.url,''),
+                    COALESCE(mi.object_id,0), COALESCE(mi.item_type,''),
+                    COALESCE(mi.title_attr,''), COALESCE(mi.target,''),
+                    COALESCE(mi.classes,''), COALESCE(mi.xfn,''), COALESCE(mi.description,'')
+             FROM menu_items mi JOIN menus m ON m.id=mi.menu_id
+             ORDER BY mi.wp_id",
+        )?;
+        let rows: rusqlite::Result<Vec<serde_json::Value>> = st
+            .query_map([], |r| {
+                Ok(serde_json::json!({
+                    "ID": r.get::<_, i64>(0)?,
+                    "menu_term_id": r.get::<_, i64>(2)?,
+                    "parent_id": r.get::<_, i64>(3)?,
+                    "ord": r.get::<_, i64>(4)?,
+                    "label": r.get::<_, String>(5)?,
+                    "url": r.get::<_, String>(6)?,
+                    "object_id": r.get::<_, i64>(7)?,
+                    "item_type": r.get::<_, String>(8)?,
+                    "title_attr": r.get::<_, String>(9)?,
+                    "target": r.get::<_, String>(10)?,
+                    "classes": r.get::<_, String>(11)?,
+                    "xfn": r.get::<_, String>(12)?,
+                    "description": r.get::<_, String>(13)?,
+                }))
+            })?
+            .collect();
+        rows?
+    };
+    // Taxonomy rows: terms + term_taxonomy + post term relationships.
+    // wp_term_id/term_taxonomy_id are assigned inside the bridge at seed
+    // time — carry the rpress term id + taxonomy + slug and let PHP map.
+    let terms: Vec<serde_json::Value> = {
+        let mut st = src.prepare(
+            "SELECT t.id, t.taxonomy, t.slug, t.name, COALESCE(t.description,''),
+                    COALESCE(p.slug,'') FROM terms t
+             LEFT JOIN terms p ON p.id = t.parent_id ORDER BY t.id",
+        )?;
+        let rows: rusqlite::Result<Vec<serde_json::Value>> = st
+            .query_map([], |r| {
+                Ok(serde_json::json!({
+                    "id": r.get::<_, i64>(0)?,
+                    "taxonomy": r.get::<_, String>(1)?,
+                    "slug": r.get::<_, String>(2)?,
+                    "name": r.get::<_, String>(3)?,
+                    "description": r.get::<_, String>(4)?,
+                    "parent_slug": r.get::<_, String>(5)?,
+                }))
+            })?
+            .collect();
+        rows?
+    };
+    let post_terms: Vec<serde_json::Value> = {
+        let mut st = src.prepare(
+            "SELECT p.wp_id, pt.taxonomy, pt.slug
+             FROM post_terms pt JOIN posts p ON p.id = pt.post_id
+             WHERE p.wp_id IS NOT NULL",
+        )?;
+        let rows: rusqlite::Result<Vec<serde_json::Value>> = st
+            .query_map([], |r| {
+                Ok(serde_json::json!({
+                    "post_wp_id": r.get::<_, i64>(0)?,
+                    "taxonomy": r.get::<_, String>(1)?,
+                    "slug": r.get::<_, String>(2)?,
+                }))
+            })?
+            .collect();
+        rows?
+    };
+    let mut options: serde_json::Map<String, serde_json::Value> = {
+        let mut st = src.prepare("SELECT key, value FROM settings WHERE key IN ('show_on_front','page_on_front','posts_per_page','stylesheet','template','permalink_structure','nav_menu_locations','theme_mods_tevily','theme_mods_tevily_child','custom_logo','site_icon','blogname','blogdescription')")?;
+        let mut m = serde_json::Map::new();
+        for row in st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
+            let (k, v) = row?;
+            m.insert(k, serde_json::Value::String(v));
+        }
+        m
+    };
+    // Merge dump-parsed meta into the rpress meta map — postmeta is
+    // keyed by wp_id in both sources.
+    for (pid, m) in extra_meta {
+        let tgt = meta
+            .entry(pid)
+            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+        if let (serde_json::Value::Object(t), serde_json::Value::Object(src_m)) = (tgt, m) {
+            for (k, v) in src_m {
+                t.insert(k, v);
+            }
+        }
+    }
+    // Backfill seed options missing from settings (imports predate the
+    // allowlist) from the same dump.sql the extra posts came from.
+    {
+        let want = ["permalink_structure", "blogname", "show_on_front", "page_on_front"];
+        if let Some(dump) = site_dir.map(|d| d.join("dump.sql")).filter(|p| p.is_file()) {
+            for k in want {
+                if !options.contains_key(k) {
+                    if let Some(v) = option_from_dump(Some(dump.as_path()), k) {
+                        options.insert(k.to_string(), serde_json::Value::String(v));
+                    }
+                }
+            }
+            /* Plugin/theme render state (elementor kit colors, trustindex
+               connection keys, cf7 settings, redux options) lives only in
+               the origin wp_options — without it the theme renders with
+               default styling and plugin widgets error (observed: grey
+               buttons + Trustindex "connect your business" bar). Seeded
+               as a raw {name: value} map; bridge.php skips bridge-owned
+               keys and unserializes before insert. */
+            let mut dump_opts: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+            let prefix = crate::sqldump::detect_prefix(&dump).unwrap_or_else(|_| "wp_".into());
+            let opt_table = format!("{prefix}options");
+            let _ = crate::sqldump::rows(&dump, &[opt_table.as_str()], |_, v| {
+                if v.len() > 2 {
+                    if let (Some(k), Some(val)) = (v[1].to_string_lossy(), v[2].to_string_lossy()) {
+                        if !k.is_empty() && !dump_opts.contains_key(&k) {
+                            dump_opts.insert(k, serde_json::Value::String(val));
+                        }
+                    }
+                }
+                Ok(())
+            });
+            let seed_tmp = wp_content.join("rpress-seed");
+            std::fs::create_dir_all(&seed_tmp)?;
+            serde_json::to_writer(
+                std::fs::File::create(wp_content.join("rpress-seed").join("options.json"))?,
+                &dump_opts,
+            )?;
+        }
+    }
+    let seed_dir = wp_content.join("rpress-seed");
+    std::fs::create_dir_all(&seed_dir)?;
+    std::fs::write(
+        seed_dir.join("site.json"),
+        serde_json::to_string(&serde_json::json!({
+            "posts": posts,
+            "extra_posts": extra_posts,
+            "meta": meta,
+            "attachments": attachments,
+            "attachment_meta": attachment_meta,
+            "menus": menus,
+            "menu_items": menu_items,
+            "terms": terms,
+            "post_terms": post_terms,
+            "options": options,
+        }))?,
+    )?;
+    Ok(!posts.is_empty())
 }
 
 #[cfg(test)]

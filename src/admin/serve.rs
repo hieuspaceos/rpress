@@ -29,6 +29,13 @@ pub(crate) async fn health() -> &'static str {
 /// itself instead of rendering on every cold hit.
 pub(crate) async fn public_root(State(app): State<App>, headers: HeaderMap, ConnectInfo(peer): ConnectInfo<SocketAddr>) -> Response {
     let sc = site_for(&app, &headers);
+    /* Frontend bridge opt-in: `/` is a WP page (page_on_front) — let the
+       theme render it before the static cache is consulted. */
+    if crate::admin::bridge::opt_in(&sc.plugins_php, "frontend") {
+        if let Some(resp) = frontend_proxy(sc.clone(), &headers, "", "").await {
+            return resp;
+        }
+    }
     if let Some(b) = read_out_async(sc, "index.html".to_string()).await {
         return file_response(&headers, "text/html; charset=utf-8".to_string(), b);
     }
@@ -274,6 +281,16 @@ pub(crate) async fn public_page(State(app): State<App>, headers: HeaderMap, Conn
         .filter(|(_, b)| !b.is_empty())
         .find_map(|(k, b)| rest.strip_prefix(format!("{b}/").as_str()).map(|s| (*k, s)))
         .unwrap_or(("", rest));
+
+    /* Frontend bridge (PLUGINS_PHP includes `frontend`): slugs that map to
+       a wp_posts row render inside the theme's real templates — the theme
+       builder wrapper (gva_post_* widgets + footer) can't be reproduced by
+       the static scaffold. Everything else stays on the write-back cache. */
+    if crate::admin::bridge::opt_in(&sc.plugins_php, "frontend") {
+        if let Some(resp) = frontend_proxy(sc.clone(), &headers, lookup, kind).await {
+            return resp;
+        }
+    }
     let base = site_url(sc);
     // rusqlite + template render are synchronous — a cache-miss render is
     // ~140ms of work, too heavy to sit on a tokio worker (H14). Everything
@@ -394,6 +411,126 @@ pub(crate) async fn public_page(State(app): State<App>, headers: HeaderMap, Conn
             not_found(sc).await
         }
     }
+}
+
+/// Proxy `/<post-slug>/` through the frontend PhpCgi bridge — only for
+/// `kind='post'` when `PLUGINS_PHP` contains `frontend`. Looks the slug up
+/// for its wp_id, then forwards `/?p=<wp_id>` (permalink bypasses
+/// rewrite rules — no permalink_structure seed needed). Non-post slugs,
+/// slugs absent from rpress.db, and bridge failures return `None` so the
+/// caller falls through to the static render path.
+/// `lookup=""` proxies `/` — WP's own front-page resolution (show_on_front)
+/// picks the page; rpress needs no wp_id lookup for that case. Otherwise
+/// only slugs with a real wp_id+publish row proxy so unknown paths still
+/// fall through to the static render.
+async fn frontend_proxy(sc: SiteCtx, headers: &HeaderMap, lookup: &str, kind: &str) -> Option<Response> {
+    let found = if lookup.is_empty() {
+        Some((0_i64, String::new()))
+    } else {
+        let slug_c = lookup.to_string();
+        let db = sc.db.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = crate::db::conn(&db).ok()?;
+            conn.query_row(
+                "SELECT COALESCE(wp_id,id), kind FROM posts WHERE slug=?1 AND status='publish' LIMIT 1",
+                [slug_c.as_str()],
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)),
+            )
+            .ok()
+        })
+        .await
+        .ok()?
+    }?;
+    let (wp_id, real_kind) = found;
+    if !lookup.is_empty() && !(kind.is_empty() || kind == real_kind.as_str()) {
+        return None;
+    }
+    let wp_path = if lookup.is_empty() {
+        "/".to_string()
+    } else {
+        format!("/?p={wp_id}")
+    };
+    let sc_c = sc.clone();
+    let headers_vec: Vec<(String, String)> = headers
+        .iter()
+        .filter_map(|(n, v)| Some((n.as_str().to_string(), v.to_str().ok()?.to_string())))
+        .collect();
+    tokio::task::spawn_blocking(move || {
+        let st = crate::admin::bridge::bridge_for(
+            &sc_c.bridges,
+            &sc_c.slug,
+            "frontend",
+            crate::admin::bridge::RuntimeKind::PhpCgi,
+            &sc_c.www,
+            &sc_c.db,
+            None,
+            "",
+            &sc_c.templates,
+        )
+        .ok()?;
+        let mut h = st.lock();
+        let tok = h.token.clone();
+        if !h.rt.healthy(&tok) {
+            return None;
+        }
+        let mut fwd = headers_vec;
+        fwd.push(("X-Rpress-Bridge".into(), tok));
+        let mut r = h.rt.request("GET", &wp_path, &fwd, &[]).ok()?;
+        /* With permalinks seeded, WP canonical-redirects /?p=N to the
+           pretty slug — follow the hop inside the bridge instead of
+           leaking a 301 at the bridge port to the browser. */
+        if (300..400).contains(&r.status) {
+            if let Some(loc) = r
+                .headers
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("location"))
+                .map(|(_, v)| v.clone())
+            {
+                if let Some(path) = loc
+                    .split_once("://")
+                    .and_then(|(_, rest)| rest.find('/').map(|i| rest[i..].to_string()))
+                {
+                    r = h.rt.request("GET", &path, &fwd, &[]).ok()?;
+                }
+            }
+        }
+        let upstream = format!("http://127.0.0.1:{}", h.rt.port());
+        let ct = r
+            .headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+            .map(|(_, v)| v.clone())
+            .unwrap_or_else(|| "text/html".to_string());
+        if !ct.contains("text/html") {
+            let mut b = Response::builder().status(
+                axum::http::StatusCode::from_u16(r.status).unwrap_or(StatusCode::OK));
+            b = b.header(header::CONTENT_TYPE, ct);
+            return b.body(Body::from(r.body)).ok();
+        }
+        let mut s = String::from_utf8_lossy(&r.body).into_owned();
+        s = s.replace(&upstream, "");
+        s = s.replace("https://blueskiestour.com", "").replace("http://blueskiestour.com", "");
+        s = s.replace("https://vinhhyblueskies.com", "").replace("http://vinhhyblueskies.com", "");
+        s = s.replace("//blueskiestour.com", "").replace("//vinhhyblueskies.com", "");
+        let mut b = Response::builder()
+            .status(axum::http::StatusCode::from_u16(r.status).unwrap_or(StatusCode::OK))
+            .header(header::CONTENT_TYPE, "text/html; charset=utf-8");
+        for (k, v) in &r.headers {
+            let kl = k.to_ascii_lowercase();
+            if matches!(kl.as_str(), "transfer-encoding" | "connection" | "content-length" | "content-type") {
+                continue;
+            }
+            if let (Ok(n), Ok(val)) = (
+                axum::http::HeaderName::from_bytes(k.as_bytes()),
+                axum::http::HeaderValue::from_str(v),
+            ) {
+                b = b.header(n, val);
+            }
+        }
+        b.body(Body::from(s)).ok()
+    })
+    .await
+    .ok()?
 }
 
 /// `301 Moved Permanently` — axum's `Redirect::permanent` is 308, but the

@@ -74,6 +74,11 @@ if (isset($GLOBALS['wp_version'])) {
     $GLOBALS['wp_version'] = '6.8.3';
 }
 
+    /* Frontend slug passes an empty RPRESS_BRIDGE_PLUGIN — only there does
+       the admin bar pollute origin parity. */
+    if (defined('RPRESS_BRIDGE_PLUGIN') && RPRESS_BRIDGE_PLUGIN === '') {
+        add_filter('show_admin_bar', '__return_false');
+    }
 add_action('elementor/init', static function () {
     if (class_exists('\Elementor\Core\Kits\Manager')) {
         \Elementor\Core\Kits\Manager::create_default_kit();
@@ -416,6 +421,337 @@ add_action('admin_init', function () {
         }
     }
 }, 1);
+/* Frontend bridge seed (site.json): all posts + meta + attachments +
+   nav menus + theme locations + the option subset single.php needs.
+   Runs on `init` (frontend requests never hit admin_init) only when
+   the file exists — admin bridges keep their post.json path. Every
+   insert is $wpdb-direct / byte-exact; wp_* helpers would double-wrap
+   serialized meta. Guard: option `rpress_site_seeded`. */
+add_action('init', static function () {
+    $seed = WP_CONTENT_DIR . '/rpress-seed/site.json';
+    if (!is_file($seed) || get_option('rpress_site_seeded')) {
+        return;
+    }
+    $j = json_decode(file_get_contents($seed), true);
+    if (!is_array($j)) {
+        return;
+    }
+    global $wpdb;
+    update_option('rpress_site_seeded', 1, false);
+
+    error_log('rpress frontend seed: starting site.json import');
+
+    $opts = $j['options'] ?? [];
+    if (is_array($opts)) {
+        foreach ($opts as $k => $v) {
+            /* Options carry PHP-serialized values (theme_mods_*, nav_menu_locations).
+               Passing the raw string through add_option double-serializes →
+               get_option returns array(0=>'a:5:{...}') and has_nav_menu('primary')
+               is false (observed: mobile menu empty on blueskies). */
+            if (is_string($v)) {
+                $v2 = @unserialize($v);
+                if ($v2 !== false) { $v = $v2; }
+            }
+            delete_option($k);
+            add_option($k, $v, '', 'no');
+        }
+    }
+
+    /* Origin wp_options merge (options.json): plugin/theme render state —
+       elementor kit, trustindex connection keys, redux, cf7. Bridge-owned
+       keys are excluded so seeded siteurl/active_plugins/rpress flags and
+       WP-internal constants aren't clobbered. site.json `options` (above)
+       still wins — it carries curated overrides. */
+    $skip = ['siteurl','home','active_plugins','blogname','template','stylesheet',
+             'rpress_site_seeded','rpress_post_seeded','rpress_seed_done',
+             'cron','nonce_key','nonce_salt','auth_key','auth_salt',
+             'logged_in_key','logged_in_salt','secure_auth_key','secure_auth_salt',
+             'admin_email','new_admin_email','users_can_register','default_role',
+             'fresh_site','initial_db_version','site_created_time','siteurl_old',
+             'recovery_keys','recovery_mode_email_last_sent'];
+    $raw_opts = @json_decode(file_get_contents(WP_CONTENT_DIR . '/rpress-seed/options.json'), true);
+    if (is_array($raw_opts)) {
+        foreach ($raw_opts as $k => $v) {
+            if (in_array($k, $skip, true) || strpos($k, '_transient') !== false || strpos($k, '_site_transient') !== false) {
+                continue;
+            }
+            if (is_string($v)) {
+                $v2 = @unserialize($v);
+                if ($v2 !== false) { $v = $v2; }
+            }
+            if (!isset($opts[$k])) {
+                delete_option($k);
+                add_option($k, $v, '', 'no');
+            }
+        }
+    }
+
+    $upsert_post = static function (array $p, string $type = '', string $guid = '') use ($wpdb): int {
+        $pid = (int) ($p['ID'] ?? 0);
+        if (!$pid) {
+            return 0;
+        }
+        $row = [
+            'post_author' => 1,
+            'post_date' => $p['post_date'] ?? '0000-00-00 00:00:00',
+            'post_date_gmt' => $p['post_date'] ?? '0000-00-00 00:00:00',
+            'post_content' => $p['post_content'] ?? '',
+            'post_title' => $p['post_title'] ?? '',
+            'post_excerpt' => $p['post_excerpt'] ?? '',
+            'post_status' => $p['post_status'] ?? 'publish',
+            'comment_status' => 'closed',
+            'ping_status' => 'closed',
+            'post_name' => $p['post_name'] ?? '',
+            'post_modified' => $p['post_modified'] ?? '0000-00-00 00:00:00',
+            'post_modified_gmt' => $p['post_modified'] ?? '0000-00-00 00:00:00',
+            'post_parent' => (int) ($p['post_parent'] ?? 0),
+            'guid' => $guid,
+            'menu_order' => (int) ($p['menu_order'] ?? 0),
+            'post_type' => $type !== '' ? $type : ($p['post_type'] ?? 'page'),
+            'post_mime_type' => $p['post_mime_type'] ?? '',
+            'comment_count' => 0,
+        ];
+        if ($wpdb->get_var($wpdb->prepare("SELECT ID FROM {$wpdb->posts} WHERE ID=%d", $pid))) {
+            $wpdb->update($wpdb->posts, $row, ['ID' => $pid]);
+        } else {
+            $row['ID'] = $pid;
+            $wpdb->insert($wpdb->posts, $row);
+        }
+        return $pid;
+    };
+    $upsert_meta = static function (int $pid, string $key, string $val) use ($wpdb): void {
+        $mid = $wpdb->get_var($wpdb->prepare(
+            "SELECT meta_id FROM {$wpdb->postmeta} WHERE post_id=%d AND meta_key=%s", $pid, $key));
+        if ($mid) {
+            $wpdb->update($wpdb->postmeta, ['meta_value' => $val], ['meta_id' => $mid]);
+        } else {
+            $wpdb->insert($wpdb->postmeta, ['post_id' => $pid, 'meta_key' => $key, 'meta_value' => $val]);
+        }
+    };
+
+    foreach ((array) ($j['posts'] ?? []) as $p) {
+        if (!is_array($p)) { continue; }
+        $pid = $upsert_post($p, '', '');
+        $fid = (int) ($p['_thumbnail_id'] ?? 0);
+        if ($pid && $fid) {
+            $upsert_meta($pid, '_thumbnail_id', (string) $fid);
+        }
+    }
+    /* Cached Elementor render fragments from the live site were built
+       with a different plugin context — they container-wrap and DROP
+       unregistered widget types (observed: gva_post_* / gva-template_content
+       stripped on blueskies). Skip the key; Elementor re-caches per bridge. */
+    $meta = $j['meta'] ?? [];
+    if (is_array($meta)) {
+        foreach ($meta as $pid => $m) {
+            if (is_array($m)) {
+                foreach ($m as $k => $v) {
+                    if ($k === '_elementor_element_cache') { continue; }
+                    $upsert_meta((int) $pid, (string) $k, (string) $v);
+                }
+            }
+        }
+    }
+
+    $site_url = rtrim((string) get_option('siteurl'), '/');
+    $am = $j['attachment_meta'] ?? [];
+    foreach ((array) ($j['attachments'] ?? []) as $a) {
+        if (!is_array($a)) { continue; }
+        $rel = ltrim((string) ($a['guid'] ?? ''), '/');
+        $guid = $site_url . '/wp-content/uploads/' . $rel;
+        $a['post_type'] = 'attachment';
+        $a['post_status'] = 'inherit';
+        $aid = $upsert_post($a, 'attachment', $guid);
+        if ($aid && isset($am[(string) $aid]) && is_array($am[(string) $aid])) {
+            foreach ($am[(string) $aid] as $k => $v) {
+                $upsert_meta($aid, (string) $k, (string) $v);
+            }
+        }
+    }
+
+    /* Dump-sourced CPTs rpress doesn't model (gva__template header/footer/
+       single layouts, nav_menu_item, elementor_library). Same byte-exact
+       upsert; meta rides the shared meta map under their wp_id. */
+    foreach ((array) ($j['extra_posts'] ?? []) as $p) {
+        if (!is_array($p)) { continue; }
+        $pid = $upsert_post($p, '', (string) ($p['guid'] ?? ''));
+        if ($pid && !empty($p['_thumbnail_id'])) {
+            $upsert_meta($pid, '_thumbnail_id', (string) (int) $p['_thumbnail_id']);
+        }
+    }
+
+    /* nav menus: term rows + nav_menu taxonomy + nav_menu_item posts +
+       menu-item meta; theme_locations become theme_mods.nav_menu_locations
+       (handled via the seeded option below). */
+    /* Terms + taxonomy: wp.db term ids don't exist in rpress.db — assign
+       via insert_id, keyed by (taxonomy, slug) for relationships. Menus
+       (nav_menu) are seeded below with fixed wp_term_id; skip dupes by
+       slug so a menu term doesn't get two term_taxonomy rows. */
+    $ttid_map = [];
+    /* Menu terms must claim their wp_term_id FIRST — the generic terms
+       loop assigns auto-increment ids that can collide (blueskies: a
+       taxonomies_list 'features' row grabbed term_id 8, and the nav_menu
+       term then never got created → empty menus). */
+    foreach ((array) ($j['menus'] ?? []) as $m) {
+        if (!is_array($m)) { continue; }
+        $tid = (int) ($m['wp_term_id'] ?? 0);
+        if (!$tid) { continue; }
+        if (!$wpdb->get_var($wpdb->prepare("SELECT term_id FROM {$wpdb->terms} WHERE term_id=%d", $tid))) {
+            $wpdb->insert($wpdb->terms, ['term_id' => $tid, 'name' => (string) ($m['name'] ?? 'menu'), 'slug' => 'rpress-menu-' . $tid]);
+        }
+    }
+    foreach ((array) ($j['terms'] ?? []) as $t) {
+        if (!is_array($t)) { continue; }
+        $tax = (string) ($t['taxonomy'] ?? '');
+        $slug = (string) ($t['slug'] ?? '');
+        if ($tax === '' || $slug === '' || $tax === 'nav_menu') { continue; }
+        $key = $tax . ':' . $slug;
+        $existing = $wpdb->get_row($wpdb->prepare(
+            "SELECT t.term_id, tt.term_taxonomy_id FROM {$wpdb->terms} t
+             JOIN {$wpdb->term_taxonomy} tt ON tt.term_id = t.term_id
+             WHERE t.slug=%s AND tt.taxonomy=%s", $slug, $tax));
+        if ($existing) {
+            $ttid_map[$key] = (int) $existing->term_taxonomy_id;
+            continue;
+        }
+        $wpdb->insert($wpdb->terms, ['name' => (string) ($t['name'] ?? $slug), 'slug' => $slug]);
+        $term_id = (int) $wpdb->insert_id;
+        if (!$term_id) { continue; }
+        $wpdb->insert($wpdb->term_taxonomy, [
+            'term_id' => $term_id, 'taxonomy' => $tax,
+            'description' => (string) ($t['description'] ?? ''), 'parent' => 0, 'count' => 0,
+        ]);
+        $ttid_map[$key] = (int) $wpdb->insert_id;
+    }
+    /* Hierarchy: parent_slug resolves to a term already seeded above. */
+    foreach ((array) ($j['terms'] ?? []) as $t) {
+        if (!is_array($t)) { continue; }
+        $tax = (string) ($t['taxonomy'] ?? '');
+        $pslug = (string) ($t['parent_slug'] ?? '');
+        if ($tax === '' || $pslug === '') { continue; }
+        $child_ttid = $ttid_map[$tax . ':' . ($t['slug'] ?? '')] ?? 0;
+        $parent_ttid = $ttid_map[$tax . ':' . $pslug] ?? 0;
+        if (!$child_ttid || !$parent_ttid) { continue; }
+        $parent_term_id = (int) $wpdb->get_var($wpdb->prepare(
+            "SELECT term_id FROM {$wpdb->term_taxonomy} WHERE term_taxonomy_id=%d", $parent_ttid));
+        if ($parent_term_id) {
+            $wpdb->update($wpdb->term_taxonomy, ['parent' => $parent_term_id], ['term_taxonomy_id' => $child_ttid]);
+        }
+    }
+    foreach ((array) ($j['post_terms'] ?? []) as $pt) {
+        if (!is_array($pt)) { continue; }
+        $wpid = (int) ($pt['post_wp_id'] ?? 0);
+        $ttid = $ttid_map[($pt['taxonomy'] ?? '') . ':' . ($pt['slug'] ?? '')] ?? 0;
+        if (!$wpid || !$ttid) { continue; }
+        if (!$wpdb->get_var($wpdb->prepare(
+            "SELECT object_id FROM {$wpdb->term_relationships} WHERE object_id=%d AND term_taxonomy_id=%d", $wpid, $ttid))) {
+            $wpdb->insert($wpdb->term_relationships, [
+                'object_id' => $wpid, 'term_taxonomy_id' => $ttid, 'term_order' => 0,
+            ]);
+            $wpdb->query($wpdb->prepare(
+                "UPDATE {$wpdb->term_taxonomy} SET count=count+1 WHERE term_taxonomy_id=%d", $ttid));
+        }
+    }
+
+    foreach ((array) ($j['menus'] ?? []) as $m) {
+        if (!is_array($m)) { continue; }
+        $tid = (int) ($m['wp_term_id'] ?? 0);
+        $name = (string) ($m['name'] ?? '');
+        if (!$tid || $name === '') { continue; }
+        /* Widgets call wp_nav_menu(['menu' => 'main-menu']) — the slug must
+           be the WP menu slug (rpress menus.location), else core falls back
+           to wp_page_menu and links render empty (observed on blueskies). */
+        $mslug = (string) ($m['location'] ?? '');
+        if ($mslug === '') { $mslug = 'menu-' . $tid; }
+        if (!$wpdb->get_var($wpdb->prepare("SELECT term_id FROM {$wpdb->terms} WHERE term_id=%d", $tid))) {
+            $wpdb->insert($wpdb->terms, ['term_id' => $tid, 'name' => $name, 'slug' => $mslug]);
+        } else {
+            $wpdb->update($wpdb->terms, ['name' => $name, 'slug' => $mslug], ['term_id' => $tid]);
+        }
+        if (!$wpdb->get_var($wpdb->prepare(
+            "SELECT term_taxonomy_id FROM {$wpdb->term_taxonomy} WHERE term_id=%d AND taxonomy='nav_menu'", $tid))) {
+            $wpdb->insert($wpdb->term_taxonomy, [
+                'term_id' => $tid, 'taxonomy' => 'nav_menu', 'description' => '', 'parent' => 0, 'count' => 0,
+            ]);
+        }
+    }
+    foreach ((array) ($j['menu_items'] ?? []) as $mi) {
+        if (!is_array($mi)) { continue; }
+        $iid = (int) ($mi['ID'] ?? 0);
+        if (!$iid) { continue; }
+        $mi['post_type'] = 'nav_menu_item';
+        $mi['post_status'] = 'publish';
+        $mi['post_name'] = 'menu-item-' . $iid;
+        $mi['post_title'] = (string) ($mi['label'] ?? '');
+        $mi['post_parent'] = 0;
+        $mi['menu_order'] = (int) ($mi['ord'] ?? 0);
+        $upsert_post($mi, 'nav_menu_item', '');
+        $type = (string) ($mi['item_type'] ?? 'custom');
+        $upsert_meta($iid, '_menu_item_type', $type === 'post_type' ? 'post_type' : 'custom');
+        $upsert_meta($iid, '_menu_item_menu_item_parent', (string) (int) ($mi['parent_id'] ?? 0));
+        $upsert_meta($iid, '_menu_item_object_id', (string) (int) ($mi['object_id'] ?? 0));
+        $upsert_meta($iid, '_menu_item_object', 'page');
+        $upsert_meta($iid, '_menu_item_url', (string) ($mi['url'] ?? ''));
+        $upsert_meta($iid, '_menu_item_target', (string) ($mi['target'] ?? ''));
+        $upsert_meta($iid, '_menu_item_classes', serialize([(string) ($mi['classes'] ?? '')]));
+        $upsert_meta($iid, '_menu_item_xfn', (string) ($mi['xfn'] ?? ''));
+        $term_id = (int) ($mi['menu_term_id'] ?? 0);
+        if ($term_id) {
+            $tt = $wpdb->get_var($wpdb->prepare(
+                "SELECT term_taxonomy_id FROM {$wpdb->term_taxonomy} WHERE term_id=%d AND taxonomy='nav_menu'", $term_id));
+            if ($tt && !$wpdb->get_var($wpdb->prepare(
+                "SELECT object_id FROM {$wpdb->term_relationships} WHERE object_id=%d AND term_taxonomy_id=%d", $iid, $tt))) {
+                $wpdb->insert($wpdb->term_relationships, [
+                    'object_id' => $iid, 'term_taxonomy_id' => $tt, 'term_order' => (int) ($mi['ord'] ?? 0),
+                ]);
+            }
+        }
+    }
+
+    /* wp_get_nav_menu_items short-circuits to [] when term_taxonomy.count
+       is 0 — recount after relationships land. */
+    $wpdb->query("UPDATE {$wpdb->term_taxonomy} tt SET count=(SELECT COUNT(*) FROM {$wpdb->term_relationships} tr WHERE tr.term_taxonomy_id=tt.term_taxonomy_id) WHERE tt.taxonomy='nav_menu'");
+
+    /* nav_menu_locations: `menus.theme_location` is the WP location slug —
+       the option WP reads is theme_mods_{stylesheet}.nav_menu_locations. */
+    $locs = [];
+    foreach ((array) ($j['menus'] ?? []) as $m) {
+        $loc = (string) ($m['theme_location'] ?? '');
+        $tid = (int) ($m['wp_term_id'] ?? 0);
+        if ($loc !== '' && $tid) {
+            $locs[$loc] = $tid;
+        }
+    }
+    if ($locs) {
+        $sheet = (string) get_option('stylesheet');
+        $key = 'theme_mods_' . $sheet;
+        $mods = (array) get_option($key, []);
+        $mods['nav_menu_locations'] = $locs;
+        update_option($key, $mods);
+    }
+    /* _elementor_css meta says status=file but the generated
+       post-N.css was never imported — links 404 → unstyled widgets
+       (observed: grey BOOK NOW buttons). Regenerate once per bridge;
+       files land in the shared uploads dir the static server serves.
+       MUST run after the meta seed above — pids come from _elementor_css. */
+    if (class_exists('Elementor\Core\Files\CSS\Post') && !get_option('rpress_css_seeded')) {
+        update_option('rpress_css_seeded', 1, false);
+        $css_dir = wp_upload_dir()['basedir'] . '/elementor/css';
+        wp_mkdir_p($css_dir);
+        $pids = $wpdb->get_col("SELECT post_id FROM {$wpdb->postmeta} WHERE meta_key='_elementor_css'");
+        foreach ($pids as $cpid) {
+            $f = $css_dir . '/post-' . $cpid . '.css';
+            if (file_exists($f)) { continue; }
+            try {
+                (new Elementor\Core\Files\CSS\Post((int) $cpid))->update();
+            } catch (\Throwable $e) {
+                error_log('rpress css regen ' . $cpid . ': ' . $e->getMessage());
+            }
+        }
+    }
+
+}, 5);
+
 
 /* One-shot dump for rpress tooling: element/wrapper defs as JSON so the
  * Rust canvas can mirror the plugin's own templates/settings. Token-fenced
